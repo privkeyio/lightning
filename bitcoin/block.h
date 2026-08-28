@@ -3,6 +3,7 @@
 #include "config.h"
 #include "bitcoin/shadouble.h"
 #include <ccan/endian/endian.h>
+#include <ccan/short_types/short_types.h>
 #include <ccan/structeq/structeq.h>
 
 struct chainparams;
@@ -19,6 +20,10 @@ struct bitcoin_blkid {
 /* Define bitcoin_blkid_eq (no padding) */
 STRUCTEQ_DEF(bitcoin_blkid, 0, shad.sha.u);
 
+/* Number of extra bytes a v2 (BLAKE2b) header carries after the 80 byte
+ * v1 layout. */
+#define BLOCK_HEADER_V2_EXTRA_LEN 84
+
 struct bitcoin_block_hdr {
 	le32 version;
 	struct bitcoin_blkid prev_hash;
@@ -27,6 +32,23 @@ struct bitcoin_block_hdr {
 	le32 target;
 	le32 nonce;
 	struct bitcoin_blkid hash;
+
+	/* A v2 header is signalled by the top bit of the version, and is
+	 * identified by BLAKE2b rather than SHA256d.  The fields below are
+	 * only meaningful when header_v2 is set. */
+	bool header_v2;
+	/* timestamp as it appears on the wire: nTime is this plus
+	 * time_offset when BLOCK_HEADER_FLAG_USE_TIME_OFFSET is set. */
+	u32 time_on_wire;
+	u32 nonce2, nonce3;
+	u8 extranonce[16];
+	u32 time_offset;
+	u16 txcount;
+	u8 flags;
+	u8 xor_key_mask_clear_bits;
+	u8 xor_key[16];
+	s32 height;
+	u8 mm_rhs[32];
 };
 
 struct bitcoin_block {

@@ -2,6 +2,7 @@
 
 BITCOIN_SRC :=					\
 	bitcoin/base58.c			\
+	bitcoin/blake2b.c			\
 	bitcoin/block.c				\
 	bitcoin/chainparams.c			\
 	bitcoin/feerate.c			\
@@ -22,6 +23,7 @@ BITCOIN_OBJS := $(BITCOIN_SRC:.c=.o)
 
 BITCOIN_HEADERS := bitcoin/address.h		\
 	bitcoin/base58.h			\
+	bitcoin/blake2b.h			\
 	bitcoin/block.h				\
 	bitcoin/chainparams.h			\
 	bitcoin/feerate.h			\
