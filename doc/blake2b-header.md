@@ -57,8 +57,7 @@ tagged SHA256 hashes feeding two BLAKE2b passes, the result XORed with a mask
 derived from the miner's XOR key and finally byte-reversed.
 
 The second BLAKE2b pass takes one of four layouts selected by `flags & 3`,
-which is what the mining hardware sees. Only layout 0 occurs on chains observed
-so far; the other three are covered by test vectors.
+which is what the mining hardware sees. Only layout 0 has been seen in blocks so far; the other three are covered by test vectors.
 
 ## Testing
 
@@ -81,17 +80,19 @@ chain backend plugin treats that as fatal.
 
 ## What this does not address
 
-**`chain_hash` still collides with mainnet.** BOLT identifies a network by its
-genesis block hash, and the fork does not change genesis. A node on the forked
-chain therefore advertises the same network identity as mainnet Lightning: it
-will peer with mainnet nodes, its gossip merges with theirs, and channel opens
-can cross chains. Header parsing cannot fix this; it needs a distinct
-`chain_hash` for the forked network, decided once rather than per
-implementation.
+**`chain_hash` does not distinguish the two rule sets.** BOLT identifies a
+network by its genesis block hash, and a hard fork does not change genesis. Nodes
+that have adopted the fork and nodes still on the old rules therefore advertise
+the same network identity, so they connect to each other and their gossip merges,
+even though after the activation height they no longer agree on the chain. A peer
+cannot tell from the handshake which rules the other side follows. Header parsing
+cannot fix that; it takes a decision about what `chain_hash` should be, made once
+rather than per implementation.
 
-**Channels funded before the fork exist on both chains.** The funding output is
-valid on either side, so pre-signed commitment transactions are replayable
-across the split. The unified opt-in signature hash is the fix, but commitment
+**Channels funded before activation are valid under both rule sets.** Their
+funding output exists on either side of the divergence, so commitment
+transactions signed before it can be replayed against a node that did not adopt
+the fork. The unified opt-in signature hash is the fix, but commitment
 transactions are signed by both parties, so both peers must support it.
 
 [pr359]: https://github.com/bitcoinknots/bitcoin/pull/359
