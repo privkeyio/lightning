@@ -232,18 +232,17 @@ static void block_hdr_v2_blkid(const struct bitcoin_block_hdr *hdr,
 
 	memset(&xor_key_mask, 0, sizeof(xor_key_mask));
 	if (!memeqzero(hdr->xor_key, sizeof(hdr->xor_key))) {
+		/* At most 255 bits, so at most 31 whole bytes: the partial
+		 * byte below is always inside the mask. */
 		size_t clear_bytes = hdr->xor_key_mask_clear_bits / 8;
 
 		tagged_hash_init(&shactx, "Bitcoin block hash PoW XOR mask");
 		sha256_update(&shactx, hdr->xor_key, sizeof(hdr->xor_key));
 		sha256_done(&shactx, &xor_key_mask);
 
-		if (clear_bytes > sizeof(xor_key_mask))
-			clear_bytes = sizeof(xor_key_mask);
 		memset(xor_key_mask.u.u8, 0, clear_bytes);
-		if (clear_bytes < sizeof(xor_key_mask))
-			xor_key_mask.u.u8[clear_bytes]
-				&= 0xff >> (hdr->xor_key_mask_clear_bits % 8);
+		xor_key_mask.u.u8[clear_bytes]
+			&= 0xff >> (hdr->xor_key_mask_clear_bits % 8);
 	}
 
 	tagged_hash_init(&shactx, "Bitcoin prevblock header, hashed");
@@ -391,6 +390,7 @@ bitcoin_block_from_hex(const tal_t *ctx, const struct chainparams *chainparams,
 			pull(&p, &len, NULL, templen);
 		}
 
+		sha256_double_done(&shactx, &b->hdr.hash.shad);
 	} else {
 		b->hdr.target = pull_le32(&p, &len);
 		sha256_le32(&shactx, b->hdr.target);
@@ -403,15 +403,14 @@ bitcoin_block_from_hex(const tal_t *ctx, const struct chainparams *chainparams,
 		 * and is identified by BLAKE2b rather than SHA256d. */
 		b->hdr.header_v2
 			= (b->hdr.version & BLOCK_HEADER_V2_VERSION_FLAG) != 0;
+		if (b->hdr.header_v2) {
+			pull_block_hdr_v2(&p, &len, &b->hdr);
+			if (!p)
+				return tal_free(b);
+			block_hdr_v2_blkid(&b->hdr, &b->hdr.hash);
+		} else
+			sha256_double_done(&shactx, &b->hdr.hash.shad);
 	}
-
-	if (b->hdr.header_v2) {
-		pull_block_hdr_v2(&p, &len, &b->hdr);
-		if (!p)
-			return tal_free(b);
-		block_hdr_v2_blkid(&b->hdr, &b->hdr.hash);
-	} else
-		sha256_double_done(&shactx, &b->hdr.hash.shad);
 
 	num = pull_varint(&p, &len);
 	b->tx = tal_arr(b, struct bitcoin_tx *, num);
