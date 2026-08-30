@@ -37,7 +37,7 @@ Two of these are easy to get wrong. `txcount` is a real header field and must ma
 
 `block_hdr_v2_blkid()` mirrors `CBlockHeader::GetHash()`: a tree of BIP340 tagged SHA256 hashes feeding two BLAKE2b passes, the result XORed with a mask derived from the miner's XOR key and finally byte-reversed.
 
-The second BLAKE2b pass takes one of four layouts selected by `flags & 3`, which is what the mining hardware sees. Only layout 0 has been seen in blocks so far; the other three are covered by test vectors.
+The second BLAKE2b pass takes one of four layouts selected by `flags & 3`, which is what the mining hardware sees. Only layout 0 has been seen on mainnet or testnet4; the other three are covered by test vectors.
 
 ## Testing
 
@@ -45,10 +45,11 @@ The second BLAKE2b pass takes one of four layouts selected by `flags & 3`, which
 
 Beyond the vectors, this has been checked against live chains:
 
-- **testnet4**, which activated at height 150027. Core Lightning synced across the activation and computed the same id as the node for every block, including blocks carrying a non-null XOR key and a non-zero `time_offset`.
+- **mainnet**, which activated at height 961640. Core Lightning synced across the activation and computed the same id as the node for all 254 blocks either side of it, including two carrying a non-null XOR key with 46 and 47 mask bits cleared, the partial-byte case.
+- **testnet4**, which activated at height 150027. The same, over 543 blocks.
 - **regtest** against a node run with `-testactivationheight=blake2b@N`, covering a channel opened before activation and force-closed after it, reorgs within v2 blocks and across the activation boundary, and restart on a v2 tip.
 
-A node without this change stops at the last SHA256d block and aborts: the 84 extra bytes are left over after the header, the block fails to parse, and the chain backend plugin treats that as fatal.
+A node without this change stops at the last SHA256d block and dies: the 84 extra bytes are left over after the header, so the transaction count is read from header bytes and parsing runs off the end. Against a real block it segfaults in `bitcoin_block_from_hex()`; on regtest it aborts instead, with the chain backend reporting a bad block.
 
 ## What this does not address
 
