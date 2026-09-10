@@ -2528,7 +2528,6 @@ def test_splice_broadcast_skips_cmd_awaiting_sigs(node_factory, bitcoind, execut
     check_splice_survives(l1, l2, bitcoind, txid)
 
 
-@pytest.mark.xfail
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
 @unittest.skipIf(
