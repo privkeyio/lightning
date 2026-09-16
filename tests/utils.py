@@ -47,7 +47,7 @@ def expected_peer_features(extra=[]):
         features += [29]
     if TEST_NETWORK != 'liquid-regtest':
         # Anchors, except for elements
-        features += [23, 68, 71]
+        features += [23, 69, 71]
     return hex_bits(features + extra)
 
 
@@ -61,7 +61,7 @@ def expected_node_features(extra=[]):
         features += [29]
     if TEST_NETWORK != 'liquid-regtest':
         # Anchors, except for elements
-        features += [23, 68]
+        features += [23, 69]
     return hex_bits(features + extra)
 
 

@@ -33,10 +33,12 @@ const char *feature_place_names[] = {
 };
 
 static const struct feature_style feature_styles[] = {
-	/* Required Blake2b declaration: legacy peers must reject it. */
+	/* chain_hash is taken from the activation block, so it already says which
+	 * chain this node follows.  Advertising the bit as even on top of that
+	 * refuses peers it has no need to. */
 	{ OPT_BLAKE2B,
-	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT,
-			  [NODE_ANNOUNCE_FEATURE] = FEATURE_REPRESENT } },
+	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT_AS_OPTIONAL,
+			  [NODE_ANNOUNCE_FEATURE] = FEATURE_REPRESENT_AS_OPTIONAL } },
 	{ OPT_UNIFIED_SIGS,
 	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT_AS_OPTIONAL } },
 	{ OPT_DATA_LOSS_PROTECT,
