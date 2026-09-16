@@ -1,11 +1,16 @@
 import base64
 
+
 def _cs(b, i):
     n = b[i]
-    if n < 0xfd: return n, i + 1
-    if n == 0xfd: return int.from_bytes(b[i+1:i+3], 'little'), i + 3
-    if n == 0xfe: return int.from_bytes(b[i+1:i+5], 'little'), i + 5
-    return int.from_bytes(b[i+1:i+9], 'little'), i + 9
+    if n < 0xfd:
+        return n, i + 1
+    if n == 0xfd:
+        return int.from_bytes(b[i + 1:i + 3], 'little'), i + 3
+    if n == 0xfe:
+        return int.from_bytes(b[i + 1:i + 5], 'little'), i + 5
+    return int.from_bytes(b[i + 1:i + 9], 'little'), i + 9
+
 
 def set_input0_sighash(psbt_b64, sighash):
     """Insert PSBT_IN_SIGHASH_TYPE (0x03) into the first input's map."""
