@@ -2538,6 +2538,11 @@ void bip86_key(struct privkey *privkey, struct pubkey *pubkey, u32 index)
 			      "BIP86 pubkey %u create failed", index);
 }
 
+void hsmd_secrets_free(void)
+{
+	secretstuff.bip32_seed = tal_free(secretstuff.bip32_seed);
+}
+
 u8 *hsmd_init(const u8 *secret_data, size_t secret_len, const u64 hsmd_version,
 	      struct bip32_key_version bip32_key_version, u8 hsm_secret_type)
 {
