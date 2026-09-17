@@ -104,15 +104,6 @@ static struct io_plan *peer_init_received(struct io_conn *conn,
 		}
 	}
 
-	/* Required Blake2b identity in both directions, before peer admission.
-	 * Merely understanding our even bit is not a declaration of this chain. */
-	if (feature_is_set(peer->daemon->our_features->bits[INIT_FEATURE], OPT_BLAKE2B)
-	    && !feature_is_set(features, OPT_BLAKE2B)) {
-		msg = towire_warningfmt(peer, NULL, "Peer must advertise required Blake2b feature bit 68");
-		msg = cryptomsg_encrypt_msg(peer, &peer->cs, take(msg));
-		return io_write(conn, msg, tal_count(msg), io_close_cb, NULL);
-	}
-
 	/* fetch optional tlv `remote_addr` */
 	remote_addr = NULL;
 
