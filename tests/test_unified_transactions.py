@@ -19,7 +19,10 @@ def assert_unified_witnesses(bitcoind, txid, minimum):
             if len(raw) == 65 or (69 <= len(raw) <= 73 and raw[0] == 0x30):
                 signatures.append(raw)
     assert len(signatures) >= minimum
-    assert all(s[-1] & 0x20 for s in signatures)
+    # SIGHASH_UNIFIED is added to the hash type that would otherwise apply,
+    # so SIGHASH_ALL becomes 0x21, and the anchors HTLC form 0xa3.
+    for sig in signatures:
+        assert sig[-1] in (0x21, 0xa3), '0x%02x' % sig[-1]
     return tx
 
 
