@@ -483,6 +483,10 @@ class BitcoinD(TailableProc):
             '-debug=rpc',
             '-debug=validation',
             '-rpcthreads=20',
+            # Canned blocks carry the timestamp they were recorded with, so
+            # without this the node stays in initial block download forever
+            # and lightningd waits on it.
+            '-maxtipage=315360000',
         ]
         # For up to and including 0.16.1, this needs to be in main section.
         BITCOIND_CONFIG['rpcport'] = rpcport
