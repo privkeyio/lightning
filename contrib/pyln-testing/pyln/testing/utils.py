@@ -612,7 +612,6 @@ class BitcoinD(TailableProc):
         """
         assert self.canned_blocks is None
         hashes = []
-        fee_delta = 1000000
         orig_len = self.rpc.getblockcount()
         old_hash = self.rpc.getblockhash(height)
         final_len = height + shift if height + shift > orig_len else 1 + orig_len
@@ -620,19 +619,16 @@ class BitcoinD(TailableProc):
 
         self.rpc.invalidateblock(old_hash)
         self.wait_for_log(r'InvalidChainFound: invalid block=.*  height={}'.format(height))
-        memp = self.rpc.getrawmempool()
 
         if shift == 0:
             hashes += self.generate_block(1 + final_len - height)
         else:
-            for txid in memp:
-                # lower priority (to effective feerate=0) so they are not mined
-                self.rpc.prioritisetransaction(txid, None, -fee_delta)
-            hashes += self.generate_block(shift)
-
-            for txid in memp:
-                # restore priority so they are mined
-                self.rpc.prioritisetransaction(txid, None, fee_delta)
+            # Mine the shift blocks empty so the mempool txs land after them.
+            # generateblock takes the exact tx list, where prioritisetransaction
+            # only asks: some backends mine a deprioritised tx regardless.
+            for _ in range(shift):
+                hashes.append(self.rpc.generateblock(self.rpc.getnewaddress(),
+                                                     [])['hash'])
             hashes += self.generate_block(1 + final_len - (height + shift))
         self.wait_for_log(r'UpdateTip: new best=.* height={}'.format(final_len))
         return hashes
