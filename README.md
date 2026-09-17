@@ -26,7 +26,7 @@ Fund channels only from coins received past activation. A channel funded from a 
 | mainnet | 961,640 |
 | testnet4 | 150,308 |
 
-These are the heights Bitcoin Knots activates at, listed for reference only. This fork keys off the header itself rather than a height, so it needs no updating if they change.
+These are the activation heights. Block parsing does not use them: it keys off the header itself, so it needs no update if the heights move. They are compiled in for gossip alone. Announcements for channels funded before activation are ignored, since that funding output exists under the pre-fork rules too and its spend may happen where this node cannot see it. The same height bounds where the seeker probes for short channel ids.
 
 ## Building
 
