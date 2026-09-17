@@ -49,8 +49,9 @@ struct hsmd_client {
 u8 *hsmd_init(const u8 *secret_data, size_t secret_len, const u64 hsmd_version,
 	      struct bip32_key_version bip32_key_version, u8 hsm_secret_type);
 
-/* Release the secrets hsmd_init() locked in memory: tests only, since the
- * daemon holds them for its lifetime. */
+/* Release the seed hsmd_init() locked in memory, and mark the library
+ * uninitialized so later requests fail rather than deriving from what is
+ * left.  For tests: the daemon holds its secrets for its lifetime. */
 void hsmd_secrets_free(void);
 
 struct hsmd_client *hsmd_client_new_main(const tal_t *ctx, u64 capabilities,

@@ -147,6 +147,7 @@ const struct chainparams networks[] = {
 				      0x53, 0xbc, 0xfb, 0xba, 0xf2, 0x84, 0xda,
 				      0x00, 0x00, 0x00, 0x00}}}},
      .rpc_port = 48332,
+		.when_lightning_became_cool = 150308,
      .ln_port = 49735,
      .cli = "bitcoin-cli",
      .cli_args = "-testnet4",
