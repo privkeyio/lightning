@@ -2540,6 +2540,12 @@ void bip86_key(struct privkey *privkey, struct pubkey *pubkey, u32 index)
 
 void hsmd_secrets_free(void)
 {
+	/* Clear this first: the dispatcher's guard uses it, and without it a
+	 * later request would read a NULL seed.  tal_bytelen(NULL) is 0, so
+	 * use_bip86_derivation() would quietly say no and derive the legacy
+	 * way from the still-cached secretstuff.bip32, which is worse than
+	 * failing. */
+	initialized = false;
 	secretstuff.bip32_seed = tal_free(secretstuff.bip32_seed);
 }
 
