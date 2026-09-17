@@ -51,7 +51,7 @@ const struct chainparams networks[] = {
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      /* "Lightning Charge Powers Developers & Blockstream Store" */
-     .when_lightning_became_cool = 504500,
+     .when_lightning_became_cool = 961640,
      .p2pkh_version = 0,
      .p2sh_version = 5,
      .testnet = false,
