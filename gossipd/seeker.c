@@ -795,7 +795,10 @@ static void probe_random_scids(struct seeker *seeker, size_t num_blocks)
 		avail_blocks = seeker->daemon->current_blockheight
 			- chainparams->when_lightning_became_cool;
 
-	if (avail_blocks < num_blocks) {
+	/* <= not <: pseudorand(0) asserts, which would take gossipd and so
+	 * lightningd down, once the tip is exactly num_blocks past the
+	 * activation height. */
+	if (avail_blocks <= num_blocks) {
 		seeker->scid_probe_start = 0;
 		seeker->scid_probe_end = seeker->daemon->current_blockheight;
 	} else {
