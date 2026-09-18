@@ -670,9 +670,15 @@ def serialize_payload_final_tlv(amount_msat, delay, total_msat, blockheight, pay
 # I wish we could force libwally to use different entropy and thus force it to
 # create 71-byte sigs always!
 def did_short_sig(node):
-    # This can take a moment to appear in the log!
-    time.sleep(1)
-    return node.daemon.is_in_log('overgrind: short signature length')
+    # This can take a moment to appear in the log, and a fixed second is not
+    # enough under valgrind or the sanitizers, where missing it turns the
+    # weight comparison below into a spurious off-by-one failure.  Poll
+    # instead, but briefly: the answer is usually no, and every caller pays it.
+    for _ in range(20):
+        if node.daemon.is_in_log('overgrind: short signature length'):
+            return True
+        time.sleep(0.25)
+    return False
 
 
 def check_feerate(nodes, actual_feerate, expected_feerate):
