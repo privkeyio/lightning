@@ -557,7 +557,7 @@ static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 				      const struct privkey *key,
 				      const struct pubkey *pubkey)
 {
-	struct bitcoin_tx *tx = bitcoin_tx_with_psbt(tmpctx, psbt);
+	struct bitcoin_tx *tx;
 	struct unified_sighash_input exec = { .script_type = 1 };
 	struct sha256_double digest;
 	struct bitcoin_signature sig;
@@ -594,8 +594,18 @@ static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 			return false;
 		exec.script_code = p2wpkh_scriptcode(tmpctx, pubkey);
 	}
-	if (!bitcoin_tx_unified_sighash(tx, i, hash_type, &exec, &digest.sha))
+	/* One clone of the whole transaction per input, freed here rather
+	 * than left on tmpctx: that context lives until the request is
+	 * answered, so keeping them made a withdrawal quadratic in memory
+	 * and a few hundred inputs was enough to exhaust the machine. */
+	tx = bitcoin_tx_with_psbt(NULL, psbt);
+	if (!tx)
 		return false;
+	if (!bitcoin_tx_unified_sighash(tx, i, hash_type, &exec, &digest.sha)) {
+		tal_free(tx);
+		return false;
+	}
+	tal_free(tx);
 	if (taproot) {
 		u8 tweaked[32], signature[65];
 		bool ok;
