@@ -423,7 +423,10 @@ void migrate_from_account_db(struct lightningd *ld, struct db *db)
 		 * use it was to inject your own events, and nobody did that
 		 * and it would be a nightmare to support */
 		if (ev->currency
-		    && !streq(ev->currency, chainparams->lightning_hrp)) {
+		    && !streq(ev->currency, chainparams->lightning_hrp)
+		    && !(chainparams->legacy_lightning_hrp
+			 && streq(ev->currency,
+				  chainparams->legacy_lightning_hrp))) {
 			log_broken(ld->log, "IGNORING foreign currency chain event (%s, currency %s)",
 				   ev->tag, ev->currency);
 			continue;
@@ -519,7 +522,10 @@ void migrate_from_account_db(struct lightningd *ld, struct db *db)
 		 * use it was to inject your own events, and nobody did that
 		 * and it would be a nightmare to support */
 		if (ev->currency
-		    && !streq(ev->currency, chainparams->lightning_hrp)) {
+		    && !streq(ev->currency, chainparams->lightning_hrp)
+		    && !(chainparams->legacy_lightning_hrp
+			 && streq(ev->currency,
+				  chainparams->legacy_lightning_hrp))) {
 			log_broken(ld->log, "IGNORING foreign currency channel event (%s, currency %s)",
 				   ev->tag, ev->currency);
 			continue;

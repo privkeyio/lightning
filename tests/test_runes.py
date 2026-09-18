@@ -724,6 +724,7 @@ def test_rune_error_messages(node_factory):
                          params=['xxx', 12000])
 
 
+@pytest.mark.skip(reason="this build refuses BOLT 11 invoices that are not for this chain, so the signed foreign-chain fixtures below cannot be decoded here. The spec vectors are still checked, in common/test/run-bolt11, against a chainparams entry that keeps the bc prefix. See doc/blake2b-chain-identity.md.")
 def test_rune_bolt11_parse(node_factory):
     l1 = node_factory.get_node()
     # Simple

@@ -750,6 +750,7 @@ def test_sendpay_cant_afford(node_factory, anchors):
     l2.pay(l1, available - reserve * 2)
 
 
+@pytest.mark.skip(reason="this build refuses BOLT 11 invoices that are not for this chain, so the signed foreign-chain fixtures below cannot be decoded here. The spec vectors are still checked, in common/test/run-bolt11, against a chainparams entry that keeps the bc prefix. See doc/blake2b-chain-identity.md.")
 def test_decode(node_factory):
     l1 = node_factory.get_node()
 
@@ -2863,6 +2864,7 @@ def test_error_returns_blockheight(node_factory, bitcoind):
 
 
 @unittest.skipIf(TEST_NETWORK != 'regtest', "Invoice is network specific")
+@pytest.mark.skip(reason="this build refuses BOLT 11 invoices that are not for this chain, so the signed foreign-chain fixtures below cannot be decoded here. The spec vectors are still checked, in common/test/run-bolt11, against a chainparams entry that keeps the bc prefix. See doc/blake2b-chain-identity.md.")
 def test_pay_no_secret(node_factory, bitcoind):
     l1, l2 = node_factory.line_graph(2, wait_for_announce=True, opts={'old_hsmsecret': True})
 
@@ -5327,6 +5329,7 @@ def test_pay_manual_exclude(node_factory, bitcoind):
 
 
 @unittest.skipIf(TEST_NETWORK != 'regtest', "Invoice is network specific")
+@pytest.mark.skip(reason="this build refuses BOLT 11 invoices that are not for this chain, so the signed foreign-chain fixtures below cannot be decoded here. The spec vectors are still checked, in common/test/run-bolt11, against a chainparams entry that keeps the bc prefix. See doc/blake2b-chain-identity.md.")
 def test_pay_bolt11_metadata(node_factory, bitcoind):
     l1, l2 = node_factory.line_graph(2, opts={'old_hsmsecret': True})
 

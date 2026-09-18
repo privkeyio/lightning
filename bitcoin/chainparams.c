@@ -28,7 +28,9 @@ static u8 liquid_regtest_fee_asset[] = {
 const struct chainparams networks[] = {
     {.network_name = "bitcoin",
      .onchain_hrp = "bc",
-     .lightning_hrp = "bc",
+     .lightning_hrp = "blake",
+     .legacy_lightning_hrp = "bc",
+     .blake2b_activation_height = 961640,
      .bip70_name = "main",
      .genesis_blockhash = {{{.u.u8 = {0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3,
 				      0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63,
@@ -61,7 +63,8 @@ const struct chainparams networks[] = {
      .is_elements = false},
     {.network_name = "regtest",
      .onchain_hrp = "bcrt",
-     .lightning_hrp = "bcrt",
+     .lightning_hrp = "blakert",
+     .legacy_lightning_hrp = "bcrt",
      .bip70_name = "regtest",
      .genesis_blockhash = {{{.u.u8 = {0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b,
 				      0x59, 0xca, 0xaf, 0x12, 0x60, 0x43, 0xeb,
@@ -87,7 +90,8 @@ const struct chainparams networks[] = {
      .is_elements = false},
     {.network_name = "signet",
      .onchain_hrp = "tb",
-     .lightning_hrp = "tbs",
+     .lightning_hrp = "tbsblake",
+     .legacy_lightning_hrp = "tbs",
      .bip70_name = "signet",
      // 00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6
      .genesis_blockhash = {{{.u.u8 = {0xf6, 0x1e, 0xee, 0x3b, 0x63, 0xa3, 0x80,
@@ -138,7 +142,8 @@ const struct chainparams networks[] = {
      .is_elements = false},
     {.network_name = "testnet4",
      .onchain_hrp = "tb",
-     .lightning_hrp = "tb",
+     .lightning_hrp = "tblake",
+     .legacy_lightning_hrp = "tb",
      .bip70_name = "testnet4",
      // 00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043
      .genesis_blockhash = {{{.u.u8 = {0x43, 0xf0, 0x8b, 0xda, 0xb0, 0x50, 0xe3,
@@ -236,11 +241,33 @@ const struct chainparams *chainparams_by_chainhash(const struct bitcoin_blkid *c
 
 const struct chainparams *chainparams_by_lightning_hrp(const char *lightning_hrp)
 {
+	/* A prefix in use today always wins, and the two passes are why:
+	 * testnet3 still uses "tb", which is also what testnet4 carried before
+	 * it moved, so a single pass would hand "tb" to whichever came first
+	 * in the table. */
 	for (size_t i = 0; i < ARRAY_SIZE(networks); i++) {
 		if (streq(lightning_hrp, networks[i].lightning_hrp)) {
 			return &networks[i];
 		}
 	}
+
+	/* Then the prefix a network used to carry, so that an invoice stored
+	 * before the change still decodes. The bookkeeper reads its own
+	 * historical records this way, with no chain check at all, and
+	 * refusing them loses accounting data for every payment made before
+	 * the upgrade.
+	 *
+	 * This does not make such an invoice payable. A caller that cares
+	 * which chain an invoice is for passes must_be_chain, and that path
+	 * compares against lightning_hrp directly rather than coming through
+	 * here. */
+	for (size_t i = 0; i < ARRAY_SIZE(networks); i++) {
+		if (networks[i].legacy_lightning_hrp
+		    && streq(lightning_hrp, networks[i].legacy_lightning_hrp)) {
+			return &networks[i];
+		}
+	}
+
 	return NULL;
 }
 

@@ -150,8 +150,8 @@ def check_coin_moves(n, account_id, expected_moves, chainparams):
             raise ValueError(f'node_id not: {mv}')
         if mv['timestamp'] <= 0:
             raise ValueError(f'timestamp invalid: {mv}')
-        if mv['coin_type'] != chainparams['bip173_prefix']:
-            raise ValueError(f'coin_type not {chainparams["bip173_prefix"]}: {mv}')
+        if mv['coin_type'] != chainparams['lightning_hrp']:
+            raise ValueError(f'coin_type not {chainparams["lightning_hrp"]}: {mv}')
         # chain moves should have blockheights
         if mv['type'] == 'chain_mvt' and mv['account_id'] != 'external' and 'blockheight' not in mv:
             raise ValueError(f'blockheight not set: {mv}')

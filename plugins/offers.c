@@ -577,6 +577,32 @@ static bool tok_pull(const char *buffer, jsmntok_t *tok, const char *lowerstr)
 	return true;
 }
 
+/* Pull "ln" plus the prefix of any network this build knows, and the prefix a
+ * network carried before this chain took one of its own, so that an invoice
+ * for the chain that did not upgrade is still recognised as an invoice and
+ * refused with a reason rather than falling through as something unknown.
+ *
+ * Longest first, so that a prefix which extends another (blakert over blake,
+ * bcrt over bc) is tried before the shorter one swallows it.
+ */
+static bool tok_pull_bolt11_prefix(const char *buffer, jsmntok_t *tok)
+{
+	static const char *names[] = {
+		"regtest", "signet", "testnet4", "testnet", "bitcoin",
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(names); i++) {
+		const struct chainparams *p = chainparams_for_network(names[i]);
+		if (tok_pull(buffer, tok,
+			     tal_fmt(tmpctx, "ln%s", p->lightning_hrp)))
+			return true;
+		if (p->legacy_lightning_hrp
+		    && tok_pull(buffer, tok,
+				tal_fmt(tmpctx, "ln%s", p->legacy_lightning_hrp)))
+			return true;
+	}
+	return false;
+}
+
 static enum likely_type guess_type(const char *buffer, const jsmntok_t *tok)
 {
 	jsmntok_t tok_copy = *tok;
@@ -605,10 +631,7 @@ static enum likely_type guess_type(const char *buffer, const jsmntok_t *tok)
 	 *    is the 'social' convention of a payment unit -- in the
 	 *    case of Bitcoin the unit is 'bitcoin' NOT satoshis.
 	 */
-	if (tok_pull(buffer, &tok_copy, "lnbcrt")
-	    || tok_pull(buffer, &tok_copy, "lnbc")
-	    || tok_pull(buffer, &tok_copy, "lntbs")
-	    || tok_pull(buffer, &tok_copy, "lntb")) {
+	if (tok_pull_bolt11_prefix(buffer, &tok_copy)) {
 		/* Now find last '1', which separates hrp from data */
 		const char *delim = memrchr(buffer + tok_copy.start, '1',
 					    tok_copy.end - tok_copy.start);

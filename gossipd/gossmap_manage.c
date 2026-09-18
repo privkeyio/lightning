@@ -669,6 +669,22 @@ const char *gossmap_manage_channel_announcement(const tal_t *ctx,
 	if (!bitcoin_blkid_eq(&chain_hash, &chainparams->genesis_blockhash))
 		return NULL;
 
+	/* BOLT #7:
+	 *   - if the `short_channel_id`'s block height is below the BLAKE2b
+	 *     activation, 961,640:
+	 *     - MUST ignore the message: that funding output predates the
+	 *       change of proof of work and so exists for nodes that did not
+	 *       upgrade too, whose spends this receiver does not see.
+	 *
+	 * The chain_hash check above cannot do this. Both chains carry the
+	 * genesis hash they share, so it does not tell them apart; it only
+	 * tells either of them from some third chain.
+	 */
+	if (chainparams->blake2b_activation_height != 0
+	    && short_channel_id_blocknum(scid)
+	    < chainparams->blake2b_activation_height)
+		return NULL;
+
 	/* Immediately discard claims of ancient channels */
 	if (short_channel_id_blocknum(scid) < chainparams->when_lightning_became_cool)
 		return tal_fmt(ctx, "Unknown UTXO %s", fmt_short_channel_id(tmpctx, scid));

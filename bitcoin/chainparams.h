@@ -17,6 +17,15 @@ struct chainparams {
 	 */
 	const char *onchain_hrp;
 	const char *lightning_hrp;
+	/* The invoice prefix this network had before the BLAKE2b chain took
+	 * one of its own (doc/blake2b-chain-identity.md), or NULL. Decoding
+	 * still accepts it, and legacy bookkeeper events were written with
+	 * it. */
+	const char *legacy_lightning_hrp;
+	/* The height at which this chain changed its proof of work, or 0 if
+	 * it never did. A channel funded below it exists for nodes that did
+	 * not upgrade too: see the gossip rule in gossmap_manage.c. */
+	const u32 blake2b_activation_height;
 	/*'bip70_name' is corresponding to the 'chain' field of
 	 * the API 'getblockchaininfo' */
 	const char *bip70_name;

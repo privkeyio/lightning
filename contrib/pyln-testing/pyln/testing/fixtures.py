@@ -854,6 +854,10 @@ def chainparams():
     chainparams = {
         "regtest": {
             "bip173_prefix": "bcrt",
+            # The BOLT 11 prefix, which on this chain is not the address
+            # prefix: addresses are unchanged and invoices are not. See
+            # doc/blake2b-chain-identity.md.
+            "lightning_hrp": "blakert",
             "elements": False,
             "name": "regtest",
             "p2sh_prefix": "2",
@@ -863,6 +867,7 @@ def chainparams():
         },
         "liquid-regtest": {
             "bip173_prefix": "ert",
+            "lightning_hrp": "ert",
             "elements": True,
             "name": "liquid-regtest",
             "p2sh_prefix": "X",

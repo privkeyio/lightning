@@ -282,7 +282,7 @@ def test_xpay_fake_channeld(node_factory, bitcoind, chainparams, slow_mode):
         inv = subprocess.check_output(["devtools/bolt11-cli",
                                        "encode",
                                        n.to_bytes(length=8, byteorder=sys.byteorder).hex() + '01' * 24,
-                                       f"currency={chainparams['bip173_prefix']}",
+                                       f"currency={chainparams['lightning_hrp']}",
                                        f"p={hash_hex}",
                                        f"s={'00' * 32}",
                                        "9=020000",  # option_basic_mpp
@@ -628,7 +628,7 @@ def test_xpay_no_mpp(node_factory, chainparams):
                                           "encode",
                                           # secret for l3
                                           "79893b45d1e57cf2ebf302af91aa52c9e573f638a61a83c6e603a331b53f452c",
-                                          f"currency={chainparams['bip173_prefix']}",
+                                          f"currency={chainparams['lightning_hrp']}",
                                           f"p={no_mpp['payment_hash']}",
                                           f"s={no_mpp['payment_secret']}",
                                           f"d=Paying l3 without mpp",

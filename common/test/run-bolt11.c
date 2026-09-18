@@ -281,6 +281,24 @@ static const u8 **fallbacks(const tal_t *ctx,
 	return addrs;
 }
 
+/* The BOLT 11 spec vectors carry Bitcoin's prefixes. This build's "bitcoin"
+ * network uses "blake" (doc/blake2b-chain-identity.md), so the vectors are
+ * decoded against a copy of the entry that keeps Bitcoin's "bc"; decoding
+ * compares by lightning_hrp and this file compares chain pointers, so the
+ * copy stands in for the real entry throughout. */
+static struct chainparams bitcoin_bc_params;
+
+static const struct chainparams *bitcoin_with_bc_hrp(void)
+{
+	if (!bitcoin_bc_params.network_name) {
+		/* Some members are const, so no struct assignment. */
+		memcpy(&bitcoin_bc_params, chainparams_for_network("bitcoin"),
+		       sizeof(bitcoin_bc_params));
+		bitcoin_bc_params.lightning_hrp = "bc";
+	}
+	return &bitcoin_bc_params;
+}
+
 int main(int argc, char *argv[])
 {
 	struct bolt11 *b11;
@@ -334,7 +352,7 @@ int main(int argc, char *argv[])
 	 * * `357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp`: signature
 	 */
 	b11 = new_bolt11(tmpctx, NULL);
-	b11->chain = chainparams_for_network("bitcoin");
+	b11->chain = bitcoin_with_bc_hrp();
 	b11->timestamp = 1496314658;
 	if (!hex_decode("0001020304050607080900010203040506070809000102030405060708090102",
 			strlen("0001020304050607080900010203040506070809000102030405060708090102"),
@@ -378,7 +396,7 @@ int main(int argc, char *argv[])
 	 */
 	msatoshi = AMOUNT_MSAT(2500 * (1000ULL * 100000000) / 1000000);
 	b11 = new_bolt11(tmpctx, &msatoshi);
-	b11->chain = chainparams_for_network("bitcoin");
+	b11->chain = bitcoin_with_bc_hrp();
 	b11->timestamp = 1496314658;
 	b11->payment_secret = tal(b11, struct secret);
 	memset(b11->payment_secret, 0x11, sizeof(*b11->payment_secret));
@@ -420,7 +438,7 @@ int main(int argc, char *argv[])
 	 */
 	msatoshi = AMOUNT_MSAT(20 * (1000ULL * 100000000) / 1000);
 	b11 = new_bolt11(tmpctx, &msatoshi);
-	b11->chain = chainparams_for_network("bitcoin");
+	b11->chain = bitcoin_with_bc_hrp();
 	b11->timestamp = 1496314658;
 	b11->payment_secret = tal(b11, struct secret);
 	memset(b11->payment_secret, 0x11, sizeof(*b11->payment_secret));
@@ -468,7 +486,7 @@ int main(int argc, char *argv[])
 	 *   */
 	msatoshi = AMOUNT_MSAT(20 * (1000ULL * 100000000) / 1000);
 	b11 = new_bolt11(tmpctx, &msatoshi);
-	b11->chain = chainparams_for_network("bitcoin");
+	b11->chain = bitcoin_with_bc_hrp();
 	b11->timestamp = 1496314658;
 	b11->payment_secret = tal(b11, struct secret);
 	memset(b11->payment_secret, 0x11, sizeof(*b11->payment_secret));
@@ -504,7 +522,7 @@ int main(int argc, char *argv[])
 	/* ALL UPPERCASE is allowed (useful for QR codes) */
 	msatoshi = AMOUNT_MSAT(2500 * (1000ULL * 100000000) / 1000000);
 	b11 = new_bolt11(tmpctx, &msatoshi);
-	b11->chain = chainparams_for_network("bitcoin");
+	b11->chain = bitcoin_with_bc_hrp();
 	b11->timestamp = 1496314658;
 	b11->payment_secret = tal(b11, struct secret);
 	memset(b11->payment_secret, 0x11, sizeof(*b11->payment_secret));
@@ -570,7 +588,7 @@ int main(int argc, char *argv[])
 	 */
 	msatoshi = AMOUNT_MSAT(25 * (1000ULL * 100000000) / 1000);
 	b11 = new_bolt11(tmpctx, &msatoshi);
-	b11->chain = chainparams_for_network("bitcoin");
+	b11->chain = bitcoin_with_bc_hrp();
 	b11->timestamp = 1496314658;
 	if (!hex_decode("0001020304050607080900010203040506070809000102030405060708090102",
 			strlen("0001020304050607080900010203040506070809000102030405060708090102"),
@@ -702,6 +720,32 @@ int main(int argc, char *argv[])
 	/* Needs developer option to munge this into BOLT example order! */
 	dev_bolt11_old_order = true;
 	dev_bolt11_omit_c_value = true;
+	/* An invoice made here carries this chain's prefix, decodes back
+	 * against the real entry, and is refused against Bitcoin's. */
+	{
+		const struct chainparams *blake = chainparams_for_network("bitcoin");
+		struct bolt11 *here = new_bolt11(tmpctx, NULL);
+		char *enc;
+		const char *why;
+
+		assert(streq(blake->lightning_hrp, "blake"));
+		here->chain = blake;
+		here->timestamp = 1496314658;
+		here->receiver_id = node;
+		here->description = "on the BLAKE2b chain";
+		memset(&here->payment_hash, 1, sizeof(here->payment_hash));
+		here->payment_secret = tal(here, struct secret);
+		memset(here->payment_secret, 2, sizeof(*here->payment_secret));
+		enc = bolt11_encode(tmpctx, here, false, test_sign, NULL);
+		assert(strstarts(enc, "lnblake1"));
+		assert(bolt11_decode(tmpctx, enc, NULL, NULL, blake, &why));
+		assert(!bolt11_decode(tmpctx, enc, NULL, NULL,
+				      bitcoin_with_bc_hrp(), &why));
+		assert(strstr(why, "not for"));
+		assert(!bolt11_decode(tmpctx, "lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp9lfyql",
+				      NULL, NULL, blake, &why));
+	}
+
 	badstr = bolt11_encode(tmpctx, b11, false, test_sign, NULL);
 	assert(streq(badstr, "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q4psqqqqqqqqqqqqqqqqsgqtqyx5vggfcsll4wu246hz02kp85x4katwsk9639we5n5yngc3yhqkm35jnjw4len8vrnqnf5ejh0mzj9n3vz2px97evektfm2l6wqccp3y7372"));
 	dev_bolt11_old_order = false;
@@ -716,19 +760,19 @@ int main(int argc, char *argv[])
 	fset->bits[BOLT11_FEATURE] = tal_arr(fset, u8, 0);
 	set_feature_bit(&fset->bits[BOLT11_FEATURE], 8);
 	set_feature_bit(&fset->bits[BOLT11_FEATURE], 14);
-	assert(!bolt11_decode(tmpctx, badstr, fset, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, badstr, fset, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "9: unknown feature bit 100"));
 
 	/* We'd actually allow this if we either (1) don't check, or (2) accept that feature in
 	 * either compulsory or optional forms. */
-	assert(bolt11_decode(tmpctx, badstr, NULL, NULL, NULL, &fail));
+	assert(bolt11_decode(tmpctx, badstr, NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 
 	set_feature_bit(&fset->bits[BOLT11_FEATURE], 100);
-	assert(bolt11_decode(tmpctx, badstr, fset, NULL, NULL, &fail));
+	assert(bolt11_decode(tmpctx, badstr, fset, NULL, bitcoin_with_bc_hrp(), &fail));
 
 	clear_feature_bit(fset->bits[BOLT11_FEATURE], 100);
 	set_feature_bit(&fset->bits[BOLT11_FEATURE], 101);
-	assert(bolt11_decode(tmpctx, badstr, fset, NULL, NULL, &fail));
+	assert(bolt11_decode(tmpctx, badstr, fset, NULL, bitcoin_with_bc_hrp(), &fail));
 
 	/* FIXME: quoting description in here causes a spurious mismatch! */
 	/* BOLT #11:
@@ -769,7 +813,7 @@ int main(int argc, char *argv[])
 	 */
 	msatoshi = AMOUNT_MSAT(967878534);
 	b11 = new_bolt11(tmpctx, &msatoshi);
-	b11->chain = chainparams_for_network("bitcoin");
+	b11->chain = bitcoin_with_bc_hrp();
 	b11->timestamp = 1572468703;
 	b11->expiry = 604800;
 	b11->min_final_cltv_expiry = 10;
@@ -827,7 +871,7 @@ int main(int argc, char *argv[])
 	 */
 	msatoshi = AMOUNT_MSAT(1000000000);
 	b11 = new_bolt11(tmpctx, &msatoshi);
-	b11->chain = chainparams_for_network("bitcoin");
+	b11->chain = bitcoin_with_bc_hrp();
 	b11->timestamp = 1496314658;
 	if (!hex_decode("0001020304050607080900010203040506070809000102030405060708090102",
 			strlen("0001020304050607080900010203040506070809000102030405060708090102"),
@@ -852,101 +896,101 @@ int main(int argc, char *argv[])
 	 * > ### Bech32 checksum is invalid.
 	 * > lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt
 	 */
-	assert(!bolt11_decode(tmpctx, "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "Bad bech32 string"));
 
 	/* BOLT #11:
 	 * > ### Malformed bech32 string (no 1)
 	 * > pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny
 	 */
-	assert(!bolt11_decode(tmpctx, "pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "Bad bech32 string"));
 
 	/* BOLT #11:
 	 * > ### Malformed bech32 string (mixed case)
 	 * > LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny
 	 */
-	assert(!bolt11_decode(tmpctx, "LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "Bad bech32 string"));
 
 	/* BOLT #11:
 	 * > ### Signature is not recoverable.
 	 * > lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2
 	 */
-	assert(!bolt11_decode(tmpctx, "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "signature recovery failed"));
 
 	/* BOLT #11:
 	 * > ### String is too short.
 	 * > lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6na6hlh
 	 */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6na6hlh", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6na6hlh", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 
 	/* BOLT #11:
 	 * > ### Invalid multiplier
 	 * > lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqrrzc4cvfue4zp3hggxp47ag7xnrlr8vgcmkjxk3j5jqethnumgkpqp23z9jclu3v0a7e0aruz366e9wqdykw6dxhdzcjjhldxq0w6wgqcnu43j
 	 */
-	assert(!bolt11_decode(tmpctx, "lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqrrzc4cvfue4zp3hggxp47ag7xnrlr8vgcmkjxk3j5jqethnumgkpqp23z9jclu3v0a7e0aruz366e9wqdykw6dxhdzcjjhldxq0w6wgqcnu43j", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqrrzc4cvfue4zp3hggxp47ag7xnrlr8vgcmkjxk3j5jqethnumgkpqp23z9jclu3v0a7e0aruz366e9wqdykw6dxhdzcjjhldxq0w6wgqcnu43j", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "Invalid amount postfix 'x'"));
 
 	/* BOLT #11:
 	 * > ### Invalid sub-millisatoshi precision.
 	 * > lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x
 	 */
-	assert(!bolt11_decode(tmpctx, "lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "Invalid sub-millisatoshi amount '2500000001p'"));
 
 	/* BOLT #11:
 	 * > ### Missing required `s` field.
 	 * > lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qrsgq7ea976txfraylvgzuxs8kgcw23ezlrszfnh8r6qtfpr6cxga50aj6txm9rxrydzd06dfeawfk6swupvz4erwnyutnjq7x39ymw6j38gp49qdkj
 	 */
-	assert(!bolt11_decode(tmpctx, "lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qrsgq7ea976txfraylvgzuxs8kgcw23ezlrszfnh8r6qtfpr6cxga50aj6txm9rxrydzd06dfeawfk6swupvz4erwnyutnjq7x39ymw6j38gp49qdkj", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qrsgq7ea976txfraylvgzuxs8kgcw23ezlrszfnh8r6qtfpr6cxga50aj6txm9rxrydzd06dfeawfk6swupvz4erwnyutnjq7x39ymw6j38gp49qdkj", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "Missing required payment secret (s field)"));
 
 	/* Invalid UTF-8 tests. */
 	/* Description: Bad UTF-8: 0xC0" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrqqcqpjkkrsmq07c4ht7qgjdmf2a8savsafcy8lqn4av4gs80gz88ff2y780tdcve7sxp80kd4vk7hajt5mskcsegz2qfll4jywfwhap2q2n6cqyz5tv4", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrqqcqpjkkrsmq07c4ht7qgjdmf2a8savsafcy8lqn4av4gs80gz88ff2y780tdcve7sxp80kd4vk7hajt5mskcsegz2qfll4jywfwhap2q2n6cqyz5tv4", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Description: Bad UTF-8: 0xC020" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrqzqcqpj30cjfyveywx7wk4gl45ua4g3hcsd9hp0qqtudua0529gfd5cp7kytnttu6dw0yp24v9aefvxamsdvrks9rsqr53ukrexf0vqp8fffusql6q3x4", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrqzqcqpj30cjfyveywx7wk4gl45ua4g3hcsd9hp0qqtudua0529gfd5cp7kytnttu6dw0yp24v9aefvxamsdvrks9rsqr53ukrexf0vqp8fffusql6q3x4", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Description: Bad UTF-8: 0xE0" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrsqcqpjw6tys4p5m7nxw8ykl6pfqvms4pcnjky9san7rvxvyg9vf9symke49rqfrqdcrtn33qnxpt738crh3arm2dqwqkk00324me6dzcqfrdcpj2echr", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrsqcqpjw6tys4p5m7nxw8ykl6pfqvms4pcnjky9san7rvxvyg9vf9symke49rqfrqdcrtn33qnxpt738crh3arm2dqwqkk00324me6dzcqfrdcpj2echr", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Description: Bad UTF-8: 0xE0A0" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrs2qcqpjmhm55ful0ms5m77rvv2mkld2s9cx2d9syyva5gwc5y7xdtsjwxl8f9nwdftdc64fqwgczxmn00zftry9wj9gsw5tqm9m4nwr75sw9dsq85re9l", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrs2qcqpjmhm55ful0ms5m77rvv2mkld2s9cx2d9syyva5gwc5y7xdtsjwxl8f9nwdftdc64fqwgczxmn00zftry9wj9gsw5tqm9m4nwr75sw9dsq85re9l", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Description: Bad UTF-8: 0xE0A020" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrs2qgqcqpjwm32zdhpftqqp03lsmj27uf5y5pj9e9e8wc2n6nywe5ckwm95wq5z5k2drytjrn4wdwym73qr877u7uajvs88t78xnu2tltt9nsftlqpetnz7k", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrs2qgqcqpjwm32zdhpftqqp03lsmj27uf5y5pj9e9e8wc2n6nywe5ckwm95wq5z5k2drytjrn4wdwym73qr877u7uajvs88t78xnu2tltt9nsftlqpetnz7k", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Description: Bad UTF-8: 0xF0" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrcqcqpjg8ca44f2u2vw4df6zvata2p23v9dyzfjyyremz2f9t0xuzrzznrqcqm4pkmh36vj96qg0v93y0jvrp0u2607lgmc6gdes5lvpr42x9qptekthk", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrcqcqpjg8ca44f2u2vw4df6zvata2p23v9dyzfjyyremz2f9t0xuzrzznrqcqm4pkmh36vj96qg0v93y0jvrp0u2607lgmc6gdes5lvpr42x9qptekthk", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Description: Bad UTF-8: 0xF0A0" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrc2qcqpj5pj85e6uazujup7pv8n7kwg36lll3uhfguxlwydzznll4nm8ntsy72shgrq042d7md02whd3yzx72t7sf83cah5lfk3xf84ucvt2f8gqc7u33r", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrc2qcqpj5pj85e6uazujup7pv8n7kwg36lll3uhfguxlwydzznll4nm8ntsy72shgrq042d7md02whd3yzx72t7sf83cah5lfk3xf84ucvt2f8gqc7u33r", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Description: Bad UTF-8: 0xF0A020" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrc2pgqcqpjt284ywasepdes2akvekh7anra3txezksmdmxav84a5nhzdkx84jrmwydasl6ynydse66pnl9mh0wd6t9fk5j8vftuf0hwt2pt6rrqccp4qamj4", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrc2pgqcqpjt284ywasepdes2akvekh7anra3txezksmdmxav84a5nhzdkx84jrmwydasl6ynydse66pnl9mh0wd6t9fk5j8vftuf0hwt2pt6rrqccp4qamj4", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Description: Bad UTF-8: 0xF0A0A0" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrc2pgqcqpjt284ywasepdes2akvekh7anra3txezksmdmxav84a5nhzdkx84jrmwydasl6ynydse66pnl9mh0wd6t9fk5j8vftuf0hwt2pt6rrqccp4qamj4", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrc2pgqcqpjt284ywasepdes2akvekh7anra3txezksmdmxav84a5nhzdkx84jrmwydasl6ynydse66pnl9mh0wd6t9fk5j8vftuf0hwt2pt6rrqccp4qamj4", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Description: Bad UTF-8: 0xF0A0A020" */
-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqcgfskggz423rz6wp6yrc2pgpqcqpjmyveg8ccprmlssyae9l33an2m0qz3qcfcavt7wdzrdqyx5q7hqmp7ne08uvwlwaaqwt4lxgmjh5gce3hv0m8tzwkzfshpdv9d5p9pcsp5v86r0", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqcgfskggz423rz6wp6yrc2pgpqcqpjmyveg8ccprmlssyae9l33an2m0qz3qcfcavt7wdzrdqyx5q7hqmp7ne08uvwlwaaqwt4lxgmjh5gce3hv0m8tzwkzfshpdv9d5p9pcsp5v86r0", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "d: invalid utf8"));
 
 	/* Invalid private routes. */
 	/* Invalid route pubkey. */
-	assert(!bolt11_decode(tmpctx, "lnbc1qqygh9qpp50qzxqqqqqpqqrzjcqqqqqqqqqqqqqqqqqqqqqqqqqqcqpjqqqqqqrzjcqqqqqcqpjqqqqqqqqqqqqqqqqqqqqqqqqqcq9qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqdqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqlqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqlqqqqqqqqqqqqqqqqqqqqqqq4murj7", NULL, NULL, NULL, &fail));
+	assert(!bolt11_decode(tmpctx, "lnbc1qqygh9qpp50qzxqqqqqpqqrzjcqqqqqqqqqqqqqqqqqqqqqqqqqqcqpjqqqqqqrzjcqqqqqcqpjqqqqqqqqqqqqqqqqqqqqqqqqqcq9qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqdqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqlqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqlqqqqqqqqqqqqqqqqqqqqqqq4murj7", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
 	assert(streq(fail, "r: hop 0 pubkey invalid"));
 
 	/* FIXME: Test the others! */

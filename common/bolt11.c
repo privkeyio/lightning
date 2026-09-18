@@ -803,9 +803,32 @@ struct bolt11 *bolt11_decode_nosig(const tal_t *ctx, const char *str,
 					   must_be_chain->network_name);
 	} else {
 		b11->chain = chainparams_by_lightning_hrp(prefix + 2);
-		if (!b11->chain)
+		if (!b11->chain) {
+			/* On a chain that took a new prefix, the old one is
+			 * still the commonest thing a user will paste, so
+			 * say what it is rather than that we do not know
+			 * it.  "Unknown chain bc" is true and unhelpful.
+			 *
+			 * chainparams is checked because decoding does not
+			 * require a configured network: the daemon always has
+			 * one, but the fuzz target for this function does not,
+			 * and dereferencing it there is a null read. */
+			if (chainparams
+			    && chainparams->legacy_lightning_hrp
+			    && streq(prefix + 2,
+				     chainparams->legacy_lightning_hrp))
+				return decode_fail(b11, fail,
+						   "Prefix %s is the SHA256d"
+						   " chain's; this node"
+						   " follows %s, whose prefix"
+						   " is %s",
+						   prefix + 2,
+						   chainparams->network_name,
+						   chainparams->lightning_hrp);
+
 			return decode_fail(b11, fail, "Unknown chain %s",
 					   prefix + 2);
+		}
 	}
 
 	/* BOLT #11:

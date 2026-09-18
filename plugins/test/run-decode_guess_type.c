@@ -262,6 +262,11 @@ int main(int argc, char *argv[])
 		{ "CLNEMERG1FOO",      LIKELY_EMERGENCY_RECOVER },
 
 		/* BOLT-11 (lower + upper, amount + no amount) */
+		{ "lnblake1qqqqqq",    LIKELY_BOLT11 },
+		{ "lnblake10u1qqqqqq", LIKELY_BOLT11 },
+		{ "lnblakert1deadbeef", LIKELY_BOLT11 },
+		{ "lntbsblake1qqqqqq", LIKELY_BOLT11 },
+		{ "lnblakex1qqqq",     LIKELY_OTHER }, /* bad amount */
 		{ "lnbc1qqqqqq",       LIKELY_BOLT11 },
 		{ "LNBC1QQQQQQ",       LIKELY_BOLT11 },
 		{ "lnbc10u1qqqqqq",    LIKELY_BOLT11 },
