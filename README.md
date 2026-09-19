@@ -1,23 +1,23 @@
 # Core Lightning with BLAKE2b proof of work
 
-This is an unofficial fork of [Core Lightning](https://github.com/ElementsProject/lightning) that follows the BLAKE2b proof-of-work hardfork of Bitcoin. It is not affiliated with the Core Lightning project. Upstream is still on the pre-fork rules, so use it instead if that is what you want.
+This is an unofficial fork of [Core Lightning](https://github.com/ElementsProject/lightning) that follows the BLAKE2b proof-of-work hardfork of Bitcoin. It is not affiliated with the Core Lightning project. Core Lightning is still on the SHA256d rules, so use it instead if that is what you want.
 
-> **Not audited. Use at your own risk, and no warranty of any kind, see the [BSD-MIT license](LICENSE).** It holds keys and funds, it changes how transactions are signed, and the feature numbers it uses on the wire are provisional. Read *Before opening channels* below. Everything under the divider is upstream's documentation and describes Core Lightning rather than this fork.
+> **Not audited. Use at your own risk, and no warranty of any kind, see the [BSD-MIT license](LICENSE).** It holds keys and funds, it changes how transactions are signed, and the feature numbers it uses on the wire are provisional. Read *Before opening channels* below. Everything under the divider is Core Lightning's documentation and describes Core Lightning rather than this fork.
 
-## What differs from upstream
+## What differs from Core Lightning
 
 - **BLAKE2b block headers.** Parses the 164 byte v2 header and takes its BLAKE2b hash as the block id. A header announces itself through the top bit of its version word, so no activation height is compiled in and nothing has to be configured per network. Without this a node cannot parse the activation block and stops there.
-- **Unified signatures.** Wallet transactions and new channels are signed with the fork's opt-in `SIGHASH_UNIFIED` digest, so a channel funded past activation from post-activation coins is signed in a way the pre-fork rules reject, and cannot be replayed on the SHA256d chain. Built on [connorslab's](https://github.com/connorslab/lightning) unified-sigs work.
-- **A required peer feature bit.** The node advertises `option_blake2b` as compulsory, so it will not connect to a Lightning node still on the pre-fork rules.
+- **Unified signatures.** Wallet transactions and new channels are signed with the fork's opt-in `SIGHASH_UNIFIED` digest, so a channel funded past activation from post-activation coins is signed in a way the SHA256d rules reject, and cannot be replayed on the SHA256d chain. Built on [connorslab's](https://github.com/connorslab/lightning) unified-sigs work.
+- **A required peer feature bit.** The node advertises `option_blake2b` as compulsory, so it will not connect to a Lightning node still on the SHA256d rules.
 - **Downgrades are refused.** A build without unified signing computes a different signature hash and could not close the channels this one opens, so `lightning-downgrade` stops before touching the database.
 
 ## Before opening channels
 
-The required feature bit means you **cannot cooperatively close a channel opened before activation** with a counterparty still on the pre-fork rules.
+The required feature bit means you **cannot cooperatively close a channel opened before activation** with a counterparty still on the SHA256d rules.
 
 The feature numbers are provisional. Bits 68 and 70 are not registered BOLT allocations and are expected to move; an alternative proposal signals odd in `init` with numbers at or above 32768, and the two are mutually exclusive. Channels opened under the current numbering may have to be closed and reopened once the numbers are settled.
 
-Fund channels only from coins received past activation. A channel funded from a pre-fork UTXO has a funding transaction valid under both rule sets, which reopens the exposure unified signing exists to close.
+Fund channels only from coins received past activation. A channel funded from a pre-activation UTXO has a funding transaction valid under both rule sets, which reopens the exposure unified signing exists to close.
 
 ## Activation
 
@@ -26,11 +26,11 @@ Fund channels only from coins received past activation. A channel funded from a 
 | mainnet | 961,640 |
 | testnet4 | 150,308 |
 
-These are the activation heights. Block parsing does not use them: it keys off the header itself, so it needs no update if the heights move. They are compiled in for gossip alone. Announcements for channels funded before activation are ignored, since that funding output exists under the pre-fork rules too and its spend may happen where this node cannot see it. The same height bounds where the seeker probes for short channel ids.
+These are the activation heights. Block parsing does not use them: it keys off the header itself, so it needs no update if the heights move. They are compiled in for gossip alone. Announcements for channels funded before activation are ignored, since that funding output exists under the SHA256d rules too and its spend may happen where this node cannot see it. The same height bounds where the seeker probes for short channel ids.
 
 ## Building
 
-Unchanged from upstream, see [Getting Started](#getting-started) below. Clone this repository rather than upstream's:
+Unchanged from Core Lightning, see [Getting Started](#getting-started) below. Clone this repository rather than Core Lightning's:
 
 ```bash
 git clone https://github.com/privkeyio/lightning.git
