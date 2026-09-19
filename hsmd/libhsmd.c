@@ -552,12 +552,14 @@ static void hsm_key_for_utxo(struct privkey *privkey, struct pubkey *pubkey,
 }
 
 /* Explicit unified PSBT requests never fall back to libwally's legacy digest. */
+static void check_overgrind(const struct bitcoin_signature *sig);
+
 static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 				      const struct hsm_utxo *utxo,
 				      const struct privkey *key,
 				      const struct pubkey *pubkey)
 {
-	struct bitcoin_tx *tx = bitcoin_tx_with_psbt(tmpctx, psbt);
+	struct bitcoin_tx *tx;
 	struct unified_sighash_input exec = { .script_type = 1 };
 	struct sha256_double digest;
 	struct bitcoin_signature sig;
@@ -594,8 +596,18 @@ static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 			return false;
 		exec.script_code = p2wpkh_scriptcode(tmpctx, pubkey);
 	}
-	if (!bitcoin_tx_unified_sighash(tx, i, hash_type, &exec, &digest.sha))
+	/* One clone of the whole transaction per input, freed here rather
+	 * than left on tmpctx: that context lives until the request is
+	 * answered, so keeping them made a withdrawal quadratic in memory
+	 * and a few hundred inputs was enough to exhaust the machine. */
+	tx = bitcoin_tx_with_psbt(NULL, psbt);
+	if (!tx)
 		return false;
+	if (!bitcoin_tx_unified_sighash(tx, i, hash_type, &exec, &digest.sha)) {
+		tal_free(tx);
+		return false;
+	}
+	tal_free(tx);
 	if (taproot) {
 		u8 tweaked[32], signature[65];
 		bool ok;
@@ -616,6 +628,10 @@ static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 	}
 	sig.sighash_type = hash_type;
 	sign_hash(key, &digest, &sig.s);
+	/* The legacy path reports this below; the unified one returns before
+	 * reaching it, which left --dev-warn-on-overgrind silently dead for
+	 * wallet inputs and the short-signature case indistinguishable. */
+	check_overgrind(&sig);
 	return psbt_input_set_signature(psbt, i, pubkey, &sig);
 }
 
@@ -2536,6 +2552,17 @@ void bip86_key(struct privkey *privkey, struct pubkey *pubkey, u32 index)
 					privkey->secret.data))
 		hsmd_status_failed(STATUS_FAIL_INTERNAL_ERROR,
 			      "BIP86 pubkey %u create failed", index);
+}
+
+void hsmd_secrets_free(void)
+{
+	/* Clear this first: the dispatcher's guard uses it, and without it a
+	 * later request would read a NULL seed.  tal_bytelen(NULL) is 0, so
+	 * use_bip86_derivation() would quietly say no and derive the legacy
+	 * way from the still-cached secretstuff.bip32, which is worse than
+	 * failing. */
+	initialized = false;
+	secretstuff.bip32_seed = tal_free(secretstuff.bip32_seed);
 }
 
 u8 *hsmd_init(const u8 *secret_data, size_t secret_len, const u64 hsmd_version,

@@ -19,7 +19,10 @@ def assert_unified_witnesses(bitcoind, txid, minimum):
             if len(raw) == 65 or (69 <= len(raw) <= 73 and raw[0] == 0x30):
                 signatures.append(raw)
     assert len(signatures) >= minimum
-    assert all(s[-1] & 0x20 for s in signatures)
+    # SIGHASH_UNIFIED is added to the hash type that would otherwise apply,
+    # so SIGHASH_ALL becomes 0x21, and the anchors HTLC form 0xa3.
+    for sig in signatures:
+        assert sig[-1] in (0x21, 0xa3), '0x%02x' % sig[-1]
     return tx
 
 
@@ -215,9 +218,10 @@ def test_unified_onchain_htlc_success(node_factory, bitcoind):
         ('OUR_HTLC_SUCCESS_TX', 'OUR_UNILATERAL/THEIR_HTLC'),
         ('OUR_DELAYED_RETURN_TO_WALLET', 'OUR_UNILATERAL/DELAYED_OUTPUT_TO_US'))
 
-    bitcoind.generate_block(1, wait_for_mempool=txid1)
+    # An RBF changes the txid, so assert against the one actually mined.
+    mined1 = b.mine_txid_or_rbf(txid1)
     # Claiming with the preimage must carry the opt-in hash type.
-    assert_unified_witnesses(bitcoind, txid1, 1)
+    assert_unified_witnesses(bitcoind, mined1, 1)
     a.daemon.wait_for_log('THEIR_UNILATERAL/OUR_HTLC gave us preimage')
     err = q.get(timeout=TIMEOUT)
     assert err is None
@@ -226,8 +230,8 @@ def test_unified_onchain_htlc_success(node_factory, bitcoind):
     _, txid3, _ = b.wait_for_onchaind_tx('OUR_DELAYED_RETURN_TO_WALLET',
                                          'OUR_HTLC_SUCCESS_TX/DELAYED_OUTPUT_TO_US')
     bitcoind.generate_block(3)
-    bitcoind.generate_block(1, wait_for_mempool=txid2)
-    assert_unified_witnesses(bitcoind, txid2, 1)
+    mined2 = b.mine_txid_or_rbf(txid2)
+    assert_unified_witnesses(bitcoind, mined2, 1)
     bitcoind.generate_block(3)
     mined = b.mine_txid_or_rbf(txid3)
     assert_unified_witnesses(bitcoind, mined, 1)

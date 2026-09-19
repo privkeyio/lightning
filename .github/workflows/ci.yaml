@@ -17,7 +17,7 @@ env:
   SLOW_MACHINE: 1
   # This is for the pytest-trackflaky:
   # CI_SERVER_URL: "http://35.239.136.52:3170"
-  PYTEST_OPTS_BASE: "-vvv --junit-xml=report.xml --timeout=1800 --durations=10 --maxfail=1"
+  PYTEST_OPTS_BASE: "-vvv --junit-xml=report.xml --timeout=1800 --durations=10"
   TEST_LOG_IGNORE_ERRORS: "1"
   SCCACHE_GHA_ENABLED: "true"
 
@@ -346,7 +346,7 @@ jobs:
         env:
           PKG_CONFIG_PATH: /usr/lib/i386-linux-gnu/pkgconfig
         run: |
-          ./configure --disable-rust --enable-debugbuild CC="gcc -m32" 
+          ./configure --disable-rust --enable-debugbuild CC="gcc -m32"
           uv run make -j $(nproc) all-programs
 
   check-fuzz:
@@ -446,8 +446,8 @@ jobs:
         run: |
           mkdir old-cln
           cd old-cln
-          wget https://github.com/ElementsProject/lightning/releases/download/v26.04/clightning-v26.04-ubuntu-24.04-amd64.tar.xz
-          tar -xaf clightning-v26.04-ubuntu-24.04-amd64.tar.xz
+          wget https://github.com/ElementsProject/lightning/releases/download/v26.06/clightning-v26.06-ubuntu-24.04-amd64.tar.xz
+          tar -xaf clightning-v26.06-ubuntu-24.04-amd64.tar.xz
 
       - name: Switch network
         if: ${{ matrix.TEST_NETWORK == 'liquid-regtest' }}
@@ -466,6 +466,7 @@ jobs:
           LIGHTNINGD_POSTGRES_NO_VACUUM: 1
           VALGRIND: ${{ matrix.VALGRIND }}
           PREV_LIGHTNINGD: old-cln/usr/bin/lightningd
+          CLN_PREV_VERSION: v26.06
           PYTEST_OPTS: ${{ env.PYTEST_OPTS_BASE }}
         run: |
           env
@@ -707,7 +708,14 @@ jobs:
           TEST_DEBUG: 1
           PYTEST_OPTS: ${{ env.PYTEST_OPTS_BASE }} --test-group-random-seed=42
         run: |
-          VALGRIND=1 sg wireshark "uv run eatmydata pytest tests/ -n $(($(nproc) + 1)) ${PYTEST_OPTS} --test-group=${{ matrix.GROUP }} --test-group-count=${{ matrix.GROUP_COUNT }}"
+          # -n $(nproc) rather than $(nproc)+1: one fewer parallel node-cluster
+          # keeps peak RSS under the 16GB hosted-runner ceiling.
+          VALGRIND=1 sg wireshark "uv run eatmydata pytest tests/ -n $(nproc) ${PYTEST_OPTS} --test-group=${{ matrix.GROUP }} --test-group-count=${{ matrix.GROUP_COUNT }}"
+      - name: Report OOM kills
+        if: failure()
+        run: |
+          echo "=== dmesg (OOM) ==="; sudo dmesg | grep -i -E 'oom|out of memory|killed process' || echo "no OOM lines in dmesg"
+          echo "=== kernel log ==="; sudo journalctl -k --no-pager | tail -n 50 || true
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
@@ -769,9 +777,16 @@ jobs:
 
       - name: Test
         env:
-          PYTEST_OPTS: ${{ env.PYTEST_OPTS_BASE }} --test-group-random-seed=42 
+          PYTEST_OPTS: ${{ env.PYTEST_OPTS_BASE }} --test-group-random-seed=42
         run: |
-          sg wireshark "uv run eatmydata pytest tests/ -n $(($(nproc) + 1)) ${PYTEST_OPTS} --test-group=${{ matrix.GROUP }} --test-group-count=${{ matrix.GROUP_COUNT }}"
+          # -n $(nproc) rather than $(nproc)+1: one fewer parallel node-cluster
+          # keeps ASan peak RSS under the 16GB hosted-runner ceiling.
+          sg wireshark "uv run eatmydata pytest tests/ -n $(nproc) ${PYTEST_OPTS} --test-group=${{ matrix.GROUP }} --test-group-count=${{ matrix.GROUP_COUNT }}"
+      - name: Report OOM kills
+        if: failure()
+        run: |
+          echo "=== dmesg (OOM) ==="; sudo dmesg | grep -i -E 'oom|out of memory|killed process' || echo "no OOM lines in dmesg"
+          echo "=== kernel log ==="; sudo journalctl -k --no-pager | tail -n 50 || true
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7

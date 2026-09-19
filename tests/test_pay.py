@@ -5290,10 +5290,12 @@ def test_sendpay_grouping(node_factory, bitcoind):
     wait_for(lambda: [c['active'] for c in l1.rpc.listchannels(scid)['channels']] == [True, True])
     l1.rpc.pay(inv, amount_msat='10000msat')
 
-    # And finally we should have all 3 attempts to pay the invoice
-    pays = l1.rpc.listpays()['pays']
-    assert(len(pays) == 3)
-    assert([p['status'] for p in pays] == ['failed', 'failed', 'complete'])
+    # And finally we should have all 3 attempts to pay the invoice.  The two
+    # failed attempts settle asynchronously, so wait for the statuses rather
+    # than racing them.
+    wait_for(lambda: [p['status'] for p in l1.rpc.listpays()['pays']]
+             == ['failed', 'failed', 'complete'])
+    assert(len(l1.rpc.listpays()['pays']) == 3)
 
 
 @pytest.mark.flaky(reruns=2)
@@ -5327,6 +5329,9 @@ def test_pay_manual_exclude(node_factory, bitcoind):
 
 
 @unittest.skipIf(TEST_NETWORK != 'regtest', "Invoice is network specific")
+@pytest.mark.skip(reason="the hand-made invoice expired on 2026-05-27: created "
+                  "1648435974 with expiry 131400000, and regenerating it needs the "
+                  "patched lightningd that injects the metadata")
 def test_pay_bolt11_metadata(node_factory, bitcoind):
     l1, l2 = node_factory.line_graph(2, opts={'old_hsmsecret': True})
 

@@ -61,21 +61,19 @@ def test_apis_batch1(node_factory):
     assert "coingecko" in rates
     assert "kraken" in rates
     assert "blockchain.info" in rates
-    assert "coindesk" in rates
+    # coindesk needs an API key now, so it answers 401 and is absent.
     assert "binance" in rates
 
     # Death to the 58k gang!
     assert rates["coingecko"] > 58000
     assert rates["kraken"] > 58000
     assert rates["blockchain.info"] > 58000
-    assert rates["coindesk"] > 58000
     assert rates["binance"] > 58000
 
     rates = [
         rates["coingecko"],
         rates["kraken"],
         rates["blockchain.info"],
-        rates["coindesk"],
         rates["binance"],
     ]
 

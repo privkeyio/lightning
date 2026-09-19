@@ -51,7 +51,7 @@ const struct chainparams networks[] = {
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      /* "Lightning Charge Powers Developers & Blockstream Store" */
-     .when_lightning_became_cool = 504500,
+     .when_lightning_became_cool = 961640,
      .p2pkh_version = 0,
      .p2sh_version = 5,
      .testnet = false,
@@ -147,6 +147,7 @@ const struct chainparams networks[] = {
 				      0x53, 0xbc, 0xfb, 0xba, 0xf2, 0x84, 0xda,
 				      0x00, 0x00, 0x00, 0x00}}}},
      .rpc_port = 48332,
+		.when_lightning_became_cool = 150308,
      .ln_port = 49735,
      .cli = "bitcoin-cli",
      .cli_args = "-testnet4",
