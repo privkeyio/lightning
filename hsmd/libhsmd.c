@@ -552,6 +552,8 @@ static void hsm_key_for_utxo(struct privkey *privkey, struct pubkey *pubkey,
 }
 
 /* Explicit unified PSBT requests never fall back to libwally's legacy digest. */
+static void check_overgrind(const struct bitcoin_signature *sig);
+
 static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 				      const struct hsm_utxo *utxo,
 				      const struct privkey *key,
@@ -626,6 +628,10 @@ static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 	}
 	sig.sighash_type = hash_type;
 	sign_hash(key, &digest, &sig.s);
+	/* The legacy path reports this below; the unified one returns before
+	 * reaching it, which left --dev-warn-on-overgrind silently dead for
+	 * wallet inputs and the short-signature case indistinguishable. */
+	check_overgrind(&sig);
 	return psbt_input_set_signature(psbt, i, pubkey, &sig);
 }
 
