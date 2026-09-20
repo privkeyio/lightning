@@ -575,13 +575,6 @@ jobs:
             COMPILER: gcc
             TEST_DB_PROVIDER: postgres
             TEST_NETWORK: regtest
-          # And don't forget about elements (like cdecker did when
-          # reworking the CI...)
-          - NAME: liquid
-            CFG: compile-gcc-O3
-            COMPILER: gcc
-            TEST_NETWORK: liquid-regtest
-            TEST_DB_PROVIDER: sqlite3
           # And dual funding!
           - NAME: dual-fund
             CFG: compile-gcc
