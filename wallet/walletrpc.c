@@ -713,9 +713,12 @@ static struct command_result *match_psbt_inputs_to_utxos(struct command *cmd,
 					    fmt_bitcoin_outpoint(tmpctx,
 								 &utxo->outpoint));
 
-		/* If the psbt doesn't have the UTXO info yet, add it.
-		 * We only add the witness_utxo for this */
-		if (!psbt->inputs[i].utxo && !psbt->inputs[i].witness_utxo) {
+		/* If the psbt doesn't have the witness_utxo yet, add it.  The
+		 * signer authenticates the prevout against our own record, so
+		 * a caller that supplied only a non_witness_utxo needs this
+		 * too, or signing fails and takes us down with it.  We only
+		 * add the witness_utxo. */
+		if (!psbt->inputs[i].witness_utxo) {
 			u8 *scriptPubKey;
 
 			if (utxo->utxotype == UTXO_P2SH_P2WPKH) {
