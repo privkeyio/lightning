@@ -557,9 +557,9 @@ static void check_overgrind(const struct bitcoin_signature *sig);
 static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 				      const struct hsm_utxo *utxo,
 				      const struct privkey *key,
-				      const struct pubkey *pubkey)
+				      const struct pubkey *pubkey,
+				      struct bitcoin_tx **txp)
 {
-	struct bitcoin_tx *tx;
 	struct unified_sighash_input exec = { .script_type = 1 };
 	struct sha256_double digest;
 	struct bitcoin_signature sig;
@@ -596,18 +596,17 @@ static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 			return false;
 		exec.script_code = p2wpkh_scriptcode(tmpctx, pubkey);
 	}
-	/* One clone of the whole transaction per input, freed here rather
-	 * than left on tmpctx: that context lives until the request is
-	 * answered, so keeping them made a withdrawal quadratic in memory
-	 * and a few hundred inputs was enough to exhaust the machine. */
-	tx = bitcoin_tx_with_psbt(NULL, psbt);
-	if (!tx)
+	/* The clone is built once for the whole signing pass rather than once
+	 * per input: rebuilding it each time made a withdrawal quadratic in
+	 * work, and a few hundred inputs took longer than the test timeout.
+	 * The caller drops it whenever it changes anything the digest commits
+	 * to, since the clone is a snapshot taken when it was built. */
+	if (!*txp)
+		*txp = bitcoin_tx_with_psbt(tmpctx, psbt);
+	if (!*txp)
 		return false;
-	if (!bitcoin_tx_unified_sighash(tx, i, hash_type, &exec, &digest.sha)) {
-		tal_free(tx);
+	if (!bitcoin_tx_unified_sighash(*txp, i, hash_type, &exec, &digest.sha))
 		return false;
-	}
-	tal_free(tx);
 	if (taproot) {
 		u8 tweaked[32], signature[65];
 		bool ok;
@@ -640,6 +639,10 @@ static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 static bool sign_our_inputs(struct hsm_utxo **utxos, struct wally_psbt *psbt)
 {
 	bool is_cache_enabled = false;
+	/* Built on first use and shared across inputs; see
+	 * sign_unified_wallet_input.  It lives on tmpctx so the early
+	 * returns below need not each drop it. */
+	struct bitcoin_tx *unified_tx = NULL;
 	for (size_t i = 0; i < tal_count(utxos); i++) {
 		struct hsm_utxo *utxo = utxos[i];
 		for (size_t j = 0; j < psbt->num_inputs; j++) {
@@ -676,6 +679,10 @@ static bool sign_our_inputs(struct hsm_utxo **utxos, struct wally_psbt *psbt)
 				psbt_input_set_wit_utxo(psbt, j,
 							scriptpubkey_p2wsh(psbt, wscript),
 							utxo->amount);
+				/* That changed a prevout script and amount,
+				 * which the digest commits to, so any clone
+				 * taken before now is stale. */
+				unified_tx = tal_free(unified_tx);
 			}
 			/* New wallet/funding signatures use unified sighash by
 			 * default. A caller-supplied PSBT can ask for anything
@@ -692,7 +699,8 @@ static bool sign_our_inputs(struct hsm_utxo **utxos, struct wally_psbt *psbt)
 				return false;
 			}
 			if (psbt->inputs[j].sighash & SIGHASH_UNIFIED) {
-				bool ok = sign_unified_wallet_input(psbt, j, utxo, &privkey, &pubkey);
+				bool ok = sign_unified_wallet_input(psbt, j, utxo, &privkey, &pubkey,
+								    &unified_tx);
 				sodium_memzero(&privkey, sizeof(privkey));
 				if (!ok)
 					return false;
@@ -1906,6 +1914,10 @@ static u8 *handle_sign_anchorspend(struct hsmd_client *c, const u8 *msg_in)
 		const u8 *wscript = bitcoin_wscript_anchor(tmpctx, &local_funding_pubkey);
 		const u8 *spk = scriptpubkey_p2wsh(tmpctx, wscript);
 		bool signed_anchor = false;
+		/* Shared across the inputs signed below: nothing here
+		 * changes a prevout script or amount, which is all the
+		 * clone carries that the digest commits to. */
+		struct bitcoin_tx *anchor_tx = NULL;
 		for (size_t i = 0; i < psbt->num_inputs; i++) {
 			const struct wally_tx_output *out = psbt->inputs[i].witness_utxo;
 			if (!out || !memeq(out->script, out->script_len, spk, tal_bytelen(spk)))
@@ -1915,7 +1927,8 @@ static u8 *handle_sign_anchorspend(struct hsmd_client *c, const u8 *msg_in)
 			psbt_input_set_witscript(psbt, i, wscript);
 			if (wally_psbt_input_set_sighash(&psbt->inputs[i], SIGHASH_ALL | SIGHASH_UNIFIED) != WALLY_OK
 			    || !sign_unified_wallet_input(psbt, i, &anchor,
-						 &secrets.funding_privkey, &local_funding_pubkey))
+						 &secrets.funding_privkey, &local_funding_pubkey,
+						 &anchor_tx))
 				return hsmd_status_bad_request(c, msg_in, "Cannot sign unified anchor input");
 			signed_anchor = true;
 		}
