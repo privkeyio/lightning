@@ -19,7 +19,9 @@ static const u8 *pull(const u8 **cursor, size_t *max, void *copy, size_t n)
 {
 	const u8 *p = *cursor;
 
-	if (*max < n) {
+	/* Once a pull has overrun, the cursor stays NULL: a later zero-length
+	 * pull must not resume from it. */
+	if (!p || *max < n) {
 		*cursor = NULL;
 		*max = 0;
 		/* Just make sure we don't leak uninitialized mem! */
@@ -29,7 +31,6 @@ static const u8 *pull(const u8 **cursor, size_t *max, void *copy, size_t n)
 	}
 	*cursor += n;
 	*max -= n;
-	assert(p);
 	if (copy)
 		memcpy(copy, p, n);
 	return memcheck(p, n);
