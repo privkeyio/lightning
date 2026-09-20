@@ -4,7 +4,11 @@ from utils import only_one, wait_for, sync_blockheight, TEST_NETWORK
 import os
 import pytest
 
-pytestmark = pytest.mark.skipif(TEST_NETWORK != 'regtest', reason='Blake2b regtest only')
+pytestmark = [
+    pytest.mark.skipif(TEST_NETWORK != 'regtest', reason='Blake2b regtest only'),
+    pytest.mark.skipif(os.getenv('TEST_DB_PROVIDER', 'sqlite3') != 'sqlite3',
+                       reason='deletes database, which is assumed sqlite3'),
+]
 
 
 def unified_witness_count(bitcoind, txid):

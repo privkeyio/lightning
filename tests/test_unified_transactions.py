@@ -75,6 +75,8 @@ def test_unified_unilateral_close(node_factory, bitcoind):
 
 
 @pytest.mark.openchannel('v1')
+@pytest.mark.skipif(os.getenv('TEST_DB_PROVIDER', 'sqlite3') != 'sqlite3',
+                    reason='copies database, which is assumed sqlite3')
 def test_unified_penalty(node_factory, bitcoind, chainparams):
     """A revoked commitment must still be punishable under unified signing."""
     a, b = node_factory.line_graph(2, opts=[{'may_reconnect': True},
