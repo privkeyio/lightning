@@ -3196,20 +3196,19 @@ def test_openchannel2_inflight_limit(node_factory, bitcoind):
     def pubkey(index):
         return CCPrivateKey(index.to_bytes(32, "big")).public_key.format(compressed=True)
 
-    def open_channel2(index, chain_hash):
+    def open_channel2(index, chain_hash, commit_feerate):
         keys = [pubkey(index * 7 + offset + 1) for offset in range(7)]
         temporary_channel_id = hashlib.sha256(bytes(33) + keys[1]).digest()
         fixed = b"".join([
             struct.pack(">H", 64),                     # type: open_channel2
             chain_hash,
             temporary_channel_id,
-            struct.pack(">IIQQQQHHI", 253, 253, 100_000, 546,
+            struct.pack(">IIQQQQHHI", 253, commit_feerate, 100_000, 546,
                         100_000_000, 0, 6, 30, 0),
             *keys,
             b"\x00",                                   # channel_flags
         ])
-        # opening_tlvs: type 1 channel_type = static_remotekey + anchors.
-        return temporary_channel_id, fixed + bytes.fromhex("0103401000")
+        return temporary_channel_id, fixed + channel_type_tlv
 
     class SocketConn:
         def __init__(self, host, port):
@@ -3228,6 +3227,19 @@ def test_openchannel2_inflight_limit(node_factory, bitcoind):
                 self.buf += chunk
             ret, self.buf = self.buf[:maxlen], self.buf[maxlen:]
             return ret
+
+    def opening_tlvs(bits):
+        """TLV type 1, channel_type, as a big-endian feature bitmap."""
+        nbytes = max(bits) // 8 + 1
+        bitmap = bytearray(nbytes)
+        for b in bits:
+            bitmap[nbytes - 1 - b // 8] |= 1 << (b % 8)
+        return bytes([1, nbytes]) + bytes(bitmap)
+
+    # static_remotekey + anchors, plus unified_sigs where this chain has it:
+    # an open naming a channel type the node won't accept is refused outright.
+    channel_type_tlv = opening_tlvs([12, 22, 70] if TEST_NETWORK == 'regtest'
+                                    else [12, 22])
 
     # dualopend doesn't listen for the disconnect, so connectd has to force it.
     l1 = node_factory.get_node(broken_log='Subd did not close, forcing close')
@@ -3248,12 +3260,16 @@ def test_openchannel2_inflight_limit(node_factory, bitcoind):
     assert int.from_bytes(init[0:2], "big") == 16
     lconn.send_message(init)
 
+    # The funding feerate is bounded by FEERATE_FLOOR, but the commitment one
+    # by what this node will accept, which follows the backend's estimates.
+    commit_feerate = l1.rpc.feerates('perkw')['perkw']['min_acceptable']
+
     # Fill the budget, and wait for each open to be accepted before starting
     # the next: that way every dualopend has finished its openchannel2 hook
     # roundtrip and is parked, so the count is stable when we overrun it.
     cids = []
     for index in range(MAX_INFLIGHT_OPENS):
-        cid, msg = open_channel2(index, chain_hash)
+        cid, msg = open_channel2(index, chain_hash, commit_feerate)
         cids.append(cid)
         lconn.send_message(msg)
         while True:
@@ -3263,7 +3279,7 @@ def test_openchannel2_inflight_limit(node_factory, bitcoind):
                 break
 
     # One more open is over the cap: it must be refused with an error.
-    over_cid, msg = open_channel2(MAX_INFLIGHT_OPENS, chain_hash)
+    over_cid, msg = open_channel2(MAX_INFLIGHT_OPENS, chain_hash, commit_feerate)
     lconn.send_message(msg)
 
     rejected = False
