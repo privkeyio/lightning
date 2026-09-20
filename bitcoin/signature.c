@@ -191,6 +191,7 @@ void sign_tx_input(const struct bitcoin_tx *tx,
 	struct sha256_double hash;
 	bool use_segwit = witness_script != NULL;
 	const u8 *script = use_segwit ? witness_script : subscript;
+	assert(in < tx->psbt->num_inputs);
 	if (tx->psbt->inputs[in].sighash & SIGHASH_UNIFIED)
 		sighash_type |= SIGHASH_UNIFIED;
 
