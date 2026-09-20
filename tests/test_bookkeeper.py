@@ -304,7 +304,7 @@ def test_bookkeeping_missed_chans_leases(node_factory, bitcoind):
 
     open_amt = 500000
     feerate = 2000
-    lease_fee = 6268000
+    lease_fee = 6272000
     invoice_msat = 11000000
 
     l1.fundwallet(open_amt * 1000)
