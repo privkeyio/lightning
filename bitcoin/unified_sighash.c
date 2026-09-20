@@ -148,20 +148,28 @@ bool bitcoin_tx_unified_sighash(const struct bitcoin_tx *tx, size_t input,
 		/* ANYONECANPAY does not commit to unrelated prevout metadata. */
 		if ((hash_type & 0x80) && i != input)
 			continue;
-		/* Deriving the prevout from the full transaction means hashing
-		 * it, and this loop runs for every input of every signature, so
-		 * doing it where `witness_utxo` already answers is quadratic in
-		 * whole transactions.  Check the input being signed, which is
-		 * every input across a complete signing pass, and otherwise
-		 * only when there is nothing else to read the output from. */
-		if (p->utxo && (i == input || !out)) {
-			struct bitcoin_txid prev;
-			wally_txid(p->utxo, &prev);
-			if (memcmp(&prev, tx->wtx->inputs[i].txhash, sizeof(prev))
-			    || tx->wtx->inputs[i].index >= p->utxo->num_outputs)
+		if (p->utxo) {
+			const struct wally_tx_output *full;
+
+			if (tx->wtx->inputs[i].index >= p->utxo->num_outputs)
 				goto done;
-			const struct wally_tx_output *full =
-				&p->utxo->outputs[tx->wtx->inputs[i].index];
+			/* Only the txid costs anything here: deriving it means
+			 * hashing the whole previous transaction, and this loop
+			 * runs for every input of every signature, so doing it
+			 * where `witness_utxo` already answers is quadratic in
+			 * whole transactions.  Check the input being signed,
+			 * which is every input across a complete signing pass,
+			 * and otherwise only where there is nothing else to
+			 * read the output from.  The comparison below is cheap,
+			 * so it stays for every input. */
+			if (i == input || !out) {
+				struct bitcoin_txid prev;
+				wally_txid(p->utxo, &prev);
+				if (memcmp(&prev, tx->wtx->inputs[i].txhash,
+					   sizeof(prev)))
+					goto done;
+			}
+			full = &p->utxo->outputs[tx->wtx->inputs[i].index];
 			if (out && (out->satoshi != full->satoshi
 				    || out->script_len != full->script_len
 				    || memcmp(out->script, full->script, out->script_len)))
