@@ -47,7 +47,13 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
           git fetch origin ${{ github.base_ref }}
-          git rebase origin/${{ github.base_ref }}
+          # Already on the base: nothing to do, and rebasing would flatten
+          # any merge commit, such as one bringing in an upstream release.
+          if git merge-base --is-ancestor origin/${{ github.base_ref }} HEAD; then
+            echo "Already based on ${{ github.base_ref }}"
+          else
+            git rebase origin/${{ github.base_ref }}
+          fi
 
       - name: Check changelog
         env:
