@@ -7,8 +7,8 @@
 #include <ccan/str/hex/hex.h>
 #include <common/utils.h>
 
-/* Top bit of the version marks the redesigned block header introduced by the
- * BLAKE2b hardfork. */
+/* Top bit of the version marks the redesigned block header introduced with
+ * the BLAKE2b proof of work. */
 #define BLOCK_HEADER_V2_VERSION_FLAG 0x80000000
 
 /* Bit in hdr->flags meaning nTime is time_on_wire plus time_offset. */
@@ -210,7 +210,7 @@ static void pull_block_hdr_v2(const u8 **cursor, size_t *len,
 
 /* The v2 block id: two BLAKE2b passes over a tree of tagged SHA256 hashes,
  * finally XORed with a mask derived from the miner's XOR key.  This mirrors
- * CBlockHeader::GetHash() in the BLAKE2b hardfork. */
+ * CBlockHeader::GetHash() in Bitcoin Knots. */
 static void block_hdr_v2_blkid(const struct bitcoin_block_hdr *hdr,
 			       struct bitcoin_blkid *out)
 {
@@ -398,8 +398,8 @@ bitcoin_block_from_hex(const tal_t *ctx, const struct chainparams *chainparams,
 		b->hdr.nonce = pull_le32(&p, &len);
 		sha256_le32(&shactx, b->hdr.nonce);
 
-		/* The BLAKE2b hardfork marks its redesigned header by setting
-		 * the top bit of the version.  It carries 84 further bytes,
+		/* The BLAKE2b proof of work marks its redesigned header by
+		 * setting the top bit of the version.  It carries 84 further bytes,
 		 * and is identified by BLAKE2b rather than SHA256d. */
 		b->hdr.header_v2
 			= (b->hdr.version & BLOCK_HEADER_V2_VERSION_FLAG) != 0;

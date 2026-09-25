@@ -1,6 +1,6 @@
 # BLAKE2b block headers
 
-Core Lightning support for the redesigned block header introduced by the BLAKE2b hardfork ([Bitcoin Knots PR 359][pr359]).
+Core Lightning support for the redesigned block header introduced with the BLAKE2b proof of work ([Bitcoin Knots PR 359][pr359]).
 
 ## What changes
 
@@ -53,8 +53,8 @@ A node without this change stops at the last SHA256d block and dies: the 84 extr
 
 ## What this does not address
 
-**`chain_hash` does not distinguish the two rule sets.** BOLT identifies a network by its genesis block hash, and a hard fork does not change genesis. Nodes that have adopted the fork and nodes still on the old rules therefore advertise the same network identity, so they connect to each other and their gossip merges, even though after the activation height they no longer agree on the chain. A peer cannot tell from the handshake which rules the other side follows. Header parsing cannot fix that; it takes a decision about what `chain_hash` should be, made once rather than per implementation.
+**`chain_hash` is unchanged.** BOLT identifies a network by its genesis block hash, and a change of proof of work does not change genesis, because it is the same chain. A node that has upgraded and one that has not advertise the same `chain_hash`; they are told apart by the even `option_blake2b` feature bit, which a node that has not upgraded refuses. See [blake2b-upgrade.md](blake2b-upgrade.md).
 
-**Channels funded before activation are valid under both rule sets.** Their funding output exists on either side of the divergence, so commitment transactions signed before it can be replayed against a node that did not adopt the fork. The unified opt-in signature hash is the fix, but commitment transactions are signed by both parties, so both peers must support it.
+**Channels funded before activation.** Their funding output predates the change of proof of work, so a node that has not upgraded sees it too, and a commitment transaction signed without the unified opt-in signature hash can be replayed to it. The unified opt-in signature hash is the fix, but commitment transactions are signed by both parties, so both peers must support it.
 
 [pr359]: https://github.com/bitcoinknots/bitcoin/pull/359
