@@ -23,6 +23,7 @@ import os
 import pytest
 import random
 import re
+import struct
 import time
 import unittest
 import websocket
@@ -3058,6 +3059,48 @@ def test_opener_simple_reconnect(node_factory, bitcoind):
     l1.pay(l2, 200000000)
 
 
+def test_reestablish_zero_commitment_number(node_factory, bitcoind):
+    """BOLT #2: next_commitment_number 0 must fail the channel."""
+    l2priv = '12' * 32
+    l1, l2 = node_factory.get_nodes(2, opts=[{'may_reconnect': True},
+                                             {'dev-force-privkey': l2priv}])
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    l1.fundchannel(l2, 10**6)
+
+    # Advance so next_index[REMOTE] > 1; otherwise 0 is the
+    # "we completed opening" case already handled in-tree.
+    l1.pay(l2, 10**8)
+
+    channel_id = first_channel_id(l1, l2)
+    l2_id = l2.info['id']
+    l2.stop()
+    wait_for(lambda: l1.rpc.getpeer(l2_id)['connected'] is False)
+
+    lc = wire.connect(wire.PrivateKey(bytes.fromhex(l2priv)),
+                      wire.PublicKey(bytes.fromhex(l1.info['id'])),
+                      '127.0.0.1', l1.port)
+    init = lc.read_message()
+    assert int.from_bytes(init[:2], 'big') == 16
+    lc.send_message(init)
+
+    while True:
+        msg = lc.read_message()
+        if int.from_bytes(msg[:2], 'big') == 136:
+            break
+
+    # channel_reestablish: both numbers 0, dummy secret and point.
+    lc.send_message(bytes.fromhex('0088')
+                    + bytes.fromhex(channel_id)
+                    + (0).to_bytes(8, 'big')
+                    + (0).to_bytes(8, 'big')
+                    + bytes(32)
+                    + bytes.fromhex(l2_id))
+
+    l1.daemon.wait_for_log('bad reestablish commitment_number: 0')
+    l1.daemon.wait_for_log('State changed from CHANNELD_NORMAL to AWAITING_UNILATERAL')
+    l1.wait_for_channel_onchain(l2_id)
+
+
 @unittest.skipIf(os.getenv('TEST_DB_PROVIDER', 'sqlite3') != 'sqlite3', "sqlite3-specific DB rollback")
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
@@ -4527,6 +4570,49 @@ def test_connect_transient_pending(node_factory, bitcoind, executor):
             fut2.result(TIMEOUT)
 
 
+def test_onionmessage_unknown_invoice_no_leak(node_factory):
+    """An unsolicited invoice must not echo uninitialised memory back.
+
+    Adapted from the reporter's PoC.  On a non-developer node, rejecting an
+    invoice with invreq_paths that did not arrive via a path formatted an
+    invreq_id which had not been set yet into the invoice_error text.
+    """
+    l1 = node_factory.get_node()
+    # Non-developer node: developer mode takes a different error branch.
+    l2 = node_factory.get_node(start=False)
+    l2.daemon.early_opts = [o for o in l2.daemon.early_opts if o != '--developer']
+    l2.daemon.opts = {k: v for k, v in l2.daemon.opts.items()
+                      if not k.startswith('dev-')}
+    l2.start()
+    l1.connect(l2)
+
+    # invoice with only invreq_paths: first_node_id (point), first_path_key,
+    # num_hops=0.
+    l2_pub = bytes.fromhex(l2.info['id'])
+    blinded_path = (l2_pub
+                    + coincurve.PrivateKey().public_key.format(True)
+                    + b'\x00')
+    invoice = TlvPayload()
+    invoice.add_field(90, blinded_path)
+    tlv = TlvPayload()
+    tlv.add_field(66, invoice.to_bytes(include_prefix=False))
+
+    # Route-blinding tweak so the onion decrypts as l2's real key.
+    blinding = coincurve.PrivateKey()
+    path_key = blinding.public_key.format(True)
+    ss = blinding.ecdh(coincurve.PublicKey(l2_pub).public_key)
+    tweak = hmac.new(b'blinded_node_id', ss, sha256).digest()
+    blinded_pub = coincurve.PublicKey(l2_pub).multiply(tweak).format(True)
+
+    onion = l1.rpc.createonion(hops=[{'pubkey': blinded_pub.hex(),
+                                      'payload': tlv.to_bytes().hex()}],
+                               assocdata="")
+    l2.rpc.injectonionmessage(message=onion['onion'], path_key=path_key.hex())
+
+    l2.daemon.wait_for_log(r'Unknown invoice_request')
+    assert not l2.daemon.is_in_log(r'Unknown invoice_request [0-9a-f]{64}')
+
+
 def test_injectonionmessage(node_factory):
     """Test for injectonionmessage API"""
     # Hardcoded onion message was created with old hsmsecret format
@@ -4582,6 +4668,55 @@ def test_onionmessage_reply_path_no_hops(node_factory):
     # node stays up. Without the fix this log never appears: the offers plugin
     # calls plugin_err and lightningd_exit takes the node down instead.
     l2.daemon.wait_for_log('Ignoring reply path with no hops', timeout=30)
+
+
+def inject_onionmsg_tlv(sender, dest, tlv):
+    """Have `sender` build a one-hop onion message carrying `tlv` and inject
+    it into `dest` as if it had arrived from the network."""
+    dest_pub = bytes.fromhex(dest.info['id'])
+    blinding = coincurve.PrivateKey()
+    path_key = blinding.public_key.format(True)
+
+    # Route-blinding tweak so the onion decrypts as dest's real key.
+    ss = blinding.ecdh(coincurve.PublicKey(dest_pub).public_key)
+    tweak = hmac.new(b'blinded_node_id', ss, sha256).digest()
+    blinded_pub = coincurve.PublicKey(dest_pub).multiply(tweak).format(True)
+
+    onion = sender.rpc.createonion(hops=[{'pubkey': blinded_pub.hex(),
+                                          'payload': tlv.to_bytes().hex()}],
+                                   assocdata="")
+    dest.rpc.injectonionmessage(message=onion['onion'], path_key=path_key.hex())
+
+
+def test_onionmessage_reply_path_zero_scid(node_factory):
+    """A reply_path whose first hop is scid 0x0x0 must be used as that scid.
+
+    Adapted from the reporter's PoC.  A zero scid is valid on the wire, but
+    json_to_blinded_path used it as a sentinel for "a first_node_id was
+    given", and copied an uninitialised stack pubkey into the reply path.
+    No channel is needed, only a peer.
+    """
+    l1 = node_factory.get_node()
+    l2 = node_factory.get_node()
+    l1.connect(l2)
+
+    # blinded_path: first_node_id as sciddir (dir 0, scid 0x0x0),
+    # first_path_key, num_hops=1, one hop with empty encrypted data.
+    hop = coincurve.PrivateKey().public_key.format(True) + b'\x00\x00'
+    reply_path = (b'\x00' + bytes(8)
+                  + coincurve.PrivateKey().public_key.format(True)
+                  + b'\x01' + hop)
+    tlv = TlvPayload()
+    tlv.add_field(2, reply_path)
+    # An invalid invoice_request, so offers tries to reply with an error.
+    tlv.add_field(64, b'\xff')
+
+    inject_onionmsg_tlv(l1, l2, tlv)
+
+    # The reply must be routed via the zero scid (which cannot resolve),
+    # not via whatever pubkey happened to be on the stack.
+    l2.daemon.wait_for_log(r'Cannot resolve initial reply scidd 0x0x0/0')
+    assert not l2.daemon.is_in_log('Failed to connect for reply via')
     assert l2.rpc.getinfo()['id'] == l2.info['id']
 
 
@@ -5048,3 +5183,235 @@ def test_connect_proxy_maxlen_hostname(node_factory):
                        + bytes([len(hostname)])
                        + hostname.encode('ascii')
                        + (1234).to_bytes(2, 'big'))
+
+
+# Feature bits (see common/features.h)
+OPT_STATIC_REMOTEKEY = 12
+OPT_LARGE_CHANNELS = 18
+OPT_ANCHORS_ZERO_FEE_HTLC_TX = 22
+
+WIRE_WARNING = 1
+WIRE_INIT = 16
+WIRE_ERROR = 17
+WIRE_OPEN_CHANNEL = 32
+WIRE_ACCEPT_CHANNEL = 33
+WIRE_FUNDING_CREATED = 34
+
+# bitcoin/chainparams.c: max_supply, which is also libwally's WALLY_SATOSHI_MAX.
+MAX_SUPPLY_SAT = 2100000000000000
+
+
+def featurebits(*bits):
+    """Encode feature bits BOLT-style: big-endian, bit 0 is the last byte's LSB."""
+    if not bits:
+        return b''
+    nbytes = max(bits) // 8 + 1
+    arr = bytearray(nbytes)
+    for b in bits:
+        arr[nbytes - 1 - b // 8] |= 1 << (b % 8)
+    return bytes(arr)
+
+
+def feature_offered(bits, b):
+    """True if feature bit b (or its odd/compulsory twin) is set."""
+    for x in (b, b ^ 1):
+        idx = len(bits) - 1 - x // 8
+        if 0 <= idx < len(bits) and bits[idx] & (1 << (x % 8)):
+            return True
+    return False
+
+
+def raw_peer_connect(node):
+    """Handshake to node as a raw peer, echoing back its own features.
+
+    Returns the connection and a channel_type the node will accept.
+    """
+    lconn = wire.connect(wire.PrivateKey(bytes([0x11] * 32)),
+                         wire.PublicKey(bytes.fromhex(node.info['id'])),
+                         '127.0.0.1', node.port)
+
+    # Echo their features back, so we never require one they lack.
+    msg = lconn.read_message()
+    assert int.from_bytes(msg[0:2], 'big') == WIRE_INIT, "expected init"
+    payload = msg[2:]
+
+    glen = struct.unpack('>H', payload[0:2])[0]
+    flen = struct.unpack('>H', payload[2 + glen:4 + glen])[0]
+    theirs = payload[4 + glen:4 + glen + flen]
+
+    lconn.send_message(struct.pack('>HH', WIRE_INIT, 0)
+                       + struct.pack('>H', len(theirs)) + theirs)
+
+    # Without option_support_large_channel the 2^24 cap applies, and we never
+    # reach the commitment transaction code this test is about.
+    assert feature_offered(theirs, OPT_LARGE_CHANNELS), "peer does not offer wumbo"
+
+    ctype = featurebits(*[b for b in (OPT_STATIC_REMOTEKEY,
+                                      OPT_ANCHORS_ZERO_FEE_HTLC_TX)
+                          if feature_offered(theirs, b)])
+    return lconn, ctype
+
+
+def send_open_channel(lconn, chain_hash, temp_chan_id, funding_sat, push_msat,
+                      feerate_per_kw, channel_type):
+    # Six distinct valid points; they only have to parse.
+    keys = [wire.PrivateKey(bytes([i + 1] * 32)).public_key().serializeCompressed()
+            for i in range(6)]
+
+    msg = struct.pack('>H', WIRE_OPEN_CHANNEL)
+    msg += chain_hash
+    msg += temp_chan_id
+    msg += struct.pack('>Q', funding_sat)       # funding_satoshis
+    msg += struct.pack('>Q', push_msat)         # push_msat
+    msg += struct.pack('>Q', 546)               # dust_limit_satoshis
+    msg += struct.pack('>Q', 0xFFFFFFFFFFFF)    # max_htlc_value_in_flight_msat
+    msg += struct.pack('>Q', 10000)             # channel_reserve_satoshis
+    msg += struct.pack('>Q', 0)                 # htlc_minimum_msat
+    msg += struct.pack('>I', feerate_per_kw)    # feerate_per_kw
+    msg += struct.pack('>H', 144)               # to_self_delay
+    msg += struct.pack('>H', 483)               # max_accepted_htlcs
+    for k in keys:
+        msg += k
+    msg += struct.pack('>B', 0)                 # channel_flags
+    msg += bytes([1, len(channel_type)]) + channel_type   # TLV 1: channel_type
+
+    lconn.send_message(msg)
+
+
+def read_channel_reply(lconn):
+    """Read past gossip chatter to openingd's answer to our open_channel."""
+    for _ in range(20):
+        msg = lconn.read_message()
+        mtype = int.from_bytes(msg[0:2], 'big')
+        if mtype in (WIRE_ACCEPT_CHANNEL, WIRE_WARNING, WIRE_ERROR):
+            return mtype
+    raise AssertionError("no reply to open_channel")
+
+
+def send_funding_created(lconn, temp_chan_id):
+    """Drive the open to the point where we build the commitment transaction.
+
+    openingd builds (and asserts on) the commitment transaction before it
+    validates our signature, so a dummy signature is enough to get there.
+    """
+    msg = struct.pack('>H', WIRE_FUNDING_CREATED)
+    msg += temp_chan_id
+    msg += bytes(32)                            # funding_txid
+    msg += struct.pack('>H', 0)                 # funding_output_index
+    msg += bytes(64)                            # signature
+    lconn.send_message(msg)
+
+
+@pytest.mark.openchannel('v1')
+def test_open_channel_funding_above_max_supply(node_factory, bitcoind):
+    """Huge funding_satoshis must not crash openingd.
+
+    The peer can choose absurdly-high values for funding_satoshis, and openingd
+    should gracefully reject such channels without assertion-crashing.
+    """
+    l1 = node_factory.get_node()
+
+    chain_hash = bytes.fromhex(bitcoind.rpc.getblockhash(0))[::-1]
+    # Use the node's own opening feerate, so we're inside its accepted range.
+    feerate = l1.rpc.feerates('perkw')['perkw']['opening']
+
+    for funding_sat, push_msat in ((MAX_SUPPLY_SAT + 1, 0),
+                                   (MAX_SUPPLY_SAT * 2, 0),
+                                   (0xFFFFFFFFFFFFFFFF, 0),
+                                   (MAX_SUPPLY_SAT + 200000, (MAX_SUPPLY_SAT + 100) * 1000),
+                                   (MAX_SUPPLY_SAT + 200000, 300000 * 1000)):
+        lconn, channel_type = raw_peer_connect(l1)
+        temp_chan_id = os.urandom(32)
+        send_open_channel(lconn, chain_hash, temp_chan_id, funding_sat,
+                          push_msat, feerate, channel_type)
+
+        mtype = read_channel_reply(lconn)
+
+        if mtype == WIRE_ACCEPT_CHANNEL:
+            # Not rejected.  Drive it on to the commitment transaction build,
+            # which is where the unguarded assertions live.
+            send_funding_created(lconn, temp_chan_id)
+            try:
+                lconn.read_message()
+            except Exception:
+                pass
+
+        assert mtype in (WIRE_WARNING, WIRE_ERROR), \
+            "funding_satoshis {} / push_msat {} was not rejected (got msgtype {})".format(
+                funding_sat, push_msat, mtype)
+
+        # lightningd survives even when openingd dies, so check openingd too.
+        assert not l1.daemon.is_in_log('Owning subdaemon openingd died'), \
+            "openingd crashed on funding_satoshis {} / push_msat {}".format(
+                funding_sat, push_msat)
+        assert not l1.daemon.is_in_log('assertion failed'), \
+            "assertion failed on funding_satoshis {} / push_msat {}".format(
+                funding_sat, push_msat)
+
+    assert l1.rpc.getinfo()['id'] == l1.info['id']
+
+
+@unittest.skipIf(os.getenv('TEST_DB_PROVIDER', 'sqlite3') != 'sqlite3', "rewinds the peers' dbs, which are assumed sqlite3")
+def test_peer_reuses_htlc_id(node_factory):
+    """A peer re-offering the id of an HTLC we have already resolved must be
+    rejected: channeld has forgotten it, but the db has not."""
+    peer_opts = {'may_reconnect': True,
+                 'allow_warning': True,
+                 # We rewind their db behind their back, so they complain.
+                 'broken_log': '.*'}
+    l1, l2, l3 = node_factory.get_nodes(3, opts=[peer_opts,
+                                                 {'may_reconnect': True,
+                                                  'allow_warning': True,
+                                                  # Without the fix lightningd
+                                                  # dies here, and we want
+                                                  # that to be a test failure
+                                                  # rather than a teardown
+                                                  # error.
+                                                  'may_fail': True,
+                                                  'broken_log': '.*'},
+                                                 peer_opts])
+    node_factory.join_nodes([l1, l2])
+    node_factory.join_nodes([l3, l2])
+
+    # l2 receives, and fully resolves, HTLC id 0 from each of them.
+    for peer in (l1, l3):
+        peer.pay(l2, 100000)
+        peer.wait_for_htlcs()
+    l2.wait_for_htlcs()
+
+    def rewind(peer):
+        # peer forgets it ever offered an HTLC, so it uses id 0 again.
+        peer.stop()
+        peer.db_manip("DELETE FROM channel_htlcs;")
+        peer.db_manip("UPDATE channels SET next_htlc_id=0;")
+
+    def reuse_id(peer, label):
+        peer.start()
+
+        def reestablished():
+            chan = only_one(peer.rpc.listpeerchannels(l2.info['id'])['channels'])
+            return any('Reconnected, and reestablished' in s for s in chan['status'])
+        wait_for(reestablished)
+
+        inv = l2.rpc.invoice(100000, label, 'desc')
+        route = [{'amount_msat': 100000, 'id': l2.info['id'], 'delay': 18,
+                  'channel': first_scid(peer, l2)}]
+        peer.rpc.sendpay(route, inv['payment_hash'],
+                         payment_secret=inv['payment_secret'])
+        line = l2.daemon.wait_for_log(r'{}-.*Bad peer_add_htlc: id 0 but expected 1|Error executing statement'.format(peer.info['id']))
+        assert 'Bad peer_add_htlc' in line
+        l2.rpc.getinfo()
+
+    # l2's channeld restarts on reconnect, lightningd tells it what to expect.
+    rewind(l1)
+    reuse_id(l1, 'reuse1')
+    # l1 committed to that HTLC, which l2 never accepts, so it's done.
+    l1.stop()
+
+    # Same again, but l2 has to work out what to expect from its db.
+    l2.stop()
+    rewind(l3)
+    l2.start()
+    reuse_id(l3, 'reuse2')
+
+    assert not l2.daemon.is_in_log(r'\*\*BROKEN\*\*')

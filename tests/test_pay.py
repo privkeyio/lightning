@@ -691,6 +691,33 @@ def test_wait_sendpay(node_factory, executor):
     l1.rpc.waitsendpay(inv['payment_hash'])['payment_preimage']
 
 
+def test_sendpay_onion_overflow(node_factory):
+    """A route whose per-hop payloads exceed the 1300-byte onion must
+    fail cleanly: create_onionpacket returns NULL and send_payment
+    used it unchecked, crashing lightningd (SIGSEGV in
+    serialize_onionpacket)."""
+    l1, l2 = node_factory.line_graph(2, fundamount=10**6)
+
+    amt = 1000
+    inv = l2.rpc.invoice(amt, 'onionoverflow', 'desc')
+
+    # Each TLV hop costs ~50 onion bytes at these amounts; 30 hops
+    # cannot fit in the 1300-byte onion no matter how small the
+    # encodings.  Only the first hop must be a live channel: the
+    # onion is built before anything is sent.
+    hop = {
+        'amount_msat': amt,
+        'id': l2.info['id'],
+        'delay': 5,
+        'channel': first_scid(l1, l2)
+    }
+    route = [copy.deepcopy(hop) for _ in range(30)]
+
+    with pytest.raises(RpcError, match='Could not create onion packet'):
+        l1.rpc.sendpay(route, inv['payment_hash'],
+                       payment_secret=inv['payment_secret'])
+
+
 @unittest.skipIf(TEST_NETWORK != 'regtest', "The reserve computation is bitcoin specific")
 @pytest.mark.parametrize("anchors", [False, True])
 def test_sendpay_cant_afford(node_factory, anchors):
@@ -2626,6 +2653,38 @@ def test_channel_spendable(node_factory, bitcoind, anchors):
     assert l2.rpc.listpeerchannels()['channels'][0]['spendable_msat'] == Millisatoshi(0)
     open(os.path.join(l1.daemon.lightning_dir, TEST_NETWORK, "unhold"), "w").close()
     l2.rpc.waitsendpay(payment_hash, TIMEOUT)
+
+
+def test_htlc_set_part_during_invoice_hook(node_factory):
+    """An extra part arriving while the invoice_payment hook is pending
+    must not re-dispatch the (already complete) HTLC set."""
+    l1, l2, l3 = node_factory.get_nodes(3, opts=[{},
+                                                 {'plugin': os.path.join(os.getcwd(), 'tests/plugins/hold_invoice.py')},
+                                                 {}])
+    node_factory.join_nodes([l1, l2])
+    node_factory.join_nodes([l3, l2])
+
+    inv = l2.rpc.invoice(1000, 'inv', 'for testing')
+    payment_hash = inv['payment_hash']
+
+    # First part completes the set, and the hook holds it.
+    l1.rpc.sendpay(l1.single_route(l2.info['id'], 1000), payment_hash,
+                   payment_secret=inv['payment_secret'])
+    l2.daemon.wait_for_log('HTLC set contains 1 HTLCs, for a total of 1000msat out of 1000msat')
+
+    # Another part for the same set, while hook is still pending.
+    l3.rpc.sendpay(l3.single_route(l2.info['id'], 1000), payment_hash,
+                   payment_secret=inv['payment_secret'])
+    l2.daemon.wait_for_log('HTLC set contains 2 HTLCs, for a total of 2000msat out of 1000msat')
+
+    open(os.path.join(l2.daemon.lightning_dir, TEST_NETWORK, "unhold"), "w").close()
+    l1.rpc.waitsendpay(payment_hash, TIMEOUT)
+    l3.rpc.waitsendpay(payment_hash, TIMEOUT)
+
+    inv = only_one(l2.rpc.listinvoices('inv')['invoices'])
+    assert inv['status'] == 'paid'
+    assert inv['amount_received_msat'] == Millisatoshi(1000)
+    assert l2.daemon.is_in_log('Resolved invoice .* in 2 htlcs')
 
 
 def test_channel_receivable(node_factory, bitcoind):
@@ -5334,27 +5393,37 @@ def test_pay_manual_exclude(node_factory, bitcoind):
 
 
 @unittest.skipIf(TEST_NETWORK != 'regtest', "Invoice is network specific")
-@pytest.mark.skip(reason="the hand-made invoice expired on 2026-05-27: created "
-                  "1648435974 with expiry 131400000, and regenerating it needs the "
-                  "patched lightningd that injects the metadata")
-def test_pay_bolt11_metadata(node_factory, bitcoind):
-    l1, l2 = node_factory.line_graph(2, opts={'old_hsmsecret': True})
+def test_pay_bolt11_metadata(node_factory, chainparams):
+    l1, l2 = node_factory.line_graph(2)
 
-    # BOLT #11:
-    # > ### Please send 0.01 BTC with payment metadata 0x01fafaf0
-    # > lnbc10m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdp9wpshjmt9de6zqmt9w3skgct5vysxjmnnd9jx2mq8q8a04uqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q2gqqqqqqsgq7hf8he7ecf7n4ffphs6awl9t6676rrclv9ckg3d3ncn7fct63p6s365duk5wrk202cfy3aj5xnnp5gs3vrdvruverwwq7yzhkf5a3xqpd05wjc
+    # Generate a normal invoice on l2, then use bolt11-cli to re-encode it with
+    # payment metadata added.  old_hsmsecret gives l2 a known private key.
+    inv = l2.rpc.invoice(amount_msat=123000, label='label1', description='desc', preimage='00' * 32)
+    inv_decoded = l1.rpc.decode(inv['bolt11'])
+    inv_with_metadata = subprocess.check_output(['devtools/bolt11-cli', 'encode',
+                                                 # l2's private key (old_hsmsecret, WIF byte stripped)
+                                                 '0c633a7c17c701a0980158f5483035e01fa8bd091b47fadf2e86e589a9f93fca',
+                                                 f"currency={chainparams['bip173_prefix']}",
+                                                 f"p={inv['payment_hash']}",
+                                                 f"s={inv['payment_secret']}",
+                                                 "d=desc",
+                                                 "amount=123000msat",
+                                                 f"x={inv_decoded['expiry']}",
+                                                 f"c={inv_decoded['min_final_cltv_expiry']}",
+                                                 f"9={inv_decoded['features']}",
+                                                 "m=" + b'this is metadata'.hex()]).decode('utf-8').strip()
 
-    b11 = l1.rpc.decode('lnbc10m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdp9wpshjmt9de6zqmt9w3skgct5vysxjmnnd9jx2mq8q8a04uqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q2gqqqqqqsgq7hf8he7ecf7n4ffphs6awl9t6676rrclv9ckg3d3ncn7fct63p6s365duk5wrk202cfy3aj5xnnp5gs3vrdvruverwwq7yzhkf5a3xqpd05wjc')
-    assert b11['payment_metadata'] == '01fafaf0'
-
-    # I previously hacked lightningd to add "this is metadata" to metadata.
-    # After CI started failing, I *also* hacked it to set expiry to BIGNUM.
-    inv = "lnbcrt1230n1p3yzgcxsp5q8g040f9rl9mu2unkjuj0vn262s6nyrhz5hythk3ueu2lfzahmzspp5ve584t0cv27hwmy0cx9ca8uwyqyfw9y9dm3r8vus9fv36r2l9yjsdq8v3jhxccmq6w35xjueqd9ejqmt9w3skgct5vyxqxra2q2qcqp99q2sqqqqqysgqfw6efxpzk5x5vfj8se46yg667x5cvhyttnmuqyk0q7rmhx3gs249qhtdggnek8c5adm2pztkjddlwyn2art2zg9xap2ckczzl3fzz4qqsej6mf"
-    # Make l2 "know" about this invoice.
-    l2.rpc.invoice(amount_msat=123000, label='label1', description='desc', preimage='00' * 32)
+    # They should be basically identical
+    post_decoded = l1.rpc.decode(inv_with_metadata)
+    del inv_decoded['signature']
+    del post_decoded['signature']
+    del post_decoded['payment_metadata']
+    del inv_decoded['created_at']
+    del post_decoded['created_at']
+    assert inv_decoded == post_decoded
 
     with pytest.raises(RpcError, match=r'Unexpected error \(invalid_onion_payload\) from final node'):
-        l1.rpc.xpay(inv)
+        l1.rpc.xpay(inv_with_metadata)
 
     l2.daemon.wait_for_log("Unexpected payment_metadata {}".format(b'this is metadata'.hex()))
 

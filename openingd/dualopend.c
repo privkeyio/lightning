@@ -103,6 +103,9 @@ struct tx_state {
 	/* Have we gotten the peer's tx-sigs yet? */
 	bool remote_funding_sigs_rcvd;
 
+	/* Have we sent our tx_signatures to the peer? */
+	bool local_funding_sigs_sent;
+
 	/* Have we gotten the peer's commitments yet? */
 	bool has_commitments;
 
@@ -133,6 +136,7 @@ static struct tx_state *new_tx_state(const tal_t *ctx)
 	struct tx_state *tx_state = tal(ctx, struct tx_state);
 	tx_state->psbt = NULL;
 	tx_state->remote_funding_sigs_rcvd = false;
+	tx_state->local_funding_sigs_sent = false;
 	tx_state->has_commitments = false;
 
 	tx_state->lease_expiry = 0;
@@ -430,11 +434,19 @@ static void negotiation_failed(struct state *state,
 
 /* Ignoring the fee limits drops the policy bounds, but never the sanity
  * ceiling: a feerate above that means a broken fee source, and whatever we
- * accept here is what we go on to store. */
-static u32 accepted_feerate_min(const struct state *state)
+ * accept here is what we go on to store.
+ *
+ * For anchor channels the commitment only has to relay: its fee gets topped
+ * up by the anchor spend when we actually need it onchain, so the relay floor
+ * is the real bound there.  Holding the opener to our *policy* minimum would
+ * refuse the very feerate we would propose ourselves, since lightningd also
+ * uses the floor for anchors (see update_feerates()). */
+static u32 accepted_commitment_feerate_min(const struct state *state)
 {
 	if (state->ignore_fee_limits)
 		return 1;
+	if (channel_type_has_anchors(state->channel_type))
+		return FEERATE_FLOOR;
 	return state->min_feerate;
 }
 
@@ -593,6 +605,20 @@ static void handle_failure_fatal(struct state *state, u8 *msg)
 
 	if (!fromwire_dualopend_fail(msg, msg, &err))
 		master_badmsg(fromwire_peektype(msg), msg);
+
+	/* BOLT #2:
+	 *
+	 * A sending node:
+	 *   - MUST NOT have already transmitted `tx_signatures`
+	 *   - SHOULD forget the current negotiation and reset their state.
+	 */
+	/* We can still cleanly abort (tx_abort) if we haven't
+	 * transmitted our tx_signatures; we'll finish up when the
+	 * peer echoes the abort back */
+	if (!state->tx_state->local_funding_sigs_sent) {
+		open_abort(state, "%s", err);
+		return;
+	}
 
 	/* We're gonna fail here */
 	open_err_fatal(state, "%s", err);
@@ -1472,6 +1498,7 @@ static void handle_send_tx_sigs(struct state *state, const u8 *msg)
 	/*  Send our sigs to peer */
 	msg = psbt_to_tx_sigs_msg(tmpctx, state, tx_state->psbt);
 	peer_write(state->pps, take(msg));
+	tx_state->local_funding_sigs_sent = true;
 
 	/* Notify lightningd that we've sent sigs */
 	wire_sync_write(REQ_FD, take(towire_dualopend_tx_sigs_sent(NULL)));
@@ -1577,11 +1604,30 @@ static void handle_tx_abort(struct state *state, u8 *msg)
 	 * process without worrying about stale messages.
 	 */
 	if (!state->aborted_err) {
-		/* If they sent this after tx-sigs, it's a
-		 * protocol error */
+		/* If they sent this after their tx-sigs, it's a
+		 * protocol error (they MUST NOT send tx_abort after
+		 * transmitting tx_signatures). */
 		if (state->tx_state->remote_funding_sigs_rcvd)
 			open_err_fatal(state, "tx-abort rcvd after"
 				       " tx-sigs");
+
+		/* BOLT #2:
+		 *
+		 * A receiving node:
+		 *   - if they have already sent `tx_signatures` to the peer:
+		 *     - MUST NOT forget the channel until any inputs to the
+		 *       negotiated tx have been spent.
+		 *   - if they have not sent `tx_signatures`:
+		 *     - SHOULD forget the current negotiation and reset their
+		 *       state.
+		 */
+		/* We echo the abort either way; if we already sent our
+		 * signatures the peer may still broadcast, so lightningd
+		 * must remember the channel (it checks our sigs-sent flag
+		 * before deleting anything). */
+		if (state->tx_state->local_funding_sigs_sent)
+			status_unusual("tx-abort rcvd after we sent tx-sigs;"
+				       " remembering channel");
 
 		open_abort(state, "%s", "Rcvd tx-abort");
 		desc = tal_fmt(tmpctx, "They sent %s",
@@ -2487,14 +2533,6 @@ static void accepter_start(struct state *state, const u8 *oc2_msg)
 			      FEERATE_FLOOR))
 		return;
 
-	/* The commitment feerate is a different matter: too low and the
-	 * commitment we are signing cannot be relayed when we need it.  Same
-	 * bounds openingd applies to open_channel. */
-	if (!feerate_in_range(state, "commitment_feerate_perkw",
-			      state->feerate_per_kw_commitment,
-			      accepted_feerate_min(state)))
-		return;
-
 	/* BOLT #2:
 	 * The receiving node MUST fail the channel if:
 	 *...
@@ -2525,6 +2563,16 @@ static void accepter_start(struct state *state, const u8 *oc2_msg)
 			return;
 		}
 	}
+
+	/* The commitment feerate is a different matter: too low and the
+	 * commitment we are signing cannot be relayed when we need it.  This
+	 * has to wait for channel_type above, since what counts as too low
+	 * depends on whether we negotiated anchors.  Nothing between the two
+	 * commits us to anything. */
+	if (!feerate_in_range(state, "commitment_feerate_perkw",
+			      state->feerate_per_kw_commitment,
+			      accepted_commitment_feerate_min(state)))
+		return;
 
 	/* Since anchor outputs are optional, we
 	 * only support liquidity ads if those are enabled. */
@@ -2558,17 +2606,10 @@ static void accepter_start(struct state *state, const u8 *oc2_msg)
 		return;
 	}
 
-	/* BOLT #2:
-	 *
-	 * The receiving node MUST fail the channel if:
-	 *...
-	 * - `funding_satoshis` is greater than or equal to 2^24 and the receiver does not support
-	 *   `option_support_large_channel`. */
-	/* We choose to require *negotiation*, not just support! */
-	if (!feature_negotiated(state->our_features, state->their_features,
-				OPT_LARGE_CHANNELS)
-	    && amount_sat_greater(tx_state->opener_funding,
-				  chainparams->max_funding)) {
+	/* Check that opener's funding doesn't exceed allowed channel capacity */
+	if (amount_sat_greater(tx_state->opener_funding,
+			       max_channel_funding(state->our_features,
+						   state->their_features))) {
 		negotiation_failed(state,
 				   "opener's funding_satoshis %s too large",
 				   fmt_amount_sat(tmpctx,
@@ -2699,16 +2740,9 @@ static void accepter_start(struct state *state, const u8 *oc2_msg)
 	}
 
 	/* Check that total funding doesn't exceed allowed channel capacity */
-	/* BOLT #2:
-	 *
-	 * The receiving node MUST fail the channel if:
-	 *...
-	 * - `funding_satoshis` is greater than or equal to 2^24 and the receiver does not support
-	 *   `option_support_large_channel`. */
-	/* We choose to require *negotiation*, not just support! */
-	if (!feature_negotiated(state->our_features, state->their_features,
-				OPT_LARGE_CHANNELS)
-	    && amount_sat_greater(total, chainparams->max_funding)) {
+	if (amount_sat_greater(total,
+			       max_channel_funding(state->our_features,
+						   state->their_features))) {
 		negotiation_failed(state, "total funding_satoshis %s too large",
 				   fmt_amount_sat(tmpctx, total));
 		return;
@@ -3340,16 +3374,9 @@ static void opener_start(struct state *state, u8 *msg)
 	}
 
 	/* Check that total funding doesn't exceed allowed channel capacity */
-	/* BOLT #2:
-	 *
-	 * The receiving node MUST fail the channel if:
-	 *...
-	 * - `funding_satoshis` is greater than or equal to 2^24 and
-	 *    the receiver does not support `option_support_large_channel`. */
-	/* We choose to require *negotiation*, not just support! */
-	if (!feature_negotiated(state->our_features, state->their_features,
-				OPT_LARGE_CHANNELS)
-	    && amount_sat_greater(total, chainparams->max_funding)) {
+	if (amount_sat_greater(total,
+			       max_channel_funding(state->our_features,
+						   state->their_features))) {
 		negotiation_failed(state,
 				   "total funding_satoshis %s too large",
 				   fmt_amount_sat(tmpctx, total));
@@ -3663,16 +3690,9 @@ static void rbf_local_start(struct state *state, u8 *msg)
 		return;
 	}
 	/* Check that total funding doesn't exceed allowed channel capacity */
-	/* BOLT #2:
-	 *
-	 * The receiving node MUST fail the channel if:
-	 *...
-	 * - `funding_satoshis` is greater than or equal to 2^24 and the receiver does not support
-	 *   `option_support_large_channel`. */
-	/* We choose to require *negotiation*, not just support! */
-	if (!feature_negotiated(state->our_features, state->their_features,
-				OPT_LARGE_CHANNELS)
-	    && amount_sat_greater(total, chainparams->max_funding)) {
+	if (amount_sat_greater(total,
+			       max_channel_funding(state->our_features,
+						   state->their_features))) {
 		open_abort(state, "Total funding_satoshis %s too large",
 			   fmt_amount_sat(tmpctx, total));
 		return;
@@ -3868,16 +3888,9 @@ static void rbf_remote_start(struct state *state, const u8 *rbf_msg)
 	}
 
 	/* Check that total funding doesn't exceed allowed channel capacity */
-	/* BOLT #2:
-	 *
-	 * The receiving node MUST fail the channel if:
-	 *...
-	 * - `funding_satoshis` is greater than or equal to 2^24 and the receiver does not support
-	 *   `option_support_large_channel`. */
-	/* We choose to require *negotiation*, not just support! */
-	if (!feature_negotiated(state->our_features, state->their_features,
-				OPT_LARGE_CHANNELS)
-	    && amount_sat_greater(total, chainparams->max_funding)) {
+	if (amount_sat_greater(total,
+			       max_channel_funding(state->our_features,
+						   state->their_features))) {
 		open_abort(state, "Total funding_satoshis %s too large",
 			   fmt_amount_sat(tmpctx, total));
 		goto free_rbf_ctx;
@@ -4147,6 +4160,7 @@ static void do_reconnect_dance(struct state *state)
 			if (send_our_sigs && psbt_side_finalized(tx_state->psbt, state->our_role)) {
 				msg = psbt_to_tx_sigs_msg(NULL, state, tx_state->psbt);
 				peer_write(state->pps, take(msg));
+				tx_state->local_funding_sigs_sent = true;
 
 				/* Notify lightningd that we've (re)sent sigs */
 				wire_sync_write(REQ_FD, take(towire_dualopend_tx_sigs_sent(NULL)));
@@ -4512,7 +4526,8 @@ int main(int argc, char *argv[])
 					     &state->channel_type,
 					     &state->require_confirmed_inputs[LOCAL],
 					     &state->require_confirmed_inputs[REMOTE],
-					     &state->local_alias)) {
+					     &state->local_alias,
+					     &state->tx_state->local_funding_sigs_sent)) {
 
 		bool ok;
 

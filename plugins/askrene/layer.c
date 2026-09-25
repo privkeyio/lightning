@@ -127,7 +127,12 @@ static const struct node_id *bias_nodeid(const struct node_bias *bias)
 
 static size_t hash_nodeid(const struct node_id *node)
 {
-	return *(size_t *)(node->k);
+	/* Reading the key through a size_t pointer was undefined (a u8
+	 * array is not a size_t), and at -O3 the load could be hoisted
+	 * above the `bias->node = *node` copy in set_node_bias(), so the
+	 * entry was stored under the hash of uninitialised memory and
+	 * later lookups missed it.  Hash the whole key instead. */
+	return siphash24(siphash_seed(), node->k, sizeof(node->k));
 }
 
 static bool bias_eq_nodeid(const struct node_bias *bias,
@@ -340,12 +345,6 @@ static const struct bias *set_bias(struct layer *layer,
 	bias->bias = bias_new;
 	bias->description = tal_strdup_or_null(bias, description);
 	bias->timestamp = timestamp;
-
-	/* Don't bother keeping around zero biases */
-	if (bias->bias == 0) {
-		bias_hash_del(layer->biases, bias);
-		bias = tal_free(bias);
-	}
 	return bias;
 }
 
@@ -384,12 +383,6 @@ static const struct node_bias *set_node_bias(struct layer *layer,
 		bias_new = MIN(100, bias_new);
 		bias_new = MAX(-100, bias_new);
 		bias->in_bias = bias_new;
-	}
-
-	/* Don't bother keeping around zero biases */
-	if (bias->in_bias == 0 && bias->out_bias == 0) {
-		node_bias_hash_del(layer->node_biases, bias);
-		bias = tal_free(bias);
 	}
 	return bias;
 }
@@ -616,6 +609,7 @@ static void load_channel_bias(struct plugin *plugin,
 	struct short_channel_id_dir scidd;
 	const char *description;
 	s8 bias_factor;
+	const struct bias *bias;
         /* If we read an old version without timestamp, just put the current
          * time. */
         u64 timestamp = clock_time().ts.tv_sec;
@@ -623,9 +617,15 @@ static void load_channel_bias(struct plugin *plugin,
 	if (fromwire_dstore_channel_bias(tmpctx, cursor, len,
 					 &scidd,
 					 &bias_factor,
-					 &description))
-		set_bias(layer, &scidd, take(description), bias_factor, false,
-			 timestamp);
+					 &description)) {
+		bias = set_bias(layer, &scidd, take(description), bias_factor,
+				false, timestamp);
+
+		if (bias->bias == 0) {
+			bias_hash_del(layer->biases, bias);
+			bias = tal_free(bias);
+		}
+	}
 }
 
 static void load_channel_bias_v2(struct plugin *plugin,
@@ -637,14 +637,21 @@ static void load_channel_bias_v2(struct plugin *plugin,
 	const char *description;
 	s8 bias_factor;
 	u64 timestamp;
+	const struct bias *bias;
 
 	if (fromwire_dstore_channel_bias_v2(tmpctx, cursor, len,
 					    &scidd,
 					    &bias_factor,
 					    &description,
-					    &timestamp))
-		set_bias(layer, &scidd, take(description), bias_factor, false,
+					    &timestamp)) {
+		bias = set_bias(layer, &scidd, take(description), bias_factor, false,
 			 timestamp);
+
+		if (bias->bias == 0) {
+			bias_hash_del(layer->biases, bias);
+			bias = tal_free(bias);
+		}
+	}
 }
 
 static void load_node_bias(struct plugin *plugin,
@@ -656,6 +663,7 @@ static void load_node_bias(struct plugin *plugin,
 	const char *description;
 	s8 in_bias, out_bias;
 	u64 timestamp;
+	const struct node_bias *bias;
 
 	if (fromwire_dstore_node_bias(tmpctx, cursor, len,
 				      &node,
@@ -663,12 +671,17 @@ static void load_node_bias(struct plugin *plugin,
 				      &in_bias,
 				      &out_bias,
 				      &timestamp)) {
-		set_node_bias(layer, &node, take(description), in_bias,
+		set_node_bias(layer, &node, description, in_bias,
 			      /* relative = */ false,
 			      /* out dir = */ false, timestamp);
-		set_node_bias(layer, &node, take(description), out_bias,
+		bias = set_node_bias(layer, &node, description, out_bias,
 			      /* relative = */ false,
 			      /* out dir = */ true, timestamp);
+
+		if (bias->in_bias == 0 && bias->out_bias == 0) {
+			node_bias_hash_del(layer->node_biases, bias);
+			bias = tal_free(bias);
+		}
 	}
 }
 
@@ -918,7 +931,15 @@ const struct bias *layer_set_bias(struct layer *layer,
 
 	bias = set_bias(layer, scidd, description, bias_factor, relative,
 			timestamp);
+	/* Save the resulting bias even if zero to override previously written
+	 * values. */
 	save_channel_bias(layer, bias);
+
+	/* Don't bother keeping around zero biases */
+	if (bias->bias == 0) {
+		bias_hash_del(layer->biases, bias);
+		bias = tal_free(bias);
+	}
 	return bias;
 }
 
@@ -934,7 +955,15 @@ const struct node_bias *layer_set_node_bias(struct layer *layer,
 
 	bias = set_node_bias(layer, node, description, bias_factor, relative,
 			     dir_out, timestamp);
+	/* Save the resulting bias even if zero to override previously written
+	 * values. */
 	save_node_bias(layer, bias);
+
+	/* Don't bother keeping around zero biases */
+	if (bias->in_bias == 0 && bias->out_bias == 0) {
+		node_bias_hash_del(layer->node_biases, bias);
+		bias = tal_free(bias);
+	}
 	return bias;
 }
 

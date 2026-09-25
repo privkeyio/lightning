@@ -451,9 +451,8 @@ def test_node_bias_rpc(node_factory):
 def test_node_bias_persistence(node_factory):
     """Test node bias persistence."""
     # remove xpay, since it creates a layer!
-    l1, l2 = node_factory.line_graph(
-        2, wait_for_announce=True, opts={"disable-plugin": "cln-xpay"}
-    )
+    l1 = node_factory.get_node(opts={"disable-plugin": "cln-xpay"})
+    node_id = "020000000000000000000000000000000000000000000000000000000000000001"
 
     expect = {
         "layer": "mylayer",
@@ -467,24 +466,36 @@ def test_node_bias_persistence(node_factory):
     }
     l1.rpc.askrene_create_layer(layer="mylayer", persistent=True)
     r = l1.rpc.askrene_bias_node(
-        layer="mylayer", node=l2.info["id"], direction="out", bias=14, relative=False
+        layer="mylayer", node=node_id, direction="out", bias=14, relative=False
     )
     expect["node_biases"] = [
         {
-            "node": l2.info["id"],
+            "node": node_id,
             "in_bias": 0,
             "out_bias": 14,
             "timestamp": r["node_biases"][0]["timestamp"],
         }
     ]
+    r = l1.rpc.askrene_bias_channel(
+        layer="mylayer", short_channel_id_dir="1x1x1/1", bias=10,
+        relative=False, description="some channel bias"
+    )
+    expect["biases"] = [
+        {
+            "short_channel_id_dir": "1x1x1/1",
+            "bias": 10,
+            "description": "some channel bias",
+            "timestamp": r["biases"][0]["timestamp"],
+        }
+    ]
     assert l1.rpc.askrene_listlayers("mylayer") == {"layers": [expect]}
     # restarting the node we see the same data again
-    l2.restart()
+    l1.restart()
     assert l1.rpc.askrene_listlayers("mylayer") == {"layers": [expect]}
 
     r = l1.rpc.askrene_bias_node(
         layer="mylayer",
-        node=l2.info["id"],
+        node=node_id,
         direction="in",
         bias=11,
         relative=False,
@@ -492,7 +503,7 @@ def test_node_bias_persistence(node_factory):
     )
     expect["node_biases"] = [
         {
-            "node": l2.info["id"],
+            "node": node_id,
             "in_bias": 11,
             "out_bias": 14,
             "timestamp": r["node_biases"][0]["timestamp"],
@@ -502,7 +513,36 @@ def test_node_bias_persistence(node_factory):
     assert l1.rpc.askrene_listlayers("mylayer") == {"layers": [expect]}
 
     # restarting the node we see the same data again
-    l2.restart()
+    l1.restart()
+    assert l1.rpc.askrene_listlayers("mylayer") == {"layers": [expect]}
+
+    # zero bias is like not having any
+    l1.rpc.askrene_bias_node(
+        layer="mylayer",
+        node=node_id,
+        direction="in",
+        bias=0,
+        relative=False,
+        description="adding zero bias",
+    )
+    # zero bias is like not having any
+    l1.rpc.askrene_bias_node(
+        layer="mylayer",
+        node=node_id,
+        direction="out",
+        bias=0,
+        relative=False,
+        description="adding zero bias",
+    )
+    l1.rpc.askrene_bias_channel(
+        layer="mylayer", short_channel_id_dir="1x1x1/1", bias=0, relative=False
+    )
+    expect["node_biases"] = []
+    expect["biases"] = []
+    assert l1.rpc.askrene_listlayers("mylayer") == {"layers": [expect]}
+
+    # restarting the node we see the same data again
+    l1.restart()
     assert l1.rpc.askrene_listlayers("mylayer") == {"layers": [expect]}
 
 
@@ -1518,7 +1558,7 @@ def test_real_data(node_factory, bitcoind, executor):
                                      opts=[{'gossip_store_file': outfile.name,
                                             'allow_warning': True,
                                             'dev-throttle-gossip': None,
-                                            'broken_log': 'Throttling incoming peer',
+                                            'broken_log': 'Throttling (incoming|outgoing) peer',
                                             # This can be slow!
                                             'askrene-timeout': TIMEOUT},
                                            {'allow_warning': True}])
@@ -1629,7 +1669,7 @@ def test_real_biases(node_factory, bitcoind, executor):
     l1, l2 = node_factory.line_graph(2, fundamount=AMOUNT,
                                      opts=[{'gossip_store_file': outfile.name,
                                             'allow_warning': True,
-                                            'broken_log': 'Throttling incoming peer',
+                                            'broken_log': 'Throttling (incoming|outgoing) peer',
                                             'dev-throttle-gossip': None},
                                            {'allow_warning': True}])
 
@@ -1743,7 +1783,7 @@ def test_askrene_fake_channeld(node_factory, bitcoind):
                                      opts=[{'gossip_store_file': outfile.name,
                                             'subdaemon': 'channeld:../tests/plugins/channeld_fakenet',
                                             'allow_warning': True,
-                                            'broken_log': 'Throttling incoming peer',
+                                            'broken_log': 'Throttling (incoming|outgoing) peer',
                                             'dev-throttle-gossip': None},
                                            {'allow_bad_gossip': True}])
 

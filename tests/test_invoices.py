@@ -442,6 +442,30 @@ def test_invoice_expiry(node_factory, executor):
     assert expiry >= start + 1 and expiry <= end + 1
 
 
+def test_invoice_expiry_too_large(node_factory):
+    """An expiry too large to be safe must be refused, not crash or wedge.
+
+    The `x` field is encoded by push_varlen_field(), which can only
+    express values of up to 60 bits and aborts the whole daemon for
+    anything larger.  Long before that, the invoice expiration timer's
+    nanosecond-based counter overflows and the expiry check busy-loops
+    forever, so anything beyond 2^32 seconds (~136 years) is refused.
+    """
+    l1 = node_factory.get_node()
+
+    # The exact boundary still works: 2^32 - 1 is ~136 years of headroom.
+    ok = l1.rpc.invoice(amount_msat=1000, label='expiry-boundary-ok',
+                        description='boundary', expiry=2**32 - 1)
+    assert ok['bolt11']
+
+    # One above the boundary: typed refusal, daemon stays alive.
+    with pytest.raises(RpcError, match='expiry must be below') as err:
+        l1.rpc.invoice(amount_msat=1000, label='expiry-too-large',
+                       description='too large', expiry=2**32)
+    assert err.value.error['code'] == -32602
+    assert l1.rpc.getinfo()['id']
+
+
 def test_waitinvoice(node_factory, executor):
     """Test waiting for one invoice will not return if another invoice is paid.
     """
@@ -922,6 +946,52 @@ def test_unified_invoices_any_amount(node_factory, bitcoind):
     assert only_one(l1.rpc.listinvoices('inv1')['invoices'])['status'] == 'paid'
 
 
+def test_onchain_invoice_delinvoice_during_payment_hook(node_factory, bitcoind):
+    """delinvoice while onchain invoice_payment hook is pending must not crash."""
+    # Absolute path: inline plugins run in the test process (not lightning-dir).
+    unhold = [None]
+
+    def setup(plugin):
+        @plugin.hook("invoice_payment")
+        def on_payment(payment, plugin, **kwargs):
+            plugin.log("holding invoice_payment for label={}".format(payment["label"]))
+            while not os.path.exists(unhold[0]):
+                time.sleep(0.1)
+            plugin.log(
+                "releasing invoice_payment for label={}".format(payment["label"])
+            )
+            return {"result": "continue"}
+
+    l1 = node_factory.get_node(
+        options={"invoices-onchain-fallback": None}, inline_plugin=setup
+    )
+    unhold[0] = os.path.join(l1.daemon.lightning_dir, TEST_NETWORK, "unhold")
+    amount_sat = 1000
+    inv = l1.rpc.invoice(
+        amount_sat * 1000, "inv1", "test_onchain_invoice_delinvoice_during_payment_hook"
+    )
+    b11 = l1.rpc.decode(inv["bolt11"])
+    assert len(b11["fallbacks"]) == 1
+    addr = b11["fallbacks"][0]["addr"]
+
+    # Pay the on-chain fallback while the hook holds resolution.
+    bitcoind.rpc.sendtoaddress(addr, amount_sat / 10**8)
+    bitcoind.generate_block(1)
+
+    l1.daemon.wait_for_log(r"holding invoice_payment for label=inv1")
+    assert only_one(l1.rpc.listinvoices("inv1")["invoices"])["status"] == "unpaid"
+
+    # Delete the unpaid invoice while the hook is still pending.
+    l1.rpc.delinvoice("inv1", "unpaid")
+
+    # Let the hook finish; lightningd must survive the stale reply.
+    open(unhold[0], "w").close()
+    l1.daemon.wait_for_log(r"releasing invoice_payment for label=inv1")
+
+    # RPC still works => no restartable crash from invoice_payment_hooks_done.
+    assert l1.rpc.listinvoices("inv1") == {"invoices": []}
+
+
 def test_expiry_startup_crash(node_factory, bitcoind):
     """We crash trying to expire invoice on startup"""
     l1 = node_factory.get_node()
@@ -1106,3 +1176,55 @@ def test_listinvoices_invstring_reason(node_factory):
     inv = 'lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqrrzc4cvfue4zp3hggxp47ag7xnrlr8vgcmkjxk3j5jqethnumgkpqp23z9jclu3v0a7e0aruz366e9wqdykw6dxhdzcjjhldxq0w6wgqcnu43j'
     with pytest.raises(RpcError, match=r"Invalid invstring: Invalid amount postfix 'x'"):
         l1.rpc.listinvoices(invstring=inv)
+
+
+def test_createinvoice_expiry_too_large(node_factory):
+    """createinvoice must apply the same expiry bound as invoice.
+
+    A crafted bolt11 can carry an expiry past the invoice RPC's gate:
+    decode does not verify the signature, so the huge `x` value flows
+    into invoice creation -- where bolt11_encode() aborts past 60 bits
+    and the expiry timer busy-loops far below that.  Same bound, same
+    message as the invoice RPC.
+    """
+    import hashlib
+    import bitstring
+    from pyln.proto.invoice import tagged, tagged_bytes
+    from pyln.proto.bech32 import bech32_encode
+
+    def crafted_bolt11(hrp, payment_hash, expiry):
+        """A parseable-but-junk-signed bolt11: createinvoice decodes
+        without verifying the signature, so the 65 trailing bytes are
+        filler; every field the parser needs is real."""
+        data = bitstring.pack('uint:35', 12345678)
+        data += tagged_bytes('p', payment_hash)
+        data += tagged('d', bitstring.BitArray(b'crafted'))
+        xbits = bitstring.pack('uint:64', expiry)[4:]
+        while xbits.startswith('0b00000'):
+            xbits = xbits[5:]
+        while xbits.len % 5 != 0:
+            xbits.prepend('0b0')
+        data += tagged('x', xbits)
+        data += tagged_bytes('s', bytes(32))
+        data += bitstring.BitArray(bytes(65))
+        return bech32_encode(
+            hrp, bytes([data[i:i + 5].uint
+                        for i in range(0, data.len, 5)]))
+
+    l1 = node_factory.get_node()
+    # The bech32 HRP is network-dependent (lnbcrt on regtest, another
+    # prefix on e.g. liquid-regtest): take it from a real invoice on
+    # THIS network instead of hardcoding it.
+    hrp = l1.rpc.invoice(1, 'hrp-probe', 'hrp')['bolt11'].split('1', 1)[0]
+
+    with pytest.raises(RpcError, match='expiry must be below'):
+        l1.rpc.createinvoice(crafted_bolt11(hrp, bytes(32), 2**32),
+                             'label', '00' * 32)
+
+    # The exact boundary still works: a matching preimage and the
+    # largest in-bounds expiry recreate cleanly.
+    preimage = bytes(range(32))
+    ok = l1.rpc.createinvoice(
+        crafted_bolt11(hrp, hashlib.sha256(preimage).digest(), 2**32 - 1),
+        'boundary-label', preimage.hex())
+    assert ok['bolt11']
