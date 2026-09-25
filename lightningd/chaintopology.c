@@ -166,8 +166,13 @@ static void rebroadcast_txs(struct chain_topology *topo)
 	for (otx = outgoing_tx_map_first(topo->outgoing_txs, &it); otx;
 	     otx = outgoing_tx_map_next(topo->outgoing_txs, &it)) {
 		struct tx_rebroadcast *txrb;
-		/* Already sent? */
-		if (wallet_transaction_height(topo->ld->wallet, &otx->txid))
+		struct bitcoin_txid cur_txid;
+
+		/* Already confirmed?  Use the txid of the current tx, not the
+		 * original otx->txid: refresh() may have replaced otx->tx with
+		 * a higher-fee version whose txid differs from the map key. */
+		bitcoin_txid(otx->tx, &cur_txid);
+		if (wallet_transaction_height(topo->ld->wallet, &cur_txid))
 			continue;
 
 		/* Don't send ones which aren't ready yet.  Note that if the
@@ -1188,6 +1193,15 @@ u32 feerate_min(struct lightningd *ld, bool *unknown)
 
 	/* FIXME: This is what bcli used to do: halve the slow feerate! */
 	min /= 2;
+
+	/* Never demand more than we would ever propose ourselves.  We cap what
+	 * we offer at MAX_OUR_FEERATE_PER_KW (see our_feerate_max), so anything
+	 * above that would have us refuse a peer the very feerate we would have
+	 * sent them, which costs us the channel for nothing.  A broken fee
+	 * source clamped to FEERATE_CEILING puts this at FEERATE_CEILING/2,
+	 * five times that cap. */
+	if (min > MAX_OUR_FEERATE_PER_KW)
+		min = MAX_OUR_FEERATE_PER_KW;
 
 	/* We can't allow less than feerate_floor, since that won't relay */
 	if (min < get_feerate_floor(topo))

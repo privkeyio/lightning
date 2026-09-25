@@ -11,6 +11,8 @@ from decimal import Decimal
 from pyln.client import LightningRpc
 from pyln.client import Millisatoshi
 from pyln.client import NodeVersion
+from pyln.client import Plugin
+from pyln.client.plugin import PluginLogHandler
 
 import ephemeral_port_reserve  # type: ignore
 import json
@@ -22,13 +24,16 @@ import os
 import random
 import re
 import shutil
+import socket
 import sqlite3
 import string
 import struct
 import subprocess
+import tempfile
 import sys
 import threading
 import time
+import types
 import warnings
 
 BITCOIND_CONFIG = {
@@ -78,6 +83,8 @@ def env(name, default=None):
 VALGRIND = env("VALGRIND") == "1"
 TEST_NETWORK = env("TEST_NETWORK", 'regtest')
 TEST_DEBUG = env("TEST_DEBUG", "0") == "1"
+
+INLINE_PLUGIN_PATH = os.path.join(os.path.dirname(__file__), 'inline-plugin.py')
 SLOW_MACHINE = env("SLOW_MACHINE", "0") == "1"
 DEPRECATED_APIS = env("DEPRECATED_APIS", "0") == "1"
 TIMEOUT = int(env("TIMEOUT", 180 if SLOW_MACHINE else 60))
@@ -1813,7 +1820,8 @@ class NodeFactory(object):
     def get_node(self, node_id=None, options=None, dbfile=None,
                  bkpr_dbfile=None, feerates=(15000, 11000, 7500, 3750),
                  start=True, wait_for_bitcoind_sync=True, may_fail=False,
-                 expect_fail=False, cleandir=True, gossip_store_file=None, unused_grpc_port=True, **kwargs):
+                 expect_fail=False, cleandir=True, gossip_store_file=None, unused_grpc_port=True,
+                 inline_plugin=None, **kwargs):
         node_id = self.get_node_id() if not node_id else node_id
         port = reserve_unused_port()
         grpc_port = self.get_unused_port() if unused_grpc_port else None
@@ -1856,6 +1864,11 @@ class NodeFactory(object):
         if gossip_store_file:
             shutil.copy(gossip_store_file, os.path.join(node.daemon.lightning_dir, TEST_NETWORK,
                                                         'gossip_store'))
+
+        if inline_plugin is not None:
+            if 'plugin' not in node.daemon.opts:
+                node.daemon.opts['plugin'] = INLINE_PLUGIN_PATH
+            _inline_plugin(node, inline_plugin)
 
         if start:
             try:
@@ -1971,3 +1984,108 @@ class NodeFactory(object):
             drop_unused_port(p)
 
         return not unexpected_fail, err_msgs
+
+
+class _NoPylnInternalsFilter(logging.Filter):
+    """Drop log records generated inside the pyln packages themselves.
+
+    An inline plugin's Plugin() lives in the test process, so its
+    PluginLogHandler on the root logger would forward pyln's own machinery
+    logs into the node's log.  wait_for_logs()'s 'Waiting for [pattern]'
+    announcement embeds the pattern verbatim, lands in the very log being
+    scanned, and matches itself, silently reducing the wait to a no-op.
+    Only records from outside pyln (i.e. the plugin author's own logging)
+    may be forwarded.
+    """
+    PYLN_DIRS = tuple(
+        os.path.dirname(os.path.abspath(f)) + os.sep
+        for f in (__file__,
+                  sys.modules[PluginLogHandler.__module__].__file__))
+
+    def filter(self, record):
+        return not os.path.abspath(record.pathname).startswith(self.PYLN_DIRS)
+
+
+def _inline_plugin(node, setup_fn):
+    """Set up an inline plugin serve thread for a not-yet-started node.
+
+    Normally called via get_node(inline_plugin=setup_fn).  The plugin's cwd
+    (set by lightningd) is node.daemon.lightning_dir/TEST_NETWORK/, which is
+    where the shim looks for inline-plugin.sock.
+
+    Example::
+
+        def setup(plugin):
+            @plugin.method('greet')
+            def greet(name, plugin):
+                return {'message': f'hello {name}'}
+
+        l1 = node_factory.get_node(inline_plugin=setup)
+        assert l1.rpc.greet('world') == {'message': 'hello world'}
+    """
+    sock_path = os.path.join(node.daemon.lightning_dir, TEST_NETWORK, 'inline-plugin.sock')
+    srv = socket.socket(socket.AF_UNIX)
+    try:
+        srv.bind(sock_path)
+    except OSError as e:
+        # AF_UNIX caps the bind path (108 bytes on Linux, 104 on macOS),
+        # and the node dir embeds the (possibly long) test name.  Bind
+        # through a short symlink alias to the socket's directory -- the
+        # bind-side analogue of UnixSocket.connect's Darwin workaround
+        # (bind can't go through a dangling final-component symlink, so
+        # alias the directory rather than the socket).  The socket file
+        # still lands at sock_path, where the shim's cwd-relative connect
+        # expects it.
+        if e.args[0] != "AF_UNIX path too long":
+            raise
+        alias_dir = tempfile.mkdtemp(prefix='pyln-sock-')
+        alias = os.path.join(alias_dir, 'd')
+        os.symlink(os.path.dirname(sock_path), alias)
+        try:
+            srv.bind(os.path.join(alias, os.path.basename(sock_path)))
+        finally:
+            os.unlink(alias)
+            os.rmdir(alias_dir)
+    srv.listen(1)
+
+    plugin = Plugin(autopatch=False)
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, PluginLogHandler) and handler.plugin is plugin:
+            handler.addFilter(_NoPylnInternalsFilter())
+    setup_fn(plugin)
+
+    def serve():
+        while True:
+            conn, _ = srv.accept()
+
+            class _SockWriter:
+                def write(self, data):
+                    try:
+                        conn.sendall(data)
+                    except OSError:
+                        pass
+
+                def flush(self):
+                    pass
+
+            writer = _SockWriter()
+            plugin.stdout = types.SimpleNamespace(buffer=writer, flush=writer.flush)
+
+            partial = b""
+            while True:
+                try:
+                    chunk = conn.recv(4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                partial += chunk
+                msgs = partial.split(b'\n\n')
+                if len(msgs) < 2:
+                    continue
+                try:
+                    partial = plugin._multi_dispatch(msgs)
+                except Exception:
+                    break
+
+    threading.Thread(target=serve, daemon=True).start()

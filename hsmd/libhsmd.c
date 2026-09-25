@@ -2567,17 +2567,6 @@ void bip86_key(struct privkey *privkey, struct pubkey *pubkey, u32 index)
 			      "BIP86 pubkey %u create failed", index);
 }
 
-void hsmd_secrets_free(void)
-{
-	/* Clear this first: the dispatcher's guard uses it, and without it a
-	 * later request would read a NULL seed.  tal_bytelen(NULL) is 0, so
-	 * use_bip86_derivation() would quietly say no and derive the legacy
-	 * way from the still-cached secretstuff.bip32, which is worse than
-	 * failing. */
-	initialized = false;
-	secretstuff.bip32_seed = tal_free(secretstuff.bip32_seed);
-}
-
 u8 *hsmd_init(const u8 *secret_data, size_t secret_len, const u64 hsmd_version,
 	      struct bip32_key_version bip32_key_version, u8 hsm_secret_type)
 {
@@ -2750,4 +2739,12 @@ u8 *hsmd_init(const u8 *secret_data, size_t secret_len, const u64 hsmd_version,
 		    NULL, hsmd_version, caps,
 		    &node_id, &secretstuff.bip32,
 		    &bolt12, tlvs));
+}
+
+void hsmd_deinit(void)
+{
+	/* Frees off NULL, so it also fires the mlock_tal_memory destructor
+	 * which wipes and munlocks it. */
+	secretstuff.bip32_seed = tal_free(secretstuff.bip32_seed);
+	initialized = false;
 }

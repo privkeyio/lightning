@@ -120,6 +120,9 @@ struct peer {
 	 */
 	u64 htlc_id;
 
+	/* The id we expect for the next HTLC they offer. */
+	u64 next_their_htlc_id;
+
 	struct channel_id channel_id;
 	struct channel *channel;
 
@@ -698,6 +701,18 @@ static void handle_peer_add_htlc(struct peer *peer, const u8 *msg)
 	 *  - MUST allow multiple HTLCs with the same `payment_hash`.
 	 */
 	/* We do: the key is the id, not the payment_hash */
+
+	/* BOLT #2:
+	 * - MUST increase the value of `id` by 1 for each successive offer.
+	 */
+	/* We must enforce this: channeld forgets HTLCs once they're resolved,
+	 * so otherwise they could reuse an id which is still in the db. */
+	if (id != peer->next_their_htlc_id)
+		peer_failed_warn(peer->pps, &peer->channel_id,
+				 "Bad peer_add_htlc: id %"PRIu64
+				 " but expected %"PRIu64,
+				 id, peer->next_their_htlc_id);
+
 	add_err = channel_add_htlc(peer->channel, REMOTE, id, amount,
 				   cltv_expiry, &payment_hash,
 				   onion_routing_packet,
@@ -713,6 +728,7 @@ static void handle_peer_add_htlc(struct peer *peer, const u8 *msg)
 		peer_failed_warn(peer->pps, &peer->channel_id,
 				 "Bad peer_add_htlc: %s",
 				 channel_add_err_name(add_err));
+	peer->next_their_htlc_id++;
 }
 
 /* Ignoring the fee limits drops the policy bounds, but never the sanity
@@ -4294,8 +4310,11 @@ static void splice_accepter(struct peer *peer, const u8 *inmsg)
 	struct tlv_tx_init_rbf_tlvs *init_rbf_tlvs;
 	struct tlv_tx_ack_rbf_tlvs *ack_rbf_tlvs;
 
-	/* Can't start a splice with another splice still active */
-	assert(!peer->splicing);
+	if (peer->splicing)
+		peer_failed_warn(peer->pps, &peer->channel_id, "You can't start"
+				 " a splice while we have one pending. Did you"
+				 " mean to send SPLICE_ACK?");
+
 	peer->splicing = splicing_new(peer);
 
 	ictx = new_interactivetx_context(tmpctx, our_role,
@@ -6091,6 +6110,12 @@ static void peer_reconnect(struct peer *peer,
 	 *       `channel_ready` with a different `short_channel_id`
 	 *       `alias` field.
 	 */
+	if (next_commitment_number == 0)
+		peer_failed_err(peer->pps,
+				&peer->channel_id,
+				"bad reestablish commitment_number: %"PRIu64,
+				next_commitment_number);
+
 	if (peer->channel_ready[LOCAL]
 	    && peer->next_index[LOCAL] == 1
 	    && next_commitment_number == 1) {
@@ -6201,14 +6226,6 @@ static void peer_reconnect(struct peer *peer,
 	 *       `commitment_signed`.
 	 */
 	if (next_commitment_number == peer->next_index[REMOTE] - 1) {
-		/* We completed opening, we don't re-transmit that one! */
-		if (next_commitment_number == 0)
-			peer_failed_err(peer->pps,
-					 &peer->channel_id,
-					 "bad reestablish commitment_number: %"
-					 PRIu64,
-					 next_commitment_number);
-
 		if (!recv_tlvs || !recv_tlvs->next_funding)
 			retransmit_commitment_signed = true;
 		else
@@ -6989,6 +7006,7 @@ static void init_channel(struct peer *peer)
 				    &peer->next_index[REMOTE],
 				    &peer->revocations_received,
 				    &peer->htlc_id,
+				    &peer->next_their_htlc_id,
 				    &htlcs,
 				    &peer->channel_ready[LOCAL],
 				    &peer->channel_ready[REMOTE],

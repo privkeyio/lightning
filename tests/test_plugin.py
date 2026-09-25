@@ -20,6 +20,7 @@ from tests.test_wallet import HsmTool, write_all, WAIT_TIMEOUT
 import ast
 import copy
 import json
+import logging
 import os
 import pytest
 import random
@@ -1691,6 +1692,38 @@ def test_sendpay_notifications_nowaiter(node_factory):
     assert len(results['sendpay_failure']) == 1
 
 
+def test_inline_plugin_wait_for_log_no_selfmatch(node_factory):
+    """On inline-plugin nodes the test process's logging is forwarded into
+    the node's log.  wait_for_log()'s own 'Waiting for [pattern]'
+    announcement embeds the pattern, so with test logging at DEBUG it used
+    to land in the scanned log and match itself, reducing the wait to a
+    no-op (#9343).  A pattern that never appears must genuinely time out.
+    """
+    def setup(plugin):
+        @plugin.method('inline_ping')
+        def inline_ping(plugin):
+            logging.info("AUTHOR_LOG_MARKER_9343")
+            return {'pong': True}
+
+    l1 = node_factory.get_node(inline_plugin=setup)
+
+    root = logging.getLogger()
+    old_level = root.level
+    root.setLevel(logging.DEBUG)
+    try:
+        # The plugin author's own logging must still be forwarded...
+        assert l1.rpc.call('inline_ping') == {'pong': True}
+        l1.daemon.wait_for_log('AUTHOR_LOG_MARKER_9343')
+        # ...but pyln's internal announcements must not be, so a pattern
+        # that never appears genuinely times out instead of matching the
+        # forwarded 'Waiting for [pattern]' line.
+        with pytest.raises(TimeoutError):
+            l1.daemon.wait_for_log('SELFMATCH_SENTINEL_NEVER_LOGGED',
+                                   timeout=5)
+    finally:
+        root.setLevel(old_level)
+
+
 def test_rpc_command_hook(node_factory):
     """Test the `rpc_command` hook chain"""
     plugin = [
@@ -2976,6 +3009,12 @@ def test_self_disable(node_factory):
     with pytest.raises(RpcError, match="Disabled via selfdisable option"):
         l1.rpc.plugin_start(p2, selfdisable=True)
 
+    with pytest.raises(RpcError, match="init saying disable"):
+        l1.rpc.plugin_start(pydisable)
+
+    with pytest.raises(RpcError, match="init saying disable"):
+        l1.rpc.plugin_start(pydisable, **{"dummy-option": True})
+
 
 def test_restart_on_update(node_factory):
     """Tests if plugin rescan restarts modified plugins
@@ -4235,6 +4274,11 @@ def test_sql(node_factory, bitcoind):
 
     # Make sure we have a node_announcement for l1
     wait_for(lambda: l2.rpc.listnodes(l1.info['id'])['nodes'] != [])
+
+    # Under valgrind, the senders can still be digesting the blocks
+    # above and pick a stale blockheight for the payments below, which
+    # the caught-up peers reject as expiry_too_soon.
+    sync_blockheight(bitcoind, [l1, l2, l3])
 
     # This should create a forward through l2
     l1.rpc.xpay(l3.rpc.invoice(amount_msat=12300, label='inv1', description='description')['bolt11'])
@@ -5893,3 +5937,32 @@ def test_huge_log_entry(node_factory):
 
     # Still alive, and still answering.
     assert l1.rpc.getinfo()['id'] == l1.info['id']
+
+
+def test_command_collision(node_factory):
+    """We add a new method with the inline plugin. Then try to register the same
+    method with another dynamic plugin. lightningd should report back a name
+    collision."""
+
+    def some_plugin(plugin):
+        @plugin.method("myrpcmethod")
+        def on_mymethod(plugin):
+            return {}
+
+    l1 = node_factory.get_node(inline_plugin=some_plugin)
+
+    # try register plugin with "myrpcmethod" collision
+    with pytest.raises(
+        RpcError, match="a method with that name is already registered by plugin"
+    ):
+        l1.rpc.plugin_start(
+            plugin=os.path.join(os.getcwd(), "tests/plugins/method_collision.py")
+        )
+
+    # try register plugin with "getinfo" method which is builtin
+    with pytest.raises(
+        RpcError, match="a builtin method with that name is already registered"
+    ):
+        l1.rpc.plugin_start(
+            plugin=os.path.join(os.getcwd(), "tests/plugins/builtin_collision.py")
+        )

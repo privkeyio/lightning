@@ -153,7 +153,7 @@ int main(int argc, char *argv[])
 	close(client_fds[1]);
 	close(status_fds[1]);
 	tal_free(status_conn);
-	hsmd_secrets_free();
+	hsmd_deinit();
 	common_shutdown();
 	return 0;
 }
