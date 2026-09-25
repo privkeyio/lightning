@@ -369,6 +369,9 @@ struct channel *new_unsaved_channel(struct peer *peer,
 	channel->owner = NULL;
 	channel->reestablished = false;
 	memset(&channel->billboard, 0, sizeof(channel->billboard));
+	/* Not known until the funding is negotiated, but
+	 * find_channel_by_funding_outpoint() compares every channel's. */
+	memset(&channel->funding, 0, sizeof(channel->funding));
 	channel->billboard.transient = tal_fmt(channel, "%s",
 					       "Empty channel init'd");
 	channel->log = new_logger(channel, ld->log_book,
