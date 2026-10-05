@@ -3953,6 +3953,7 @@ static void resume_splice_negotiation(struct peer *peer,
 		msg = towire_channeld_update_inflight(NULL, current_psbt,
 						      their_commit->tx,
 						      &their_commit->commit_signature,
+						      their_commit->htlc_signatures,
 						      inflight->locked_scid,
 						      inflight->i_sent_sigs);
 		wire_sync_write(MASTER_FD, take(msg));
@@ -4027,7 +4028,7 @@ static void resume_splice_negotiation(struct peer *peer,
 			    inflight->force_sign_first)
 		&& send_signature) {
 		msg = towire_channeld_update_inflight(NULL, current_psbt,
-						      NULL, NULL,
+						      NULL, NULL, NULL,
 						      inflight->locked_scid,
 						      inflight->i_sent_sigs);
 		wire_sync_write(MASTER_FD, take(msg));
@@ -4206,7 +4207,7 @@ static void resume_splice_negotiation(struct peer *peer,
 	if (recv_signature || send_signature) {
 		/* We let core validate our peer's signatures are correct. */
 		msg = towire_channeld_update_inflight(NULL, current_psbt, NULL,
-						      NULL,
+						      NULL, NULL,
 						      inflight->locked_scid,
 						      inflight->i_sent_sigs);
 		wire_sync_write(MASTER_FD, take(msg));
@@ -4853,6 +4854,7 @@ static void splice_initiator_user_finalized(struct peer *peer)
 	outmsg = towire_channeld_update_inflight(NULL, new_inflight->psbt,
 						 their_commit->tx,
 						 &their_commit->commit_signature,
+						 their_commit->htlc_signatures,
 						 new_inflight->locked_scid,
 						 new_inflight->i_sent_sigs);
 	wire_sync_write(MASTER_FD, take(outmsg));
@@ -5049,8 +5051,7 @@ static void splice_initiator_user_signed(struct peer *peer, const u8 *inmsg)
 	/* Save the user provided signatures to DB incase we have to
 	 * restart and reestablish later. */
 	outmsg = towire_channeld_update_inflight(NULL, inflight->psbt,
-						 inflight->last_tx,
-						 &inflight->last_sig,
+						 NULL, NULL, NULL,
 						 inflight->locked_scid,
 						 inflight->i_sent_sigs);
 
@@ -6417,6 +6418,7 @@ static void handle_funding_depth(struct peer *peer, const u8 *msg)
 									scid);
 					msg = towire_channeld_update_inflight(NULL,
 									      inflight->psbt,
+									      NULL,
 									      NULL,
 									      NULL,
 									      inflight->locked_scid,
