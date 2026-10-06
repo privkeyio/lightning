@@ -30,6 +30,12 @@ struct closed_channel {
 	u64 last_stable_connection;
 	/* NULL for older closed channels */
 	const struct shachain *their_shachain;
+	/* Set if, with option_independent_secrets, the peer's secrets
+	 * outgrew their_shachain: then how many it revealed in all, and the
+	 * last one, which is all we keep of those in the db. */
+	bool their_secrets_in_db;
+	u64 their_secrets_received;
+	struct secret their_last_secret;
 	const struct wally_psbt *funding_psbt;
 	bool withheld;
 };
