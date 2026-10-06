@@ -13,6 +13,8 @@ struct channel_type *channel_type_anchors_zero_fee_htlc(const tal_t *ctx);
 /* channel_type variants */
 void channel_type_set_zeroconf(struct channel_type *channel_type);
 void channel_type_set_unified_sigs(struct channel_type *channel_type);
+/* Add option_independent_secrets to a channel type. */
+void channel_type_set_independent_secrets(struct channel_type *channel_type);
 void channel_type_set_scid_alias(struct channel_type *channel_type);
 
 /* Duplicate a channel_type */
