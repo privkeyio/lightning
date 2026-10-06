@@ -4,6 +4,8 @@
 #include <bitcoin/unified_sighash.h>
 #include <ccan/array_size/array_size.h>
 #include <ccan/crypto/hkdf_sha256/hkdf_sha256.h>
+#include <ccan/crypto/hmac_sha256/hmac_sha256.h>
+#include <ccan/endian/endian.h>
 #include <ccan/mem/mem.h>
 #include <ccan/tal/str/str.h>
 #include <common/bolt12_id.h>
@@ -55,6 +57,66 @@ static struct bip32_key_version network_bip32_key_version;
 bool dev_fail_preapprove = false;
 bool dev_no_preapprove_check = false;
 bool dev_warn_on_overgrind = false;
+bool dev_independent_secrets_sender = false;
+
+/*~ With option_independent_secrets a peer stores every per-commitment
+ * secret we reveal, so they need not come from a shachain.  We still use one
+ * (single signer, nothing to gain), except in developer mode with
+ * --dev-independent-secrets-sender, which exists to exercise a peer's support:
+ * then secret n is HMAC-SHA256(shaseed, tag || n || counter), with n 8 bytes
+ * big-endian and the 1-byte counter the first giving a valid secret key, as
+ * lnd's dev sender does.  Like the shachain, that needs nothing but the seed,
+ * so we can always produce any secret again. */
+static bool dev_independent_secret(const struct sha256 *shaseed,
+				   struct secret *secret,
+				   u64 n)
+{
+	static const char tag[] = "independent-per-commitment-secret";
+	u8 msg[sizeof(tag) - 1 + sizeof(be64) + 1];
+	be64 n_be = cpu_to_be64(n);
+
+	if (n >= (1ULL << SHACHAIN_BITS))
+		return false;
+
+	memcpy(msg, tag, sizeof(tag) - 1);
+	memcpy(msg + sizeof(tag) - 1, &n_be, sizeof(n_be));
+	for (size_t counter = 0; counter < 256; counter++) {
+		struct hmac_sha256 hmac;
+
+		msg[sizeof(msg) - 1] = counter;
+		hmac_sha256(&hmac, shaseed, sizeof(*shaseed), msg, sizeof(msg));
+		BUILD_ASSERT(sizeof(hmac) == sizeof(*secret));
+		memcpy(secret->data, &hmac, sizeof(secret->data));
+		if (secp256k1_ec_seckey_verify(secp256k1_ctx, secret->data) == 1)
+			return true;
+	}
+	return false;
+}
+
+/* Our per-commitment secret for commitment n. */
+static bool hsmd_per_commit_secret(const struct sha256 *shaseed,
+				   struct secret *secret,
+				   u64 n)
+{
+	if (dev_independent_secrets_sender)
+		return dev_independent_secret(shaseed, secret, n);
+	return per_commit_secret(shaseed, secret, n);
+}
+
+/* Our per-commitment point for commitment n. */
+static bool hsmd_per_commit_point(const struct sha256 *shaseed,
+				  struct pubkey *point,
+				  u64 n)
+{
+	struct secret secret;
+
+	if (!dev_independent_secrets_sender)
+		return per_commit_point(shaseed, point, n);
+	if (!dev_independent_secret(shaseed, &secret, n))
+		return false;
+	return secp256k1_ec_pubkey_create(secp256k1_ctx, &point->pubkey,
+					  secret.data) == 1;
+}
 
 struct hsmd_client *hsmd_client_new_main(const tal_t *ctx, u64 capabilities,
 					 void *extra)
@@ -1240,7 +1302,7 @@ static u8 *handle_check_future_secret(struct hsmd_client *c, const u8 *msg_in)
 		return hsmd_status_bad_request_fmt(c, msg_in,
 						   "bad derive_shaseed");
 
-	if (!per_commit_secret(&shaseed, &secret, n))
+	if (!hsmd_per_commit_secret(&shaseed, &secret, n))
 		return hsmd_status_bad_request_fmt(
 		    c, msg_in, "bad commit secret #%" PRIu64, n);
 
@@ -1487,13 +1549,13 @@ static u8 *handle_get_per_commitment_point(struct hsmd_client *c, const u8 *msg_
 	if (!derive_shaseed(&channel_seed, &shaseed))
 		return hsmd_status_bad_request(c, msg_in, "bad derive_shaseed");
 
-	if (!per_commit_point(&shaseed, &per_commitment_point, n))
+	if (!hsmd_per_commit_point(&shaseed, &per_commitment_point, n))
 		return hsmd_status_bad_request_fmt(
 		    c, msg_in, "bad per_commit_point %" PRIu64, n);
 
 	if (hsmd_mutual_version < 6 && n >= 2) {
 		old_secret = tal(tmpctx, struct secret);
-		if (!per_commit_secret(&shaseed, old_secret, n - 2)) {
+		if (!hsmd_per_commit_secret(&shaseed, old_secret, n - 2)) {
 			return hsmd_status_bad_request_fmt(
 			    c, msg_in, "Cannot derive secret %" PRIu64, n - 2);
 		}
@@ -1631,7 +1693,7 @@ static u8 *do_sign_local_htlc_tx(struct hsmd_client *c,
 		return hsmd_status_bad_request_fmt(c, msg_in,
 						   "bad derive_shaseed");
 
-	if (!per_commit_point(&shaseed, &per_commitment_point, commit_num))
+	if (!hsmd_per_commit_point(&shaseed, &per_commitment_point, commit_num))
 		return hsmd_status_bad_request_fmt(
 		    c, msg_in, "bad per_commitment_point %" PRIu64, commit_num);
 
@@ -2074,7 +2136,7 @@ static u8 *handle_validate_commitment_tx(struct hsmd_client *c, const u8 *msg_in
 	if (!derive_shaseed(&channel_seed, &shaseed))
 		return hsmd_status_bad_request(c, msg_in, "bad derive_shaseed");
 
-	if (!per_commit_point(&shaseed, &next_per_commitment_point, commit_num + 1))
+	if (!hsmd_per_commit_point(&shaseed, &next_per_commitment_point, commit_num + 1))
 		return hsmd_status_bad_request_fmt(
 		    c, msg_in, "bad per_commit_point %" PRIu64, commit_num + 1);
 
@@ -2116,12 +2178,12 @@ static u8 *handle_revoke_commitment_tx(struct hsmd_client *c, const u8 *msg_in)
 	if (!derive_shaseed(&channel_seed, &shaseed))
 		return hsmd_status_bad_request(c, msg_in, "bad derive_shaseed");
 
-	if (!per_commit_point(&shaseed, &next_per_commitment_point, commit_num + 2))
+	if (!hsmd_per_commit_point(&shaseed, &next_per_commitment_point, commit_num + 2))
 		return hsmd_status_bad_request_fmt(
 		    c, msg_in, "bad per_commit_point %" PRIu64, commit_num + 2);
 
 	old_secret = tal(tmpctx, struct secret);
-	if (!per_commit_secret(&shaseed, old_secret, commit_num)) {
+	if (!hsmd_per_commit_secret(&shaseed, old_secret, commit_num)) {
 		return hsmd_status_bad_request_fmt(
 		    c, msg_in, "Cannot derive secret %" PRIu64, commit_num);
 	}
@@ -2265,7 +2327,7 @@ static u8 *do_sign_delayed_payment_to_us(struct hsmd_client *c,
 
 	/*~ BOLT #3 describes exactly how this is used to generate the Nth
 	 * per-commitment point. */
-	if (!per_commit_point(&shaseed, &per_commitment_point, commit_num))
+	if (!hsmd_per_commit_point(&shaseed, &per_commitment_point, commit_num))
 		return hsmd_status_bad_request_fmt(
 		    c, msg_in, "bad per_commitment_point %" PRIu64, commit_num);
 

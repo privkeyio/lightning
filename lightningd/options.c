@@ -969,6 +969,12 @@ static void dev_register_opts(struct lightningd *ld)
 		       opt_set_bool,
 		       &ld->dev_hsmd_warn_on_overgrind,
 		       "Warn if we create signatures that are not exactly 71 bytes.");
+	clnopt_noarg("--dev-independent-secrets-sender", OPT_DEV,
+		     opt_set_bool,
+		     &ld->dev_hsmd_independent_secrets_sender,
+		     "Generate our per-commitment secrets without a shachain,"
+		     " which only a peer with option_independent_secrets"
+		     " accepts");
 	clnopt_witharg("--dev-save-plugin-io", OPT_DEV,
 		       opt_set_charp, opt_show_charp,
 		       &ld->plugins->dev_save_io,
