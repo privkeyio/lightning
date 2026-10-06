@@ -163,6 +163,16 @@ struct channel {
 	/* Their shachain. */
 	struct wallet_shachain their_shachain;
 
+	/* With option_independent_secrets the peer's per-commitment secrets
+	 * still go in their_shachain for as long as they fit it, as they
+	 * always do from a peer which uses one.  From the first one which
+	 * doesn't, they all go in the db (wallet_revocation_secret_add): then
+	 * their_secrets_in_db is set, their_secrets_received counts every
+	 * secret we hold, and their_last_secret is the latest. */
+	bool their_secrets_in_db;
+	u64 their_secrets_received;
+	struct secret their_last_secret;
+
  	/* What's happening. */
  	enum channel_state state;
 
@@ -971,6 +981,18 @@ static inline bool channel_has(const struct channel *channel, int f)
 {
 	return channel_type_has(channel->type, f);
 }
+
+/* How many per-commitment secrets the peer has revealed to us: the number of
+ * their commitments which are revoked.  The first revocations_received() of
+ * them are in their_shachain, and on an option_independent_secrets channel
+ * any after that are in the db. */
+u64 channel_their_revocations(const struct channel *channel);
+
+/* The last per-commitment secret the peer revealed, for
+ * `your_last_per_commitment_secret`: all zeroes if they have revealed none.
+ * False if it should exist but we can't produce it. */
+bool channel_their_last_secret(const struct channel *channel,
+			       struct secret *secret);
 
 /**
  * Either returns the short_channel_id if it is known or the local alias.

@@ -277,6 +277,37 @@ struct channel_type *desired_channel_type(const tal_t *ctx,
 	return type;
 }
 
+u64 channel_their_revocations(const struct channel *channel)
+{
+	if (channel->their_secrets_in_db)
+		return channel->their_secrets_received;
+	return revocations_received(&channel->their_shachain.chain);
+}
+
+bool channel_their_last_secret(const struct channel *channel,
+			       struct secret *secret)
+{
+	u64 num = channel_their_revocations(channel);
+
+	/* BOLT #2:
+	 *     - if `next_revocation_number` equals 0:
+	 *       - MUST set `your_last_per_commitment_secret` to all zeroes
+	 *     - otherwise:
+	 *       - MUST set `your_last_per_commitment_secret` to the last
+	 *         `per_commitment_secret` it received
+	 */
+	if (num == 0) {
+		memset(secret, 0, sizeof(*secret));
+		return true;
+	}
+	if (channel->their_secrets_in_db) {
+		*secret = channel->their_last_secret;
+		return true;
+	}
+	return shachain_get_secret(&channel->their_shachain.chain, num - 1,
+				   secret);
+}
+
 static void chanmap_remove(struct lightningd *ld,
 			   const struct channel *channel,
 			   struct short_channel_id scid)
@@ -442,6 +473,10 @@ struct channel *new_unsaved_channel(struct peer *peer,
 	/* No shachain yet */
 	channel->their_shachain.id = 0;
 	shachain_init(&channel->their_shachain.chain);
+	channel->their_secrets_in_db = false;
+	channel->their_secrets_received = 0;
+	memset(&channel->their_last_secret, 0,
+	       sizeof(channel->their_last_secret));
 
 	msg = towire_hsmd_new_channel(NULL, &peer->id, channel->unsaved_dbid);
 	msg = hsm_sync_req(tmpctx, ld, take(msg));
@@ -604,6 +639,12 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 		channel->their_shachain.id = 0;
 		shachain_init(&channel->their_shachain.chain);
 	}
+	/* The wallet fills these in if the peer's secrets outgrew the
+	 * shachain (option_independent_secrets). */
+	channel->their_secrets_in_db = false;
+	channel->their_secrets_received = 0;
+	memset(&channel->their_last_secret, 0,
+	       sizeof(channel->their_last_secret));
 	channel->state = state;
 	channel->opener = opener;
 	channel->owner = NULL;
