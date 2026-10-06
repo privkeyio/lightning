@@ -153,7 +153,8 @@ static enum channel_state calc_channel_state_max(void)
 
 int main(int argc, char *argv[])
 {
-	struct channel_type t;
+	struct channel_type t, *ct;
+	struct feature_set *ours;
 
 	common_setup(argv[0]);
 
@@ -163,6 +164,29 @@ int main(int argc, char *argv[])
 			"static_remotekey/even anchors/even");
 
 	assert(calc_channel_state_max() == CHANNEL_STATE_MAX);
+
+	/* option_independent_secrets is a variant of either basic type, which
+	 * we accept only if we offer it, and don't require. */
+	ours = feature_set_for_feature(tmpctx,
+				       OPTIONAL_FEATURE(OPT_STATIC_REMOTEKEY));
+	feature_set_or(ours,
+		       take(feature_set_for_feature(NULL,
+						    OPTIONAL_FEATURE(OPT_ANCHORS_ZERO_FEE_HTLC_TX))));
+	ct = channel_type_anchors_zero_fee_htlc(tmpctx);
+	channel_type_set_independent_secrets(ct);
+	assert_names_eq(channel_type_name(tmpctx, ct),
+			"static_remotekey/even anchors/even independent_secrets/even");
+	assert(!channel_type_accept(tmpctx, ct->features, ours));
+	feature_set_or(ours,
+		       take(feature_set_for_feature(NULL,
+						    OPTIONAL_FEATURE(OPT_INDEPENDENT_SECRETS))));
+	assert(channel_type_accept(tmpctx, ct->features, ours));
+	ct = channel_type_static_remotekey(tmpctx);
+	channel_type_set_independent_secrets(ct);
+	assert(channel_type_accept(tmpctx, ct->features, ours));
+	assert(channel_type_accept(tmpctx,
+				   channel_type_anchors_zero_fee_htlc(tmpctx)->features,
+				   ours));
 
 	t.features = tal_arr(tmpctx, u8, 0);
 	set_feature_bit(&t.features, 1000);
