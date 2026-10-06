@@ -2743,10 +2743,10 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 		return;
 	}
 
-	if (revokenum != revocations_received(&channel->their_shachain.chain)) {
+	if (revokenum != channel_their_revocations(channel)) {
 		channel_internal_error(channel, "got_revoke: expected %"PRIu64
 				    " got %"PRIu64,
-				    revocations_received(&channel->their_shachain.chain), revokenum);
+				    channel_their_revocations(channel), revokenum);
 		return;
 	}
 

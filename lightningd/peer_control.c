@@ -1984,15 +1984,12 @@ void handle_peer_connected(struct lightningd *ld, const u8 *msg)
 	plugin_hook_call_peer_connected(ld, cmd_id, hook_payload);
 }
 
-static void send_reestablish(struct peer *peer,
-			     const struct channel_id *cid,
-			     const struct shachain *their_shachain,
-			     u64 local_next_index)
+/* How many per-commitment secrets a closed channel's peer revealed, and the
+ * last one (all zeroes if none).  False if we can't produce it. */
+static bool closed_channel_their_last_secret(const struct closed_channel *cc,
+					     u64 *num_revocations,
+					     struct secret *last)
 {
-	u8 *msg;
-	struct secret last_remote_per_commit_secret;
-	u64 num_revocations;
-
 	/* BOLT #2:
 	 *     - if `next_revocation_number` equals 0:
 	 *       - MUST set `your_last_per_commitment_secret` to all zeroes
@@ -2000,18 +1997,22 @@ static void send_reestablish(struct peer *peer,
 	 *       - MUST set `your_last_per_commitment_secret` to the last
 	 *         `per_commitment_secret` it received
 	 */
-	num_revocations = revocations_received(their_shachain);
-	if (num_revocations == 0)
-		memset(&last_remote_per_commit_secret, 0,
-		       sizeof(last_remote_per_commit_secret));
-	else if (!shachain_get_secret(their_shachain,
-				      num_revocations-1,
-				      &last_remote_per_commit_secret)) {
-		log_peer_broken(peer->ld->log, &peer->id,
-				"%s: cannot get shachain secret %"PRIu64" to send reestablish",
-				fmt_channel_id(tmpctx, cid), num_revocations-1);
-		return;
+	*num_revocations = revocations_received(cc->their_shachain);
+	if (*num_revocations == 0) {
+		memset(last, 0, sizeof(*last));
+		return true;
 	}
+	return shachain_get_secret(cc->their_shachain, *num_revocations - 1,
+				   last);
+}
+
+static void send_reestablish(struct peer *peer,
+			     const struct channel_id *cid,
+			     u64 num_revocations,
+			     const struct secret *last_remote_per_commit_secret,
+			     u64 local_next_index)
+{
+	u8 *msg;
 
 	/* BOLT #2:
 	 * The sending node:
@@ -2028,7 +2029,7 @@ static void send_reestablish(struct peer *peer,
 	msg = towire_channel_reestablish(tmpctx, cid,
 					 local_next_index,
 					 num_revocations,
-					 &last_remote_per_commit_secret,
+					 last_remote_per_commit_secret,
 					 /* Any valid point works, since static_remotekey */
 					 &peer->ld->our_pubkey,
 					 /* No upgrade for you, since we're closed! */
@@ -2149,9 +2150,19 @@ void handle_peer_spoke(struct lightningd *ld, const u8 *msg)
 							  "Trouble in paradise?");
 				goto send_error;
 			}
-			send_reestablish(peer, &channel->cid,
-					 &channel->their_shachain.chain,
-					 channel->next_index[LOCAL]);
+			struct secret last_secret;
+			if (!channel_their_last_secret(channel, &last_secret)) {
+				log_peer_broken(ld->log, &peer->id,
+						"%s: cannot get secret %"PRIu64
+						" to send reestablish",
+						fmt_channel_id(tmpctx,
+							       &channel->cid),
+						channel_their_revocations(channel) - 1);
+			} else
+				send_reestablish(peer, &channel->cid,
+						 channel_their_revocations(channel),
+						 &last_secret,
+						 channel->next_index[LOCAL]);
 		}
 
 		/* If we have a canned error for this channel, send it now */
@@ -2286,9 +2297,20 @@ void handle_peer_spoke(struct lightningd *ld, const u8 *msg)
 		closed_channel = closed_channel_map_getfirst(peer->ld->closed_channels,
 							     &channel_id, &cc_it);
 		if (closed_channel && closed_channel->their_shachain) {
-			send_reestablish(peer, &closed_channel->cid,
-					 closed_channel->their_shachain,
-					 closed_channel->next_index[LOCAL]);
+			u64 num_revocations;
+			struct secret last_secret;
+			if (closed_channel_their_last_secret(closed_channel,
+							     &num_revocations,
+							     &last_secret))
+				send_reestablish(peer, &closed_channel->cid,
+						 num_revocations, &last_secret,
+						 closed_channel->next_index[LOCAL]);
+			else
+				log_peer_broken(ld->log, &peer->id,
+						"%s: cannot get shachain secret"
+						" to send reestablish",
+						fmt_channel_id(tmpctx,
+							       &closed_channel->cid));
 			log_peer_info(ld->log, &peer->id, "Responded to reestablish for long-closed channel %s",
 				      fmt_channel_id(tmpctx, &channel_id));
 			error = towire_errorfmt(tmpctx, &channel_id,
