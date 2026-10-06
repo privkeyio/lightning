@@ -16,6 +16,8 @@ tlvtype,hsmd_dev_preinit_tlvs,no_preapprove_check,3
 tlvdata,hsmd_dev_preinit_tlvs,no_preapprove_check,disable,bool,
 tlvtype,hsmd_dev_preinit_tlvs,warn_on_overgrind,5
 tlvdata,hsmd_dev_preinit_tlvs,warn_on_overgrind,enable,bool,
+tlvtype,hsmd_dev_preinit_tlvs,independent_secrets_sender,7
+tlvdata,hsmd_dev_preinit_tlvs,independent_secrets_sender,enable,bool,
 
 #include <bitcoin/chainparams.h>
 # Start the HSM.

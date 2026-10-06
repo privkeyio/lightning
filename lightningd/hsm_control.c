@@ -110,6 +110,9 @@ struct ext_key *hsm_init(struct lightningd *ld)
 						   &ld->dev_hsmd_no_preapprove_check);
 		tlv->warn_on_overgrind = tal_dup(tlv, bool,
 						 &ld->dev_hsmd_warn_on_overgrind);
+		tlv->independent_secrets_sender
+			= tal_dup(tlv, bool,
+				  &ld->dev_hsmd_independent_secrets_sender);
 
 		msg = towire_hsmd_dev_preinit(tmpctx, tlv);
 		if (!wire_sync_write(ld->hsm_fd, msg))
