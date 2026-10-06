@@ -10,12 +10,13 @@ This is an unofficial version of [Core Lightning](https://github.com/ElementsPro
 - **Unified signatures.** Wallet transactions and new channels are signed with the opt-in `SIGHASH_UNIFIED` digest, so a channel funded past activation from coins received past activation is signed in a way a node that has not upgraded rejects, and cannot be replayed on the SHA256d fork. Built on [connorslab's](https://github.com/connorslab/lightning) unified-sigs work.
 - **A required peer feature bit.** The node advertises `option_blake2b` as compulsory, so it will not connect to a Lightning node that has not upgraded.
 - **Downgrades are refused.** A build without unified signing computes a different signature hash and could not close the channels this one opens, so `lightning-downgrade` stops before touching the database.
+- **Independent per-commitment secrets.** With `--independent-secrets` (off by default), on a new channel with a peer which also offers `option_independent_secrets`, the node accepts per-commitment secrets that don't come from a shachain and keeps each one it needs to punish a breach, so the peer can generate them k-of-n and no single signer can give away the secret of its current state. Secrets from a peer which uses a shachain still go in one, so nothing changes with such a peer. See [doc/independent-secrets.md](doc/independent-secrets.md).
 
 ## Before opening channels
 
 The required feature bit means you **cannot cooperatively close a channel opened before activation** with a counterparty that has not upgraded.
 
-The feature bits are the ones proposed for BOLT 9: 512 for `option_blake2b` and 514 for `option_unified_sigs`. A stored channel type using the earlier bit 70 is moved to 514 on upgrade.
+The feature bits are the ones proposed for BOLT 9: 512 for `option_blake2b` and 514 for `option_unified_sigs`. `option_independent_secrets` uses 266, from a draft bLIP. A stored channel type using the earlier bit 70 is moved to 514 on upgrade.
 
 Fund channels only from coins received past activation. A channel funded from a coin received before activation has a funding transaction a node that has not upgraded also accepts, which reopens the exposure unified signing exists to close.
 
