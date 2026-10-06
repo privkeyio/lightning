@@ -11217,6 +11217,12 @@ pub mod responses {
 	}
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct ListconfigsConfigsIndependentsecrets {
+	    pub set: bool,
+	    pub source: String,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
 	pub struct ListconfigsConfigsLargechannels {
 	    pub set: bool,
 	    pub source: String,
@@ -11557,6 +11563,9 @@ pub mod responses {
 	    #[serde(rename = "important-plugin")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub important_plugin: Option<ListconfigsConfigsImportantplugin>,
+	    #[serde(rename = "independent-secrets")]
+	    #[serde(skip_serializing_if = "Option::is_none")]
+	    pub independent_secrets: Option<ListconfigsConfigsIndependentsecrets>,
 	    #[serde(rename = "large-channels")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub large_channels: Option<ListconfigsConfigsLargechannels>,

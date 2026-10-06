@@ -2550,6 +2550,7 @@
             "ListConfigs.configs.htlc-minimum-msat": 43,
             "ListConfigs.configs.ignore-fee-limits": 32,
             "ListConfigs.configs.important-plugin": 9,
+            "ListConfigs.configs.independent-secrets": 76,
             "ListConfigs.configs.large-channels": 20,
             "ListConfigs.configs.lightning-dir": 12,
             "ListConfigs.configs.log-file": 60,
@@ -2769,6 +2770,10 @@
         "ListconfigsConfigsImportant-plugin": {
             "ListConfigs.configs.important-plugin.sources[]": 2,
             "ListConfigs.configs.important-plugin.values_str[]": 1
+        },
+        "ListconfigsConfigsIndependent-secrets": {
+            "ListConfigs.configs.independent-secrets.set": 1,
+            "ListConfigs.configs.independent-secrets.source": 2
         },
         "ListconfigsConfigsLarge-channels": {
             "ListConfigs.configs.large-channels.set": 1,
@@ -10285,6 +10290,18 @@
         },
         "ListConfigs.configs.important-plugin.values_str[]": {
             "added": "v23.08",
+            "deprecated": null
+        },
+        "ListConfigs.configs.independent-secrets": {
+            "added": "v26.06.9-blake2b.8",
+            "deprecated": null
+        },
+        "ListConfigs.configs.independent-secrets.set": {
+            "added": "v26.06.9-blake2b.8",
+            "deprecated": null
+        },
+        "ListConfigs.configs.independent-secrets.source": {
+            "added": "v26.06.9-blake2b.8",
             "deprecated": null
         },
         "ListConfigs.configs.large-channels": {

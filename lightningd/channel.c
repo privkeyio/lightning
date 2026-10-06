@@ -274,6 +274,11 @@ struct channel_type *desired_channel_type(const tal_t *ctx,
 		type = channel_type_static_remotekey(ctx);
 	if (feature_offered(our_features->bits[INIT_FEATURE], OPT_UNIFIED_SIGS))
 		set_feature_bit(&type->features, OPT_UNIFIED_SIGS);
+	/* Unlike the unified signer, this one is only for peers which have
+	 * it too: everyone else gets the usual shachain channel. */
+	if (feature_negotiated(our_features, their_features,
+			       OPT_INDEPENDENT_SECRETS))
+		channel_type_set_independent_secrets(type);
 	return type;
 }
 

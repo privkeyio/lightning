@@ -3236,6 +3236,7 @@ message ListconfigsConfigs {
 	optional ListconfigsConfigsAutoconnectseekerpeers autoconnect_seeker_peers = 71;
 	optional ListconfigsConfigsCurrencyrateaddsource currencyrate_add_source = 74;
 	optional ListconfigsConfigsCurrencyratedisablesource currencyrate_disable_source = 75;
+	optional ListconfigsConfigsIndependentsecrets independent_secrets = 76;
 }
 
 message ListconfigsConfigsAddr {
@@ -3455,6 +3456,11 @@ message ListconfigsConfigsIgnorefeelimits {
 message ListconfigsConfigsImportantplugin {
 	repeated string values_str = 1;
 	repeated string sources = 2;
+}
+
+message ListconfigsConfigsIndependentsecrets {
+	bool set = 1;
+	string source = 2;
 }
 
 message ListconfigsConfigsLargechannels {
