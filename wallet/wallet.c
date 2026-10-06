@@ -1290,6 +1290,76 @@ static bool wallet_shachain_load(struct wallet *wallet, u64 id,
 	return true;
 }
 
+void wallet_revocation_secret_add(struct wallet *w,
+				  u64 channel_dbid,
+				  u64 commitnum,
+				  const struct secret *secret)
+{
+	struct db_stmt *stmt;
+
+	stmt = db_prepare_v2(w->db,
+			     SQL("INSERT INTO channel_revocation_secrets"
+				 " (channel_id, commitnum, secret)"
+				 " VALUES (?, ?, ?);"));
+	db_bind_u64(stmt, channel_dbid);
+	db_bind_u64(stmt, commitnum);
+	db_bind_secret(stmt, secret);
+	db_exec_prepared_v2(take(stmt));
+}
+
+bool wallet_revocation_secret_get(struct wallet *w,
+				  u64 channel_dbid,
+				  u64 commitnum,
+				  struct secret *secret)
+{
+	struct db_stmt *stmt;
+	bool found;
+
+	stmt = db_prepare_v2(w->db,
+			     SQL("SELECT secret FROM channel_revocation_secrets"
+				 " WHERE channel_id = ? AND commitnum = ?;"));
+	db_bind_u64(stmt, channel_dbid);
+	db_bind_u64(stmt, commitnum);
+	db_query_prepared(stmt);
+	found = db_step(stmt);
+	if (found)
+		db_col_secret(stmt, "secret", secret);
+	tal_free(stmt);
+	return found;
+}
+
+/* On an option_independent_secrets channel, whether the peer's secrets
+ * outgrew the shachain, and if so how many it has revealed in all, and the
+ * latest.  Those in the db run without gaps from the first which didn't fit
+ * the shachain, and when the channel closes we keep only the latest, so the
+ * count is one more than the highest number either way. */
+static bool wallet_revocation_secrets_latest(struct wallet *w,
+					     u64 channel_dbid,
+					     u64 *num,
+					     struct secret *latest)
+{
+	struct db_stmt *stmt;
+	bool found;
+
+	stmt = db_prepare_v2(w->db,
+			     SQL("SELECT commitnum, secret"
+				 " FROM channel_revocation_secrets"
+				 " WHERE channel_id = ?"
+				 " ORDER BY commitnum DESC LIMIT 1;"));
+	db_bind_u64(stmt, channel_dbid);
+	db_query_prepared(stmt);
+	found = db_step(stmt);
+	if (found) {
+		*num = db_col_u64(stmt, "commitnum") + 1;
+		db_col_secret(stmt, "secret", latest);
+	} else {
+		*num = 0;
+		memset(latest, 0, sizeof(*latest));
+	}
+	tal_free(stmt);
+	return found;
+}
+
 static struct peer *wallet_peer_load(struct wallet *w, const u64 dbid)
 {
 	const char *addrstr, *err;
@@ -2210,6 +2280,12 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 		return NULL;
 	}
 
+	if (channel_has(chan, OPT_INDEPENDENT_SECRETS))
+		chan->their_secrets_in_db
+			= wallet_revocation_secrets_latest(w, chan->dbid,
+							   &chan->their_secrets_received,
+							   &chan->their_last_secret);
+
 	return chan;
 }
 
@@ -2257,6 +2333,19 @@ static struct closed_channel *wallet_stmt2closed_channel(const tal_t *ctx,
 		cc->their_shachain = tal_dup(cc, struct shachain, &wshachain.chain);
 	else
 		cc->their_shachain = NULL;
+	if (channel_type_has(cc->type, OPT_INDEPENDENT_SECRETS))
+		cc->their_secrets_in_db
+			= wallet_revocation_secrets_latest(w,
+							   db_col_u64(stmt, "channels.id"),
+							   &cc->their_secrets_received,
+							   &cc->their_last_secret);
+	else {
+		db_col_ignore(stmt, "channels.id");
+		cc->their_secrets_in_db = false;
+		cc->their_secrets_received = 0;
+		memset(&cc->their_last_secret, 0,
+		       sizeof(cc->their_last_secret));
+	}
 	if (!db_col_is_null(stmt, "funding_psbt"))
 		cc->funding_psbt = db_col_psbt(cc, stmt, "funding_psbt");
 	else
@@ -2299,6 +2388,7 @@ void wallet_load_closed_channels(struct wallet *w,
 					", shachain_remote_id"
 					", funding_psbt"
 					", withheld"
+					", channels.id"
 					" FROM channels"
 					" LEFT JOIN peers p ON p.id = peer_id"
                                         " WHERE state = ?;"));
@@ -2346,6 +2436,7 @@ void wallet_load_one_closed_channel(struct wallet *w,
 					", shachain_remote_id"
 					", funding_psbt"
 					", withheld"
+					", channels.id"
 					" FROM channels"
 					" LEFT JOIN peers p ON p.id = peer_id"
                                         " WHERE channels.id = ?;"));
@@ -3111,7 +3202,7 @@ void wallet_channel_close(struct wallet *w,
 	 * help us debug some issues, and it is rather limited in size.  We
 	 * also keep shachains: it's limited and we can use it for sending
 	 * reestablish messages with enough information for nodes with lost
-	 * dbs to recover. */
+	 * dbs to recover (for option_independent_secrets, the last secret). */
 	struct db_stmt *stmt;
 	u64 new_move_id;
 	u64 htlcs;
@@ -3167,6 +3258,20 @@ void wallet_channel_close(struct wallet *w,
 					"WHERE channel_id=?"));
 	db_bind_u64(stmt, chan->dbid);
 	db_exec_prepared_v2(take(stmt));
+
+	/* With option_independent_secrets, secrets which didn't fit the
+	 * shachain are each in the db, so they would grow without bound.
+	 * Nothing can spend the funding output any more, so no revoked
+	 * commitment can turn up: keep only the last secret, which
+	 * channel_reestablish still needs. */
+	if (chan->their_secrets_in_db && chan->their_secrets_received > 1) {
+		stmt = db_prepare_v2(w->db,
+				     SQL("DELETE FROM channel_revocation_secrets"
+					 " WHERE channel_id = ? AND commitnum < ?"));
+		db_bind_u64(stmt, chan->dbid);
+		db_bind_u64(stmt, chan->their_secrets_received - 1);
+		db_exec_prepared_v2(take(stmt));
+	}
 
 	/* Set the channel to closed */
 	stmt = db_prepare_v2(w->db, SQL("UPDATE channels "

@@ -635,6 +635,38 @@ bool wallet_shachain_add_hash(struct wallet *wallet,
 			      const struct secret *hash);
 
 /**
+ * wallet_revocation_secret_add -- store a per-commitment secret the peer
+ * revealed on an option_independent_secrets channel.
+ * @w: the wallet
+ * @channel_dbid: the channel's dbid
+ * @commitnum: the number of the commitment it revokes
+ * @secret: the secret
+ *
+ * Secrets go in the channel's shachain for as long as they fit it.  From the
+ * first which doesn't, each one goes in the database, so those run without
+ * gaps from there.
+ */
+void wallet_revocation_secret_add(struct wallet *w,
+				  u64 channel_dbid,
+				  u64 commitnum,
+				  const struct secret *secret);
+
+/**
+ * wallet_revocation_secret_get -- look up the per-commitment secret for a
+ * revoked commitment of the peer's on an option_independent_secrets channel.
+ * @w: the wallet
+ * @channel_dbid: the channel's dbid
+ * @commitnum: the commitment number
+ * @secret: (out) the secret, if found
+ *
+ * False if we don't have it.
+ */
+bool wallet_revocation_secret_get(struct wallet *w,
+				  u64 channel_dbid,
+				  u64 commitnum,
+				  struct secret *secret);
+
+/**
  * wallet_get_uncommitted_channel_dbid -- get a unique channel dbid
  *
  * @wallet: the wallet
@@ -713,6 +745,9 @@ void wallet_channel_clear_inflights(struct wallet *w,
 				    struct channel *chan);
 /**
  * After fully resolving a channel, only keep a lightweight stub
+ *
+ * Of per-commitment secrets stored for option_independent_secrets, that means
+ * only the last, which is all channel_reestablish needs.
  */
 void wallet_channel_close(struct wallet *w,
 			  const struct channel *chan);
