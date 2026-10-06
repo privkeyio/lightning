@@ -1293,6 +1293,19 @@ static char *opt_set_shutdown_wrong_funding(struct lightningd *ld)
 	return NULL;
 }
 
+static char *opt_set_independent_secrets(struct lightningd *ld)
+{
+	/* Like option_blake2b and option_unified_sigs, it is for the BLAKE2b
+	 * network. */
+	if (chainparams->is_elements)
+		return "--independent-secrets is not available on Liquid";
+	/* False if given twice, which is fine. */
+	feature_set_or(ld->our_features,
+		       take(feature_set_for_feature(NULL,
+						    OPTIONAL_FEATURE(OPT_INDEPENDENT_SECRETS))));
+	return NULL;
+}
+
 static char *opt_set_peer_storage(struct lightningd *ld)
 {
 	if (!opt_deprecated_ok(ld, "experimental-peer-storage", NULL,
@@ -1530,6 +1543,13 @@ static void register_opts(struct lightningd *ld)
 	opt_register_early_noarg("--experimental-peer-storage",
 				 opt_set_peer_storage, ld,
 				 opt_hidden);
+	/* This affects our features, so set early. */
+	opt_register_early_noarg("--independent-secrets",
+				 opt_set_independent_secrets, ld,
+				 "Offer option_independent_secrets, so new channels"
+				 " with a peer which offers it too accept"
+				 " per-commitment secrets which don't come from a"
+				 " shachain, and store each one");
 
 	clnopt_noarg("--help|-h", OPT_EXITS,
 		     opt_lightningd_usage, ld, "Print this message.");

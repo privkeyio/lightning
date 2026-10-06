@@ -3487,6 +3487,16 @@ impl From<responses::ListconfigsConfigsImportantplugin> for pb::ListconfigsConfi
 }
 
 #[allow(unused_variables)]
+impl From<responses::ListconfigsConfigsIndependentsecrets> for pb::ListconfigsConfigsIndependentsecrets {
+    fn from(c: responses::ListconfigsConfigsIndependentsecrets) -> Self {
+        Self {
+            set: c.set, // Rule #2 for type boolean
+            source: c.source, // Rule #2 for type string
+        }
+    }
+}
+
+#[allow(unused_variables)]
 impl From<responses::ListconfigsConfigsLargechannels> for pb::ListconfigsConfigsLargechannels {
     fn from(c: responses::ListconfigsConfigsLargechannels) -> Self {
         Self {
@@ -3820,6 +3830,7 @@ impl From<responses::ListconfigsConfigs> for pb::ListconfigsConfigs {
             htlc_minimum_msat: c.htlc_minimum_msat.map(|v| v.into()),
             ignore_fee_limits: c.ignore_fee_limits.map(|v| v.into()),
             important_plugin: c.important_plugin.map(|v| v.into()),
+            independent_secrets: c.independent_secrets.map(|v| v.into()),
             large_channels: c.large_channels.map(|v| v.into()),
             lightning_dir: c.lightning_dir.map(|v| v.into()),
             log_file: c.log_file.map(|v| v.into()),

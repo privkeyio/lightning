@@ -20216,6 +20216,29 @@
                   }
                 }
               },
+              "independent-secrets": {
+                "added": "v26.06.9-blake2b.8",
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "set",
+                  "source"
+                ],
+                "properties": {
+                  "set": {
+                    "type": "boolean",
+                    "description": [
+                      "`true` if set in config or cmdline."
+                    ]
+                  },
+                  "source": {
+                    "type": "string",
+                    "description": [
+                      "Source of configuration setting."
+                    ]
+                  }
+                }
+              },
               "experimental-dual-fund": {
                 "type": "object",
                 "additionalProperties": false,
@@ -21635,6 +21658,10 @@
               "disable-dns": {
                 "set": true,
                 "source": "cmdline"
+              },
+              "independent-secrets": {
+                "set": false,
+                "source": "default"
               },
               "disable-mpp": {
                 "set": false,
