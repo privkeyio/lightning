@@ -48,6 +48,12 @@ msgdata,onchaind_init,option_anchor_outputs,bool,
 msgdata,onchaind_init,option_anchors_zero_fee_htlc_tx,bool,
 # We need this for BIP125 rule 4
 msgdata,onchaind_init,min_relay_feerate,u32,
+# How many per-commitment secrets the peer revealed.  With
+# option_independent_secrets, `shachain` holds only those before the first
+# which didn't fit it, and lightningd keeps the rest: if this is a commitment
+# of the peer's which they revoked, and its secret is one of those, it's here.
+msgdata,onchaind_init,num_revocations,u64,
+msgdata,onchaind_init,revocation_secret,?secret,
 
 # This says we're ready; give us htlcs and preimages.
 msgtype,onchaind_init_reply,5101
