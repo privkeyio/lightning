@@ -2505,6 +2505,13 @@ def listconfigs_configs_important_plugin2py(m):
     })
 
 
+def listconfigs_configs_independent_secrets2py(m):
+    return remove_default({
+        "set": m.set,  # PrimitiveField in generate_composite
+        "source": m.source,  # PrimitiveField in generate_composite
+    })
+
+
 def listconfigs_configs_large_channels2py(m):
     return remove_default({
         "set": m.set,  # PrimitiveField in generate_composite
