@@ -1997,6 +1997,12 @@ static bool closed_channel_their_last_secret(const struct closed_channel *cc,
 	 *       - MUST set `your_last_per_commitment_secret` to the last
 	 *         `per_commitment_secret` it received
 	 */
+	if (cc->their_secrets_in_db) {
+		*num_revocations = cc->their_secrets_received;
+		*last = cc->their_last_secret;
+		return true;
+	}
+
 	*num_revocations = revocations_received(cc->their_shachain);
 	if (*num_revocations == 0) {
 		memset(last, 0, sizeof(*last));
@@ -2296,7 +2302,9 @@ void handle_peer_spoke(struct lightningd *ld, const u8 *msg)
 		/* Maybe a previously closed channel? */
 		closed_channel = closed_channel_map_getfirst(peer->ld->closed_channels,
 							     &channel_id, &cc_it);
-		if (closed_channel && closed_channel->their_shachain) {
+		if (closed_channel
+		    && (closed_channel->their_shachain
+			|| closed_channel->their_secrets_in_db)) {
 			u64 num_revocations;
 			struct secret last_secret;
 			if (closed_channel_their_last_secret(closed_channel,
