@@ -1569,6 +1569,11 @@ static bool test_htlcsigs_confirm_inflight(struct wallet *w,
 {
 	struct bitcoin_outpoint winner, same_txid, same_outnum, neither;
 	struct bitcoin_signature *active, *win, *lose, *loaded, *confirmed;
+	const struct channel_type *original_type = chan->type;
+	struct channel_type *unified_type = channel_type_static_remotekey(tmpctx);
+
+	channel_type_set_unified_sigs(unified_type);
+	chan->type = unified_type;
 
 	memset(&winner.txid, 1, sizeof(winner.txid));
 	winner.n = 0;
@@ -1600,11 +1605,13 @@ static bool test_htlcsigs_confirm_inflight(struct wallet *w,
 
 	/* Winner's sigs are now the active set, and that's what we got back */
 	loaded = wallet_htlc_sigs_load(tmpctx, w, chan->dbid,
-				       channel_type_static_remotekey(tmpctx));
+				       chan->type);
 	CHECK(tal_count(loaded) == 1);
 	CHECK(memeq(&loaded[0].s, sizeof(loaded[0].s), &win[0].s, sizeof(win[0].s)));
 	CHECK(tal_count(confirmed) == 1);
 	CHECK(memeq(&confirmed[0].s, sizeof(confirmed[0].s), &win[0].s, sizeof(win[0].s)));
+	CHECK(confirmed[0].sighash_type == (SIGHASH_ALL | SIGHASH_UNIFIED));
+	CHECK(loaded[0].sighash_type == confirmed[0].sighash_type);
 
 	/* Old active set and losing inflights are gone */
 	CHECK(count_htlc_sigs(w, chan->dbid) == 1);
@@ -1612,6 +1619,7 @@ static bool test_htlcsigs_confirm_inflight(struct wallet *w,
 	/* Leave the table matching chan so later load/compare checks in the
 	 * caller do not see our fixture rows. */
 	wallet_htlc_sigs_save(w, chan->dbid, chan->last_htlc_sigs);
+	chan->type = original_type;
 	return true;
 }
 
