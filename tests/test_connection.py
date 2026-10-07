@@ -4487,6 +4487,8 @@ def test_wss_proxy(node_factory):
     l1.daemon.wait_for_log(f'Websocket Secure Server Started at 127.0.0.1:{wss_port}')
     l1.daemon.logsearch_start = 0
     l1.daemon.wait_for_log(fr'Websocket Secure Server Started at \[::1\]:{wss_port}')
+    for name in ('ca-key.pem', 'client-key.pem', 'server-key.pem'):
+        assert (Path(wss_proxy_certs) / name).stat().st_mode & 0o777 == 0o600
 
     wss = BindWebSecureSocket('localhost', wss_port)
 

@@ -116,6 +116,8 @@ def test_generate_certificate(node_factory):
     contents = [f.read_bytes() for f in files]
     l1.restart()
     assert contents == [f.read_bytes() for f in files]
+    for key in rest_certs_path.glob('*-key.pem'):
+        assert key.stat().st_mode & 0o777 == 0o600
 
     # remove client.pem file, so all certs are regenerated at restart
     files[2].unlink()
