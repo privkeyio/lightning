@@ -2678,7 +2678,7 @@ wallet_htlcsigs_confirm_inflight(const tal_t *ctx,
 	db_exec_prepared_v2(take(stmt));
 
 	return wallet_htlc_sigs_load(ctx, w, chan->dbid,
-				     channel_type_has_anchors(chan->type));
+				     chan->type);
 }
 
 void wallet_channel_save(struct wallet *w, struct channel *chan)
