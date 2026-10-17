@@ -2282,7 +2282,7 @@ def test_gossip_query_channel_range_cpu_throttle(node_factory, chainparams):
                'disable-plugin': unneeded_plugins},
               {'gossip_store_file': gsfile.name,
                'disable-plugin': unneeded_plugins,
-               'dev-throttle-gossip': None,
+               'dev-gossip-cpu-budget': 10,
                'broken_log': 'Throttling (incoming|outgoing) peer'}])
 
     # A range far beyond any scid we generated: the reply matches
@@ -2307,9 +2307,11 @@ def test_gossip_query_channel_range_cpu_throttle(node_factory, chainparams):
                    check=True, timeout=TIMEOUT, stdout=subprocess.PIPE)
     assert time.time() - start < 10
 
-    # l2 (--dev-throttle-gossip): the query itself is small to read, but
-    # *answering* it means walking the whole gossmap, which blows the
-    # tiny CPU budget: throttled even though the reply is minuscule.
+    # l2 (--dev-gossip-cpu-budget=10): the query itself is small to read,
+    # but *answering* it means walking the whole gossmap, which blows the
+    # tiny CPU budget: throttled even though the reply is minuscule.  The
+    # traffic limits stay at their defaults, so only CPU can throttle it,
+    # and a 10 usec budget is blown by a full walk on any machine.
     # Ten queries down one connection, so we blow the budget by a wide
     # margin rather than by a hair.  The earlier version asserted on wall
     # clock after a single query, which only held while the budget stayed
@@ -2335,12 +2337,19 @@ def test_gossip_query_channel_range_cpu_throttle(node_factory, chainparams):
 def test_gossip_throttle_no_unrequested_stream(node_factory, chainparams):
     """When a throttle ends for a peer which never sent
     gossip_timestamp_filter, we must not start streaming gossip to it."""
-    chans = [GenChannel(i, i + 1) for i in range(15000)]
+    # Few enough channels that walking them costs little, but enough that
+    # a full range reply is over --dev-throttle-gossip's 1000 bytes a
+    # second: that throttles by traffic for a couple of seconds, whatever
+    # the machine's speed.
+    chans = [GenChannel(i, i + 1) for i in range(300)]
     gsfile, nodemap = generate_gossip_store(chans)
 
+    # The huge CPU budget leaves only --dev-throttle-gossip's traffic
+    # limit, so the throttle is always the traffic one.
     l1 = node_factory.get_node(options={'disable-plugin': ['recover', 'cln-askrene', 'cln-renepay',
                                                            'bookkeeper', 'topology', 'cln-xpay'],
-                                        'dev-throttle-gossip': None},
+                                        'dev-throttle-gossip': None,
+                                        'dev-gossip-cpu-budget': 1000000000},
                                gossip_store_file=gsfile.name,
                                broken_log='Throttling (incoming|outgoing) peer')
 
@@ -2351,7 +2360,7 @@ def test_gossip_throttle_no_unrequested_stream(node_factory, chainparams):
     query = subprocess.run(['devtools/mkquery',
                             'query_channel_range',
                             chainparams['chain_hash'],
-                            '1000000', '1'],
+                            '0', '4294967295'],
                            check=True, timeout=TIMEOUT,
                            stdout=subprocess.PIPE).stdout.strip().decode()
 
@@ -2362,13 +2371,39 @@ def test_gossip_throttle_no_unrequested_stream(node_factory, chainparams):
                                    '--filter=256,257,258',
                                    '--max-messages=1',
                                    '{}@localhost:{}'.format(l1.info['id'], l1.port),
-                                   init] + [query] * 10,
+                                   init, query],
                                   stdout=subprocess.PIPE)
 
-    l1.daemon.wait_for_log(r'Throttling outgoing peer .*: too much CPU')
+    l1.daemon.wait_for_log(r'Throttling outgoing peer .*: too much traffic')
     l1.daemon.wait_for_log('Throttle over, not streaming: no gossip_timestamp_filter')
     gossipwith.kill()
     assert gossipwith.communicate()[0] == b''
+
+
+def test_gossip_cpu_throttle_only_queries(node_factory):
+    """Only answering gossip queries counts against the CPU budget: a
+    peer sending us ordinary messages (here pings) must not get its reads
+    throttled, even with a tiny CPU budget."""
+    # A tiny CPU budget, but the normal traffic limits, so only CPU can
+    # trip the throttle.
+    l1 = node_factory.get_node(options={'dev-gossip-cpu-budget': 10})
+
+    # ping with num_pong_bytes 0, no padding.
+    ping = '0012' + '0000' + '0000'
+    out = subprocess.run(['devtools/gossipwith',
+                          '--no-gossip',
+                          '--hex',
+                          '--network={}'.format(TEST_NETWORK),
+                          '--filter=19',
+                          '--max-messages=200',
+                          '--timeout-after=30',
+                          '{}@localhost:{}'.format(l1.info['id'], l1.port)]
+                         + [ping] * 200,
+                         timeout=TIMEOUT, stdout=subprocess.PIPE).stdout.split()
+
+    # Every ping was answered, so all 200 really were read.
+    assert len(out) == 200
+    assert not l1.daemon.is_in_log('Throttling incoming peer')
 
 
 def test_generate_gossip_store(node_factory):
