@@ -3247,6 +3247,7 @@
             "ListPeerChannels.channels[].in_offered_msat": 45,
             "ListPeerChannels.channels[].in_payments_fulfilled": 46,
             "ListPeerChannels.channels[].in_payments_offered": 44,
+            "ListPeerChannels.channels[].independent_secrets_stored": 64,
             "ListPeerChannels.channels[].inflight[]": 16,
             "ListPeerChannels.channels[].initial_feerate": 12,
             "ListPeerChannels.channels[].last_feerate": 13,
@@ -11786,6 +11787,10 @@
         },
         "ListPeerChannels.channels[].in_payments_offered": {
             "added": "v23.02",
+            "deprecated": null
+        },
+        "ListPeerChannels.channels[].independent_secrets_stored": {
+            "added": "v26.06.9-blake2b.8",
             "deprecated": null
         },
         "ListPeerChannels.channels[].inflight[]": {

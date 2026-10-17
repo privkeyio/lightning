@@ -53,6 +53,11 @@ def stored_secrets(node):
         'SELECT commitnum FROM channel_revocation_secrets ORDER BY commitnum;')]
 
 
+def reported_stored(node, peer):
+    """What listpeerchannels says node stores of peer's secrets."""
+    return only_one(node.rpc.listpeerchannels(peer.info['id'])['channels']).get('independent_secrets_stored')
+
+
 def their_revocations(node, peer):
     """How many of peer's commitments node holds the secret for, once they
     outgrew the shachain: what node tells peer in channel_reestablish as
@@ -128,6 +133,8 @@ def test_independent_secrets_shachain_channel_unchanged(node_factory):
     pay_back_and_forth(l1, l2, 3)
     assert stored_secrets(l1) == []
     assert stored_secrets(l2) == []
+    # Not reported without the add-on.
+    assert reported_stored(l1, l2) is None
 
 
 @pytest.mark.openchannel('v1')
@@ -147,6 +154,8 @@ def test_independent_secrets_shachain_peer(node_factory):
     pay_back_and_forth(l1, l2, 1)
     assert stored_secrets(l1) == []
     assert stored_secrets(l2) == []
+    assert reported_stored(l1, l2) == 0
+    assert reported_stored(l2, l1) == 0
 
 
 @pytest.mark.openchannel('v1')
@@ -162,6 +171,9 @@ def test_independent_secrets_stored(node_factory):
     assert stored_secrets(l1)[0] == 1
     assert stored_secrets(l2)[0] == 1
     n1, n2 = their_revocations(l1, l2), their_revocations(l2, l1)
+    # listpeerchannels counts them: all but the first, which fit.
+    assert reported_stored(l1, l2) == len(stored_secrets(l1)) == n1 - 1
+    assert reported_stored(l2, l1) == len(stored_secrets(l2)) == n2 - 1
 
     # channel_reestablish carries the count and the last secret from the
     # db; each side checks the last secret is the one it revealed.
@@ -178,6 +190,9 @@ def test_independent_secrets_stored(node_factory):
     pay_back_and_forth(l1, l2, 2)
     assert their_revocations(l1, l2) > n1
     assert their_revocations(l2, l1) > n2
+    # Including after a restart.
+    assert reported_stored(l1, l2) == their_revocations(l1, l2) - 1
+    assert reported_stored(l2, l1) == their_revocations(l2, l1) - 1
 
 
 @pytest.mark.openchannel('v1')
@@ -205,6 +220,7 @@ def test_independent_secrets_kept_without_the_option(node_factory, bitcoind):
     pay_back_and_forth(l1, l2, 2)
     assert old_num > n
     assert old_num in stored_secrets(l2)
+    assert reported_stored(l2, l1) == their_revocations(l2, l1) - 1
 
     bitcoind.rpc.sendrawtransaction(old_tx)
     bitcoind.generate_block(1)

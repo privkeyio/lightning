@@ -128,6 +128,16 @@ const char *channel_state_name(const struct channel *channel UNNEEDED)
 /* Generated stub for channel_state_str */
 const char *channel_state_str(enum channel_state state UNNEEDED)
 { fprintf(stderr, "channel_state_str called!\n"); abort(); }
+/* Generated stub for channel_their_last_secret */
+bool channel_their_last_secret(const struct channel *channel UNNEEDED,
+			       struct secret *secret UNNEEDED)
+{ fprintf(stderr, "channel_their_last_secret called!\n"); abort(); }
+/* Generated stub for channel_their_revocations */
+u64 channel_their_revocations(const struct channel *channel UNNEEDED)
+{ fprintf(stderr, "channel_their_revocations called!\n"); abort(); }
+/* Generated stub for channel_their_stored_secrets */
+u64 channel_their_stored_secrets(const struct channel *channel UNNEEDED)
+{ fprintf(stderr, "channel_their_stored_secrets called!\n"); abort(); }
 /* Generated stub for channel_unsaved_close_conn */
 void channel_unsaved_close_conn(struct channel *channel UNNEEDED, const char *why UNNEEDED)
 { fprintf(stderr, "channel_unsaved_close_conn called!\n"); abort(); }

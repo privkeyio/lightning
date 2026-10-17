@@ -1392,6 +1392,7 @@ impl From<responses::ListpeerchannelsChannels> for pb::ListpeerchannelsChannels 
             in_offered_msat: c.in_offered_msat.map(|f| f.into()), // Rule #2 for type msat?
             in_payments_fulfilled: c.in_payments_fulfilled, // Rule #2 for type u64?
             in_payments_offered: c.in_payments_offered, // Rule #2 for type u64?
+            independent_secrets_stored: c.independent_secrets_stored, // Rule #2 for type u64?
             // Field: ListPeerChannels.channels[].inflight[]
             inflight: c.inflight.map(|arr| arr.into_iter().map(|i| i.into()).collect()).unwrap_or(vec![]), // Rule #3
             initial_feerate: c.initial_feerate, // Rule #2 for type string?

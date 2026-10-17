@@ -1022,6 +1022,7 @@ def listpeerchannels_channels2py(m):
         "in_offered_msat": amount2msat(m.in_offered_msat),  # PrimitiveField in generate_composite
         "in_payments_fulfilled": m.in_payments_fulfilled,  # PrimitiveField in generate_composite
         "in_payments_offered": m.in_payments_offered,  # PrimitiveField in generate_composite
+        "independent_secrets_stored": m.independent_secrets_stored,  # PrimitiveField in generate_composite
         "initial_feerate": m.initial_feerate,  # PrimitiveField in generate_composite
         "last_feerate": m.last_feerate,  # PrimitiveField in generate_composite
         "last_stable_connection": m.last_stable_connection,  # PrimitiveField in generate_composite
