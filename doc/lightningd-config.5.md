@@ -487,6 +487,21 @@ lessen the odds of a disconnect due to feerate disagreement (default 5).
   Number of HTLCs one channel can handle concurrently in each direction.
 Should be between 1 and 483 (default 30).
 
+* **max-independent-secrets**=*INTEGER*
+
+  On a channel with `option_independent_secrets` (see **independent-secrets**),
+close the channel once we store this many of the peer's per-commitment secrets
+one by one, because they don't fit a shachain: each update adds one, so this
+bounds what one channel costs (about 60 bytes each in sqlite3, 32 of them the
+secret).  We log a warning at 90%, and at the limit start a mutual close, as
+`close` would; after that the peer only needs as many more as it takes to
+settle the HTLCs in flight.  A peer can still keep a closing channel updating
+(with `update_fee`), so once we store 10% more than the limit (at least one
+more) we close the channel unilaterally.  If the limit is lowered below what a
+channel already stores, the close starts at its next update.  A channel the
+peer leased from us is closed at its first update after the lease expires.  0
+means no limit (default 1000000).  (Added in v26.06.9-blake2b.8).
+
 * **max-dust-htlc-exposure-msat**=*MILLISATOSHI*
 
   Option which limits the total amount of sats to be allowed as dust on a channel.

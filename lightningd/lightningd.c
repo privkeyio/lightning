@@ -153,6 +153,8 @@ static struct lightningd *new_lightningd(const tal_t *ctx)
 	ld->dev_hsmd_fail_preapprove = false;
 	ld->dev_hsmd_warn_on_overgrind = false;
 	ld->dev_hsmd_independent_secrets_sender = false;
+	/* 32MB of secrets, about 60MB in the db. */
+	ld->max_independent_secrets = 1000000;
 	ld->dev_handshake_no_reply = false;
 	ld->dev_strict_forwarding = false;
 	ld->dev_limit_connections_inflight = false;

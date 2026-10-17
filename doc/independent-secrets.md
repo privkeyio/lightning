@@ -62,6 +62,24 @@ independent-secrets
 Without it, new channels keep requiring shachain secrets. A channel opened with
 the add-on keeps it for its whole life, even if the option is later removed.
 
+## How many secrets a channel may store
+
+```
+max-independent-secrets=1000000
+```
+
+Each update of such a channel adds a secret, and nothing else bounds them while
+the channel is open. So once a channel stores this many of the peer's secrets
+one by one (32 MB of secrets at the default, about 60 MB in sqlite3),
+lightningd starts a mutual close of it, as `close` would, after logging a
+warning at 90%. After `shutdown` the peer only needs as many more as it takes
+to settle the HTLCs in flight. A peer can still keep a closing channel updating
+(with `update_fee`), so once it has made us store 10% more than the limit (at
+least one more), lightningd closes the channel unilaterally. If the limit is
+lowered below what a channel already stores, the close starts at its next
+update. A channel the peer leased from us is closed at its first update after
+the lease expires. 0 means no limit.
+
 ## Limits
 
 - **Static channel backups** carry the peer's shachain, and not the secrets in

@@ -1038,6 +1038,73 @@ discard_unopened: {
 	}
 }
 
+bool channel_start_mutual_close(struct channel *channel, const char *why)
+{
+	struct lightningd *ld = channel->peer->ld;
+	struct ext_key final_ext_key;
+	u32 final_key_idx;
+	const u8 *script = channel->shutdown_scriptpubkey[LOCAL];
+	bool anysegwit;
+
+	/* Revocations come from channeld, so it is the owner, if any. */
+	if (channel->state != CHANNELD_NORMAL
+	    && channel->state != CHANNELD_AWAITING_SPLICE
+	    && channel->state != CHANNELD_AWAITING_LOCKIN)
+		return false;
+
+	assert(channel->final_key_idx <= UINT32_MAX);
+	final_key_idx = channel->final_key_idx;
+	if (bip32_key_from_parent(ld->bip32_base, final_key_idx,
+				  BIP32_FLAG_KEY_PUBLIC,
+				  &final_ext_key) != WALLY_OK) {
+		log_broken(channel->log, "Could not derive final_ext_key");
+		return false;
+	}
+
+	/* As json_close, don't send a script the peer won't accept.  Our
+	 * default P2TR address can become P2WPKH, as `close` with a
+	 * destination would allow; a script promised upfront can't. */
+	anysegwit = !chainparams->is_elements
+		&& feature_negotiated(ld->our_features,
+				      channel->peer->their_features,
+				      OPT_SHUTDOWN_ANYSEGWIT);
+	if (!valid_shutdown_scriptpubkey(script, anysegwit, false, false)) {
+		if (!tal_arr_eq(script, p2tr_for_keyidx(tmpctx, ld,
+							final_key_idx))) {
+			log_broken(channel->log,
+				   "Can't close: the peer won't accept our"
+				   " shutdown script %s",
+				   tal_hex(tmpctx, script));
+			return false;
+		}
+		script = p2wpkh_for_keyidx(tmpctx, ld, final_key_idx);
+	}
+
+	/* As json_close's defaults. */
+	channel->closing_fee_negotiation_step = 50;
+	channel->closing_fee_negotiation_step_unit
+		= CLOSING_FEE_NEGOTIATION_STEP_UNIT_PERCENTAGE;
+
+	channel_set_state(channel, channel->state, CHANNELD_SHUTTING_DOWN,
+			  REASON_LOCAL, why);
+	if (script != channel->shutdown_scriptpubkey[LOCAL]) {
+		tal_free(channel->shutdown_scriptpubkey[LOCAL]);
+		channel->shutdown_scriptpubkey[LOCAL]
+			= tal_dup_talarr(channel, u8, script);
+	}
+	/* If channeld isn't running, it sends shutdown when it starts in
+	 * this state. */
+	if (channel->owner && streq(channel->owner->name, "channeld"))
+		subd_send_msg(channel->owner,
+			      take(towire_channeld_send_shutdown(NULL,
+						&final_key_idx,
+						&final_ext_key,
+						channel->shutdown_scriptpubkey[LOCAL],
+						NULL)));
+	wallet_channel_save(ld->wallet, channel);
+	return true;
+}
+
 static const struct json_command close_command = {
 	"close",
 	json_close,

@@ -1612,6 +1612,12 @@ static void register_opts(struct lightningd *ld)
 	clnopt_witharg("--max-concurrent-htlcs", OPT_SHOWINT, opt_set_u32, opt_show_u32,
 			 &ld->config.max_concurrent_htlcs,
 			 "Number of HTLCs one channel can handle concurrently. Should be between 1 and 483");
+	clnopt_witharg("--max-independent-secrets", OPT_SHOWINT,
+		       opt_set_u64, opt_show_u64,
+		       &ld->max_independent_secrets,
+		       "On a channel with option_independent_secrets, close it"
+		       " once we store this many of the peer's per-commitment"
+		       " secrets one by one (0 for no limit)");
 	clnopt_witharg("--max-dust-htlc-exposure-msat", OPT_SHOWMSATS,
 		       opt_set_msat,
 		       opt_show_msat, &ld->config.max_dust_htlc_exposure_msat,

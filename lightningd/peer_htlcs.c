@@ -13,6 +13,7 @@
 #include <common/timeout.h>
 #include <db/exec.h>
 #include <lightningd/channel.h>
+#include <lightningd/closing_control.h>
 #include <lightningd/coin_mvts.h>
 #include <lightningd/notification.h>
 #include <lightningd/peer_htlcs.h>
@@ -2678,6 +2679,78 @@ REGISTER_PLUGIN_HOOK(commitment_revocation,
 		     commitment_revocation_hook_serialize,
 		     struct commitment_revocation_payload *);
 
+/* On an option_independent_secrets channel the peer's secrets which don't
+ * fit a shachain cost us about 60 bytes each, and there is no end to them
+ * while the channel is open.  So we warn at 90% of max_independent_secrets
+ * and start a mutual close when it is reached: after `shutdown` the peer
+ * only needs as many more as it takes to settle the HTLCs in flight.  But a
+ * peer can keep a closing channel updating (update_fee needs no HTLCs), so
+ * once it has made us store another 10% we close the channel unilaterally. */
+static void check_independent_secrets_cap(struct channel *channel)
+{
+	struct lightningd *ld = channel->peer->ld;
+	u64 max = ld->max_independent_secrets;
+	u64 stored = channel_their_stored_secrets(channel);
+	u64 slack = max / 10 ? max / 10 : 1;
+
+	if (max == 0 || stored == 0)
+		return;
+
+	if (stored < max) {
+		if (stored >= max - max / 10
+		    && !channel->independent_secrets_warned) {
+			log_unusual(channel->log,
+				    "Stored %"PRIu64" of the peer's"
+				    " per-commitment secrets: at"
+				    " max-independent-secrets=%"PRIu64
+				    " we will close the channel",
+				    stored, max);
+			channel->independent_secrets_warned = true;
+		}
+		return;
+	}
+
+	/* Like `close`, we keep a lease we sold. */
+	if (channel->opener != LOCAL
+	    && get_block_height(ld->topology) < channel->lease_expiry) {
+		if (!channel->independent_secrets_lease_logged) {
+			log_unusual(channel->log,
+				    "Reached max-independent-secrets=%"PRIu64
+				    ", but the peer leased this channel until"
+				    " block %u: closing after that",
+				    max, channel->lease_expiry);
+			channel->independent_secrets_lease_logged = true;
+		}
+		return;
+	}
+
+	/* Once: if it can't start, the backstop below still applies. */
+	if (!channel->independent_secrets_close_tried) {
+		channel->independent_secrets_close_tried = true;
+		if (channel_start_mutual_close(channel,
+					       "Reached max-independent-secrets")) {
+			log_unusual(channel->log,
+				    "Stored %"PRIu64" of the peer's"
+				    " per-commitment secrets,"
+				    " max-independent-secrets=%"PRIu64
+				    ": closing the channel",
+				    stored, max);
+			return;
+		}
+	}
+
+	if (stored - max >= slack) {
+		log_unusual(channel->log,
+			    "Stored %"PRIu64" of the peer's per-commitment"
+			    " secrets, max-independent-secrets=%"PRIu64
+			    ", and the channel still isn't closed:"
+			    " closing it unilaterally",
+			    stored, max);
+		channel_fail_permanent(channel, REASON_LOCAL,
+				       "Stored too many per-commitment secrets");
+	}
+}
+
 void peer_got_revoke(struct channel *channel, const u8 *msg)
 {
 	u64 revokenum;
@@ -2840,6 +2913,10 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 					 badonions[i] ? badonions[i]
 					     : fromwire_peektype(failmsgs[i]));
 	}
+
+	if (channel->their_secrets_in_db)
+		check_independent_secrets_cap(channel);
+
 	wallet_channel_save(ld->wallet, channel);
 
 	if (penalty_tx == NULL)

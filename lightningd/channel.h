@@ -172,6 +172,9 @@ struct channel {
 	bool their_secrets_in_db;
 	u64 their_secrets_received;
 	struct secret their_last_secret;
+	/* What we have done about max_independent_secrets (not saved). */
+	bool independent_secrets_warned, independent_secrets_lease_logged;
+	bool independent_secrets_close_tried;
 
  	/* What's happening. */
  	enum channel_state state;

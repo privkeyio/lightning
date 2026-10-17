@@ -2576,6 +2576,13 @@ def listconfigs_configs_max_dust_htlc_exposure_msat2py(m):
     })
 
 
+def listconfigs_configs_max_independent_secrets2py(m):
+    return remove_default({
+        "source": m.source,  # PrimitiveField in generate_composite
+        "value_int": m.value_int,  # PrimitiveField in generate_composite
+    })
+
+
 def listconfigs_configs_min_capacity_sat2py(m):
     return remove_default({
         "dynamic": m.dynamic,  # PrimitiveField in generate_composite

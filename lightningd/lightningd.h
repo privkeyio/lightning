@@ -389,6 +389,10 @@ struct lightningd {
 	 * exercise a peer's option_independent_secrets. */
 	bool dev_hsmd_independent_secrets_sender;
 
+	/* On an option_independent_secrets channel, how many of the peer's
+	 * secrets we store one by one before we close it (0: no limit). */
+	u64 max_independent_secrets;
+
 	/* Tell connectd not to talk after handshake */
 	bool dev_handshake_no_reply;
 
