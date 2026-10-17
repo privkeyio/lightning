@@ -274,7 +274,53 @@ struct channel_type *desired_channel_type(const tal_t *ctx,
 		type = channel_type_static_remotekey(ctx);
 	if (feature_offered(our_features->bits[INIT_FEATURE], OPT_UNIFIED_SIGS))
 		set_feature_bit(&type->features, OPT_UNIFIED_SIGS);
+	/* Unlike the unified signer, this one is only for peers which have
+	 * it too: everyone else gets the usual shachain channel. */
+	if (feature_negotiated(our_features, their_features,
+			       OPT_INDEPENDENT_SECRETS))
+		channel_type_set_independent_secrets(type);
 	return type;
+}
+
+u64 channel_their_revocations(const struct channel *channel)
+{
+	if (channel->their_secrets_in_db)
+		return channel->their_secrets_received;
+	return revocations_received(&channel->their_shachain.chain);
+}
+
+u64 channel_their_stored_secrets(const struct channel *channel)
+{
+	if (!channel->their_secrets_in_db)
+		return 0;
+	/* The shachain stopped taking them at the first which didn't fit,
+	 * and the db has every one from there on, without gaps. */
+	return channel->their_secrets_received
+		- revocations_received(&channel->their_shachain.chain);
+}
+
+bool channel_their_last_secret(const struct channel *channel,
+			       struct secret *secret)
+{
+	u64 num = channel_their_revocations(channel);
+
+	/* BOLT #2:
+	 *     - if `next_revocation_number` equals 0:
+	 *       - MUST set `your_last_per_commitment_secret` to all zeroes
+	 *     - otherwise:
+	 *       - MUST set `your_last_per_commitment_secret` to the last
+	 *         `per_commitment_secret` it received
+	 */
+	if (num == 0) {
+		memset(secret, 0, sizeof(*secret));
+		return true;
+	}
+	if (channel->their_secrets_in_db) {
+		*secret = channel->their_last_secret;
+		return true;
+	}
+	return shachain_get_secret(&channel->their_shachain.chain, num - 1,
+				   secret);
 }
 
 static void chanmap_remove(struct lightningd *ld,
@@ -442,6 +488,13 @@ struct channel *new_unsaved_channel(struct peer *peer,
 	/* No shachain yet */
 	channel->their_shachain.id = 0;
 	shachain_init(&channel->their_shachain.chain);
+	channel->their_secrets_in_db = false;
+	channel->their_secrets_received = 0;
+	channel->independent_secrets_warned = false;
+	channel->independent_secrets_lease_logged = false;
+	channel->independent_secrets_close_tried = false;
+	memset(&channel->their_last_secret, 0,
+	       sizeof(channel->their_last_secret));
 
 	msg = towire_hsmd_new_channel(NULL, &peer->id, channel->unsaved_dbid);
 	msg = hsm_sync_req(tmpctx, ld, take(msg));
@@ -604,6 +657,15 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 		channel->their_shachain.id = 0;
 		shachain_init(&channel->their_shachain.chain);
 	}
+	/* The wallet fills these in if the peer's secrets outgrew the
+	 * shachain (option_independent_secrets). */
+	channel->their_secrets_in_db = false;
+	channel->their_secrets_received = 0;
+	channel->independent_secrets_warned = false;
+	channel->independent_secrets_lease_logged = false;
+	channel->independent_secrets_close_tried = false;
+	memset(&channel->their_last_secret, 0,
+	       sizeof(channel->their_last_secret));
 	channel->state = state;
 	channel->opener = opener;
 	channel->owner = NULL;

@@ -969,6 +969,12 @@ static void dev_register_opts(struct lightningd *ld)
 		       opt_set_bool,
 		       &ld->dev_hsmd_warn_on_overgrind,
 		       "Warn if we create signatures that are not exactly 71 bytes.");
+	clnopt_noarg("--dev-independent-secrets-sender", OPT_DEV,
+		     opt_set_bool,
+		     &ld->dev_hsmd_independent_secrets_sender,
+		     "Generate our per-commitment secrets without a shachain,"
+		     " which only a peer with option_independent_secrets"
+		     " accepts");
 	clnopt_witharg("--dev-save-plugin-io", OPT_DEV,
 		       opt_set_charp, opt_show_charp,
 		       &ld->plugins->dev_save_io,
@@ -1293,6 +1299,19 @@ static char *opt_set_shutdown_wrong_funding(struct lightningd *ld)
 	return NULL;
 }
 
+static char *opt_set_independent_secrets(struct lightningd *ld)
+{
+	/* Like option_blake2b and option_unified_sigs, it is for the BLAKE2b
+	 * network. */
+	if (chainparams->is_elements)
+		return "--independent-secrets is not available on Liquid";
+	/* False if given twice, which is fine. */
+	feature_set_or(ld->our_features,
+		       take(feature_set_for_feature(NULL,
+						    OPTIONAL_FEATURE(OPT_INDEPENDENT_SECRETS))));
+	return NULL;
+}
+
 static char *opt_set_peer_storage(struct lightningd *ld)
 {
 	if (!opt_deprecated_ok(ld, "experimental-peer-storage", NULL,
@@ -1530,6 +1549,13 @@ static void register_opts(struct lightningd *ld)
 	opt_register_early_noarg("--experimental-peer-storage",
 				 opt_set_peer_storage, ld,
 				 opt_hidden);
+	/* This affects our features, so set early. */
+	opt_register_early_noarg("--independent-secrets",
+				 opt_set_independent_secrets, ld,
+				 "Offer option_independent_secrets, so new channels"
+				 " with a peer which offers it too accept"
+				 " per-commitment secrets which don't come from a"
+				 " shachain, and store each one");
 
 	clnopt_noarg("--help|-h", OPT_EXITS,
 		     opt_lightningd_usage, ld, "Print this message.");
@@ -1586,6 +1612,12 @@ static void register_opts(struct lightningd *ld)
 	clnopt_witharg("--max-concurrent-htlcs", OPT_SHOWINT, opt_set_u32, opt_show_u32,
 			 &ld->config.max_concurrent_htlcs,
 			 "Number of HTLCs one channel can handle concurrently. Should be between 1 and 483");
+	clnopt_witharg("--max-independent-secrets", OPT_SHOWINT,
+		       opt_set_u64, opt_show_u64,
+		       &ld->max_independent_secrets,
+		       "On a channel with option_independent_secrets, close it"
+		       " once we store this many of the peer's per-commitment"
+		       " secrets one by one (0 for no limit)");
 	clnopt_witharg("--max-dust-htlc-exposure-msat", OPT_SHOWMSATS,
 		       opt_set_msat,
 		       opt_show_msat, &ld->config.max_dust_htlc_exposure_msat,

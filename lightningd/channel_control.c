@@ -1850,21 +1850,12 @@ bool peer_start_channeld(struct channel *channel,
 		memset(&scid, 0, sizeof(scid));
 	}
 
-	num_revocations = revocations_received(&channel->their_shachain.chain);
+	num_revocations = channel_their_revocations(channel);
 
-	/* BOLT #2:
-	 *     - if `next_revocation_number` equals 0:
-	 *       - MUST set `your_last_per_commitment_secret` to all zeroes
-	 *     - otherwise:
-	 *       - MUST set `your_last_per_commitment_secret` to the last
-	 *         `per_commitment_secret` it received
-	 */
-	if (num_revocations == 0)
-		memset(&last_remote_per_commit_secret, 0,
-		       sizeof(last_remote_per_commit_secret));
-	else if (!shachain_get_secret(&channel->their_shachain.chain,
-				      num_revocations-1,
-				      &last_remote_per_commit_secret)) {
+	/* channel_their_last_secret() gives all zeroes before the first
+	 * revocation, as BOLT #2 asks for `your_last_per_commitment_secret`. */
+	if (!channel_their_last_secret(channel,
+				       &last_remote_per_commit_secret)) {
 		channel_fail_permanent(channel,
 				       REASON_LOCAL,
 				       "Could not get revocation secret %"PRIu64,

@@ -1452,6 +1452,13 @@ static struct command_result *json_fundchannel_start(struct command *cmd,
 	if (!fc->channel_type)
 		fc->channel_type = desired_channel_type(fc, cmd->ld->our_features,
 							peer->their_features);
+	/* option_independent_secrets changes which secrets we accept, not
+	 * the commitment, so it joins a type the caller named whenever both
+	 * of us have it. */
+	else if (feature_negotiated(cmd->ld->our_features,
+				    peer->their_features,
+				    OPT_INDEPENDENT_SECRETS))
+		channel_type_set_independent_secrets(fc->channel_type);
 
 	fc->push = push_msat ? *push_msat : AMOUNT_MSAT(0);
 	fc->channel_flags = OUR_CHANNEL_FLAGS;

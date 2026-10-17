@@ -7977,6 +7977,8 @@ pub mod responses {
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub in_payments_offered: Option<u64>,
 	    #[serde(skip_serializing_if = "Option::is_none")]
+	    pub independent_secrets_stored: Option<u64>,
+	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub initial_feerate: Option<String>,
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub last_feerate: Option<String>,
@@ -11217,6 +11219,12 @@ pub mod responses {
 	}
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct ListconfigsConfigsIndependentsecrets {
+	    pub set: bool,
+	    pub source: String,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
 	pub struct ListconfigsConfigsLargechannels {
 	    pub set: bool,
 	    pub source: String,
@@ -11262,6 +11270,12 @@ pub mod responses {
 	pub struct ListconfigsConfigsMaxdusthtlcexposuremsat {
 	    pub source: String,
 	    pub value_msat: Amount,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct ListconfigsConfigsMaxindependentsecrets {
+	    pub source: String,
+	    pub value_int: u64,
 	}
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
@@ -11557,6 +11571,9 @@ pub mod responses {
 	    #[serde(rename = "important-plugin")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub important_plugin: Option<ListconfigsConfigsImportantplugin>,
+	    #[serde(rename = "independent-secrets")]
+	    #[serde(skip_serializing_if = "Option::is_none")]
+	    pub independent_secrets: Option<ListconfigsConfigsIndependentsecrets>,
 	    #[serde(rename = "large-channels")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub large_channels: Option<ListconfigsConfigsLargechannels>,
@@ -11581,6 +11598,9 @@ pub mod responses {
 	    #[serde(rename = "max-dust-htlc-exposure-msat")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub max_dust_htlc_exposure_msat: Option<ListconfigsConfigsMaxdusthtlcexposuremsat>,
+	    #[serde(rename = "max-independent-secrets")]
+	    #[serde(skip_serializing_if = "Option::is_none")]
+	    pub max_independent_secrets: Option<ListconfigsConfigsMaxindependentsecrets>,
 	    #[serde(rename = "min-capacity-sat")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub min_capacity_sat: Option<ListconfigsConfigsMincapacitysat>,

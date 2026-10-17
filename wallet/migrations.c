@@ -2,11 +2,14 @@
 #include <ccan/array_size/array_size.h>
 #include <ccan/tal/str/str.h>
 #include <common/channel_id.h>
+#include <common/channel_type.h>
+#include <common/features.h>
 #include <common/htlc_state.h>
 #include <db/bindings.h>
 #include <db/common.h>
 #include <db/exec.h>
 #include <db/utils.h>
+#include <lightningd/channel_state.h>
 #include <wallet/account_migration.h>
 #include <wallet/db.h>
 #include <wallet/migrations.h>
@@ -48,6 +51,40 @@ static const char *revert_withheld_column(const tal_t *ctx, struct db *db)
 
 	/* For sqlite3 needs "2021-03-12 (3.35.0)" or above */
 	stmt = db_prepare_v2(db, SQL("ALTER TABLE channels DROP COLUMN withheld"));
+	db_exec_prepared_v2(take(stmt));
+	return NULL;
+}
+
+/* Don't allow downgrade while a channel which hasn't closed uses
+ * option_independent_secrets: older versions would expect the peer's next
+ * per-commitment secret to extend a shachain, and fail the channel.  Closed
+ * ones are fine: all they lose is the last secret, for reestablish. */
+static const char *revert_channel_revocation_secrets(const tal_t *ctx,
+						     struct db *db)
+{
+	struct db_stmt *stmt;
+	const char *error = NULL;
+
+	stmt = db_prepare_v2(db, SQL("SELECT full_channel_id, channel_type"
+				     " FROM channels WHERE state != ?"));
+	db_bind_int(stmt, CLOSED);
+	db_query_prepared(stmt);
+	while (!error && db_step(stmt)) {
+		struct channel_id cid;
+		struct channel_type *type;
+
+		db_col_channel_id(stmt, "full_channel_id", &cid);
+		type = db_col_channel_type(tmpctx, stmt, "channel_type");
+		if (channel_type_has(type, OPT_INDEPENDENT_SECRETS))
+			error = tal_fmt(ctx, "Channel %s uses"
+					" option_independent_secrets",
+					fmt_channel_id(tmpctx, &cid));
+	}
+	tal_free(stmt);
+	if (error)
+		return error;
+
+	stmt = db_prepare_v2(db, SQL("DROP TABLE channel_revocation_secrets"));
 	db_exec_prepared_v2(take(stmt));
 	return NULL;
 }
@@ -1120,6 +1157,18 @@ static const struct db_migration dbmigrations[] = {
      /* Clamping is idempotent, so no revert needed */
      NULL, NULL},
     {NULL, migrate_channel_type_unified_sigs_bit},
+    /* With option_independent_secrets the peer's per-commitment secrets
+     * aren't a shachain, so we keep every one: we need the one for any
+     * revoked commitment they might broadcast.  Once the channel closes we
+     * keep only the last (see wallet_channel_close). */
+    {SQL("CREATE TABLE channel_revocation_secrets ("
+	 "  channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,"
+	 "  commitnum BIGINT NOT NULL,"
+	 "  secret BLOB NOT NULL,"
+	 "  PRIMARY KEY (channel_id, commitnum)"
+	 ")"), NULL,
+     /* Make sure no open channel uses it, then drop the table. */
+     NULL, revert_channel_revocation_secrets},
 };
 
 const struct db_migration *get_db_migrations(size_t *num)
