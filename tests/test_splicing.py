@@ -988,6 +988,146 @@ def test_splice_bad_shared_input_signature_after_ours(node_factory, bitcoind):
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+@pytest.mark.parametrize("l2_signs_second", [True, False])
+def test_splice_bad_input_witness(node_factory, bitcoind, l2_signs_second):
+    """A bad witness on the peer's input fails the channel.
+
+    l1 sends its tx_signatures first, with a corrupted witness for its
+    wallet input.  If l2 signs second it finds out before sending its own,
+    so l1 never gets the shared input signature it needs to complete the
+    splice.
+    """
+    l2_opts = {'may_reconnect': True, 'allow_warning': True}
+    if l2_signs_second:
+        l2_opts['dev-splice-sign-second'] = None
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     wait_for_announce=True,
+                                     opts=[{'may_reconnect': True,
+                                            'allow_warning': True,
+                                            'dev-splice-corrupt-input-witness': None},
+                                           l2_opts])
+    chan_id = l1.get_channel_id(l2)
+
+    funds_result = l1.rpc.fundpsbt("109000sat", 0, 0, excess_as_change=True)
+    result = l1.rpc.splice_init(chan_id, 100000, funds_result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    assert result['commitments_secured'] is True
+    result = l1.rpc.signpsbt(result['psbt'])
+    try:
+        l1.rpc.splice_signed(chan_id, result['signed_psbt'])
+    except RpcError:
+        pass
+
+    l2.daemon.wait_for_log(r'Peer permanent failure in CHANNELD_.*Bad witness for splice tx')
+    assert l2.daemon.is_in_log(r'channeld-chan#[0-9]+: peer_out WIRE_TX_SIGNATURES') != l2_signs_second
+    assert not l2.daemon.is_in_log(r'Broadcasting splice tx')
+    if l2_signs_second:
+        return
+
+    # l1 holds a valid splice, and l2's commitments on the old funding
+    # output conflict with it, so the one which reached the mempool first
+    # confirms.  After the splice, a commitment spending it follows.
+    line = l1.daemon.wait_for_log(r'Broadcasting splice tx')
+    splice_txid = bitcoind.rpc.decoderawtransaction(line.split('Broadcasting splice tx ')[1].split()[0])['txid']
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    block = bitcoind.rpc.getblock(bitcoind.rpc.getbestblockhash(), 2)
+    if (splice_txid in [tx['txid'] for tx in block['tx']]
+            and not any(i.get('txid') == splice_txid for tx in block['tx'] for i in tx['vin'])):
+        bitcoind.generate_block(1, wait_for_mempool=1)
+    for n in (l1, l2):
+        wait_for(lambda: only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'ONCHAIN')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_splice_peer_p2wsh_to_remote_input(node_factory, bitcoind, corrupt):
+    """The peer checks the witness of a P2WSH to_remote input."""
+    l1_opts = {'may_reconnect': True, 'allow_warning': True}
+    l2_opts = {'may_reconnect': True, 'allow_warning': True}
+    if corrupt:
+        l1_opts['dev-splice-corrupt-input-witness'] = None
+        l2_opts['dev-splice-sign-second'] = None
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     wait_for_announce=True,
+                                     opts=[l1_opts, l2_opts])
+    l3 = node_factory.get_node()
+    chan_id = l1.get_channel_id(l2)
+
+    # l3's force close leaves l1 a P2WSH to_remote output.
+    node_factory.join_nodes([l1, l3], fundamount=500000)
+    l1.stop()
+    l3.rpc.close(l1.info['id'], unilateraltimeout=1)
+    l3.wait_for_channel_onchain(l1.info['id'])
+    bitcoind.generate_block(100)
+    l1.start()
+    l1.daemon.wait_for_log('onchaind complete, forgetting peer')
+    p2wsh = only_one([o for o in l1.rpc.listfunds()['outputs']
+                      if o['scriptpubkey'].startswith('0020')])
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    wait_for(lambda: only_one(l1.rpc.listpeerchannels(l2.info['id'])['channels'])['state'] == 'CHANNELD_NORMAL')
+
+    psbt = l1.rpc.utxopsbt("115000sat", 0, 0,
+                           [f"{p2wsh['txid']}:{p2wsh['output']}"],
+                           excess_as_change=True)['psbt']
+    result = l1.rpc.splice_init(chan_id, 100000, psbt)
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    assert result['commitments_secured'] is True
+    result = l1.rpc.signpsbt(result['psbt'])
+    if corrupt:
+        try:
+            l1.rpc.splice_signed(chan_id, result['signed_psbt'])
+        except RpcError:
+            pass
+        l2.daemon.wait_for_log(r'Peer permanent failure in CHANNELD_.*Bad witness for splice tx .*: input [0-9]+ has an invalid signature')
+        assert not l2.daemon.is_in_log(r'channeld-chan#[0-9]+: peer_out WIRE_TX_SIGNATURES')
+        return
+    result = l1.rpc.splice_signed(chan_id, result['signed_psbt'])
+
+    bitcoind.generate_block(6, wait_for_mempool=result['txid'])
+    l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    assert not l2.daemon.is_in_log(r'Bad witness')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_peer_p2tr_input(node_factory, bitcoind):
+    """The peer checks a P2TR key path witness on our input, and accepts it."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     wait_for_announce=True)
+    chan_id = l1.get_channel_id(l2)
+
+    # Leave l1 only P2TR outputs to splice in (withdraw keeps the
+    # emergency reserve back, as P2TR change).
+    l1.rpc.withdraw(l1.rpc.newaddr('p2tr')['p2tr'], 'all')
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    sync_blockheight(bitcoind, [l1])
+    wait_for(lambda: {o['scriptpubkey'][:4] for o in l1.rpc.listfunds()['outputs']
+                      if o['status'] == 'confirmed'} == {'5120'})
+
+    # Room for the fee of two P2TR inputs, should coin selection take both.
+    funds_result = l1.rpc.fundpsbt("115000sat", 0, 0, excess_as_change=True)
+    result = l1.rpc.splice_init(chan_id, 100000, funds_result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    assert result['commitments_secured'] is True
+    result = l1.rpc.signpsbt(result['psbt'])
+    result = l1.rpc.splice_signed(chan_id, result['signed_psbt'])
+
+    bitcoind.generate_block(6, wait_for_mempool=result['txid'])
+    l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    assert not l2.daemon.is_in_log(r'Bad witness')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
 @pytest.mark.parametrize("closer", ["initiator", "accepter"])
 def test_splice_locked_then_force_close(node_factory, bitcoind, closer):
     """A force close after a locked splice must drop our current commitment.

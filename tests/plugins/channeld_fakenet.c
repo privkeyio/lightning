@@ -1079,6 +1079,8 @@ static struct channel *handle_init(struct info *info, const u8 *init_msg)
 	u8 *remote_upfront_shutdown_script;
 	u32 *dev_disable_commit;
 	bool dev_splice_corrupt_shared_sig;
+	bool dev_splice_corrupt_input_witness;
+	bool dev_splice_sign_second;
 	struct inflight **inflights;
 	struct short_channel_id local_alias;
 	bool dev_splice_abort_at_tx_complete;
@@ -1143,6 +1145,8 @@ static struct channel *handle_init(struct info *info, const u8 *init_msg)
 				    &channel_type,
 				    &dev_disable_commit,
 				    &dev_splice_corrupt_shared_sig,
+				    &dev_splice_corrupt_input_witness,
+				    &dev_splice_sign_second,
 				    &pbases,
 				    &inflights,
 				    &local_alias,

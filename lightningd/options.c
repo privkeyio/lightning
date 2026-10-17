@@ -921,6 +921,14 @@ static void dev_register_opts(struct lightningd *ld)
 		     opt_set_bool,
 		     &ld->dev_splice_corrupt_shared_sig,
 		     "Send a corrupted shared_input_signature in splice tx_signatures");
+	clnopt_noarg("--dev-splice-corrupt-input-witness", OPT_DEV,
+		     opt_set_bool,
+		     &ld->dev_splice_corrupt_input_witness,
+		     "Send splice tx_signatures first, with corrupted witnesses for our inputs");
+	clnopt_noarg("--dev-splice-sign-second", OPT_DEV,
+		     opt_set_bool,
+		     &ld->dev_splice_sign_second,
+		     "Never send splice tx_signatures first");
 	clnopt_noarg("--dev-allow-shutdown-destination-change", OPT_DEV,
 		     opt_set_bool,
 		     &ld->dev_allow_shutdown_destination_change,

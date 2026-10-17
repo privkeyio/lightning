@@ -378,6 +378,14 @@ struct lightningd {
 	 * be tested. */
 	bool dev_splice_corrupt_shared_sig;
 
+	/* Send corrupted witnesses for our splice inputs, so the peer's
+	 * check can be tested. */
+	bool dev_splice_corrupt_input_witness;
+
+	/* Never send splice tx_signatures first, so the checks we make
+	 * before signing can be tested. */
+	bool dev_splice_sign_second;
+
 	/* Allow changing of shutdown output point even if dangerous */
 	bool dev_allow_shutdown_destination_change;
 

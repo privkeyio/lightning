@@ -148,6 +148,8 @@ static struct lightningd *new_lightningd(const tal_t *ctx)
 	ld->dev_splice_coinbase_input = false;
 	ld->dev_splice_abort_at_tx_complete = false;
 	ld->dev_splice_corrupt_shared_sig = false;
+	ld->dev_splice_corrupt_input_witness = false;
+	ld->dev_splice_sign_second = false;
 	ld->dev_allow_shutdown_destination_change = false;
 	ld->dev_hsmd_no_preapprove_check = false;
 	ld->dev_hsmd_fail_preapprove = false;

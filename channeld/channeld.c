@@ -186,6 +186,12 @@ struct peer {
 	/* Send a corrupted shared_input_signature */
 	bool dev_splice_corrupt_shared_sig;
 
+	/* Send corrupted witnesses for our splice inputs, first */
+	bool dev_splice_corrupt_input_witness;
+
+	/* Never send splice tx_signatures first */
+	bool dev_splice_sign_second;
+
 	/* Information used for reestablishment. */
 	bool last_was_revoke;
 	struct changed_htlc *last_sent_commit;
@@ -3164,6 +3170,18 @@ static bool do_i_sign_first(struct peer *peer, struct wally_psbt *psbt,
 	return our_role == TX_INITIATOR;
 }
 
+/* Commitments keep do_i_sign_first's order; only tx_signatures move. */
+static bool do_i_send_tx_sigs_first(struct peer *peer, struct wally_psbt *psbt,
+				    enum tx_role our_role,
+				    bool force_sign_first)
+{
+	if (peer->dev_splice_corrupt_input_witness)
+		return true;
+	if (peer->dev_splice_sign_second)
+		return false;
+	return do_i_sign_first(peer, psbt, our_role, force_sign_first);
+}
+
 static struct wally_psbt *next_splice_step(const tal_t *ctx,
 					   struct interactivetx_context *ictx)
 {
@@ -3914,6 +3932,80 @@ static size_t count_inputs_with_exclusions(struct wally_psbt *psbt,
 	return result;
 }
 
+/* Otherwise a bad witness on one of their inputs leaves the splice
+ * unbroadcastable for us while they hold a valid copy.  Checked as their
+ * tx_signatures arrive, before any of ours go out and before theirs are
+ * saved. */
+static void check_their_witnesses(struct peer *peer,
+				  const struct wally_psbt *psbt,
+				  struct witness **inws,
+				  enum tx_role our_role,
+				  size_t splice_funding_index,
+				  const struct bitcoin_txid *txid)
+{
+	struct wally_psbt *checked;
+	struct bitcoin_tx *tx;
+	bool unified;
+	size_t j = 0;
+
+	if (chainparams->is_elements)
+		return;
+
+	checked = clone_psbt(tmpctx, psbt);
+	for (size_t i = 0; i < checked->num_inputs; i++) {
+		struct wally_psbt_input *in = &checked->inputs[i];
+		u64 in_serial;
+
+		/* Each digest then reads the spent output here, rather than
+		 * hashing the whole prevtx again for every input. */
+		if (in->utxo && in->index < in->utxo->num_outputs) {
+			const struct wally_tx_output *out
+				= &in->utxo->outputs[in->index];
+			psbt_input_set_wit_utxo(checked, i,
+						tal_dup_arr(tmpctx, u8,
+							    out->script,
+							    out->script_len, 0),
+						amount_sat(out->satoshi));
+		}
+		if (i == splice_funding_index
+		    || !psbt_get_serial_id(&in->unknowns, &in_serial)
+		    || in_serial % 2 == our_role)
+			continue;
+		if (j == tal_count(inws))
+			peer_failed_warn(peer->pps, &peer->channel_id,
+					 "No witness for splice input %zu", i);
+		psbt_finalize_input(checked, in, inws[j++]);
+	}
+	if (j != tal_count(inws))
+		peer_failed_warn(peer->pps, &peer->channel_id,
+				 "%zu too many witness elements received",
+				 tal_count(inws) - j);
+
+	tx = bitcoin_tx_with_psbt(tmpctx, take(checked));
+	if (!tx)
+		status_failed(STATUS_FAIL_INTERNAL_ERROR,
+			      "Could not build splice tx %s to check witnesses",
+			      fmt_bitcoin_txid(tmpctx, txid));
+	unified = channel_type_sighash(peer->channel->type, SIGHASH_ALL)
+		& SIGHASH_UNIFIED;
+
+	for (size_t i = 0; i < tx->psbt->num_inputs; i++) {
+		u64 in_serial;
+		const char *bad;
+
+		if (i == splice_funding_index
+		    || !psbt_get_serial_id(&tx->psbt->inputs[i].unknowns,
+					   &in_serial)
+		    || in_serial % 2 == our_role)
+			continue;
+		bad = psbt_input_witness_invalid(tmpctx, tx, i, unified);
+		if (bad)
+			peer_failed_err(peer->pps, &peer->channel_id,
+					"Bad witness for splice tx %s: %s",
+					fmt_bitcoin_txid(tmpctx, txid), bad);
+	}
+}
+
 /* Called to finish an ongoing splice OR on restart from channel_reestablish. */
 static void resume_splice_negotiation(struct peer *peer,
 				      bool send_commitments,
@@ -4070,6 +4162,11 @@ static void resume_splice_negotiation(struct peer *peer,
 
 	outws = psbt_to_witnesses(tmpctx, current_psbt,
 				  our_role, splice_funding_index);
+	/* Byte 7 is inside the signature, after the item count, its length
+	 * and the start of its encoding. */
+	if (peer->dev_splice_corrupt_input_witness)
+		for (size_t i = 0; i < tal_count(outws); i++)
+			outws[i]->witness_data[7] ^= 1;
 	sigmsg = towire_tx_signatures(tmpctx, &peer->channel_id,
 				      &inflight->outpoint.txid, outws,
 				      txsig_tlvs);
@@ -4079,8 +4176,8 @@ static void resume_splice_negotiation(struct peer *peer,
 	/* Never clear it: send_signature is false when we only receive theirs */
 	if (send_signature)
 		inflight->i_sent_sigs = true;
-	if (do_i_sign_first(peer, current_psbt, our_role,
-			    inflight->force_sign_first)
+	if (do_i_send_tx_sigs_first(peer, current_psbt, our_role,
+				    inflight->force_sign_first)
 		&& send_signature) {
 		msg = towire_channeld_update_inflight(NULL, current_psbt,
 						      NULL, NULL, NULL,
@@ -4177,6 +4274,9 @@ static void resume_splice_negotiation(struct peer *peer,
 					fmt_bitcoin_signature(tmpctx, their_sig),
 					fmt_bitcoin_txid(tmpctx, &final_txid));
 
+		check_their_witnesses(peer, current_psbt, inws, our_role,
+				      splice_funding_index, &final_txid);
+
 		/* Set the commit_sig on the commitment tx psbt */
 		if (!psbt_input_set_signature(current_psbt,
 					      splice_funding_index,
@@ -4271,7 +4371,6 @@ static void resume_splice_negotiation(struct peer *peer,
 	}
 
 	if (recv_signature || send_signature) {
-		/* We let core validate our peer's signatures are correct. */
 		msg = towire_channeld_update_inflight(NULL, current_psbt, NULL,
 						      NULL, NULL,
 						      inflight->locked_scid,
@@ -4279,8 +4378,8 @@ static void resume_splice_negotiation(struct peer *peer,
 		wire_sync_write(MASTER_FD, take(msg));
 	}
 
-	if (!do_i_sign_first(peer, current_psbt, our_role,
-			     inflight->force_sign_first)
+	if (!do_i_send_tx_sigs_first(peer, current_psbt, our_role,
+				     inflight->force_sign_first)
 		&& send_signature) {
 		msg = towire_channeld_splice_sending_sigs(tmpctx, &final_txid);
 		wire_sync_write(MASTER_FD, take(msg));
@@ -4936,8 +5035,8 @@ static void splice_initiator_user_finalized(struct peer *peer)
 						 new_inflight->i_sent_sigs);
 	wire_sync_write(MASTER_FD, take(outmsg));
 
-	sign_first = do_i_sign_first(peer, new_inflight->psbt, our_role,
-				     peer->splicing->force_sign_first);
+	sign_first = do_i_send_tx_sigs_first(peer, new_inflight->psbt, our_role,
+					     peer->splicing->force_sign_first);
 
 	if (!sign_first)
 		resume_splice_negotiation(peer, false, false, false, true, 0);
@@ -5136,8 +5235,8 @@ static void splice_initiator_user_signed(struct peer *peer, const u8 *inmsg)
 
 	wire_sync_write(MASTER_FD, take(outmsg));
 
-	sign_first = do_i_sign_first(peer, inflight->psbt, TX_INITIATOR,
-				     inflight->force_sign_first);
+	sign_first = do_i_send_tx_sigs_first(peer, inflight->psbt, TX_INITIATOR,
+					     inflight->force_sign_first);
 
 	audit_psbt(inflight->psbt, inflight->psbt);
 	assert(tal_parent(inflight->psbt) != tmpctx);
@@ -7139,6 +7238,8 @@ static void init_channel(struct peer *peer)
 				    &channel_type,
 				    &peer->dev_disable_commit,
 				    &peer->dev_splice_corrupt_shared_sig,
+				    &peer->dev_splice_corrupt_input_witness,
+				    &peer->dev_splice_sign_second,
 				    &pbases,
 				    &peer->splice_state->inflights,
 				    &peer->local_alias,
