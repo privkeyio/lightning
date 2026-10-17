@@ -49,6 +49,9 @@ generates its own: they still come from its shachain.
 
 `listpeerchannels` and `listclosedchannels` show the add-on in `channel_type`
 as bit 266, `independent_secrets/even`.
+On such a channel `listpeerchannels` also shows `independent_secrets_stored`:
+how many of the peer's secrets are stored one by one, because they don't fit a
+shachain. It stays 0 with a peer that uses one.
 
 ## Turning it on
 

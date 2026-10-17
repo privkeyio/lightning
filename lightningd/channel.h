@@ -988,6 +988,11 @@ static inline bool channel_has(const struct channel *channel, int f)
  * any after that are in the db. */
 u64 channel_their_revocations(const struct channel *channel);
 
+/* How many of the peer's per-commitment secrets we store individually, in
+ * the db, on an option_independent_secrets channel: those from the first
+ * which didn't fit their_shachain.  0 while they all do. */
+u64 channel_their_stored_secrets(const struct channel *channel);
+
 /* The last per-commitment secret the peer revealed, for
  * `your_last_per_commitment_secret`: all zeroes if they have revealed none.
  * False if it should exist but we can't produce it. */
