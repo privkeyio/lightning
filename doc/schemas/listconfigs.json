@@ -934,6 +934,29 @@
               }
             }
           },
+          "max-independent-secrets": {
+            "added": "v26.06.9-blake2b.8",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "value_int",
+              "source"
+            ],
+            "properties": {
+              "value_int": {
+                "type": "u64",
+                "description": [
+                  "Field from config or cmdline, or default."
+                ]
+              },
+              "source": {
+                "type": "string",
+                "description": [
+                  "Source of configuration setting."
+                ]
+              }
+            }
+          },
           "max-concurrent-htlcs": {
             "type": "object",
             "additionalProperties": false,
@@ -2121,6 +2144,10 @@
           },
           "mainnet": {
             "set": false,
+            "source": "default"
+          },
+          "max-independent-secrets": {
+            "value_int": 1000000,
             "source": "default"
           },
           "max-concurrent-htlcs": {

@@ -490,6 +490,9 @@ struct channel *new_unsaved_channel(struct peer *peer,
 	shachain_init(&channel->their_shachain.chain);
 	channel->their_secrets_in_db = false;
 	channel->their_secrets_received = 0;
+	channel->independent_secrets_warned = false;
+	channel->independent_secrets_lease_logged = false;
+	channel->independent_secrets_close_tried = false;
 	memset(&channel->their_last_secret, 0,
 	       sizeof(channel->their_last_secret));
 
@@ -658,6 +661,9 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 	 * shachain (option_independent_secrets). */
 	channel->their_secrets_in_db = false;
 	channel->their_secrets_received = 0;
+	channel->independent_secrets_warned = false;
+	channel->independent_secrets_lease_logged = false;
+	channel->independent_secrets_close_tried = false;
 	memset(&channel->their_last_secret, 0,
 	       sizeof(channel->their_last_secret));
 	channel->state = state;

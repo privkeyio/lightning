@@ -11273,6 +11273,12 @@ pub mod responses {
 	}
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct ListconfigsConfigsMaxindependentsecrets {
+	    pub source: String,
+	    pub value_int: u64,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
 	pub struct ListconfigsConfigsMincapacitysat {
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub dynamic: Option<bool>,
@@ -11592,6 +11598,9 @@ pub mod responses {
 	    #[serde(rename = "max-dust-htlc-exposure-msat")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub max_dust_htlc_exposure_msat: Option<ListconfigsConfigsMaxdusthtlcexposuremsat>,
+	    #[serde(rename = "max-independent-secrets")]
+	    #[serde(skip_serializing_if = "Option::is_none")]
+	    pub max_independent_secrets: Option<ListconfigsConfigsMaxindependentsecrets>,
 	    #[serde(rename = "min-capacity-sat")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub min_capacity_sat: Option<ListconfigsConfigsMincapacitysat>,
