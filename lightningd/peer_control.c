@@ -989,6 +989,9 @@ static void NON_NULL_ARGS(1, 2, 4, 5) json_add_channel(struct command *cmd,
 		json_add_bool(response, "reestablished", channel->reestablished);
 	}
 	json_add_channel_type(response, "channel_type", channel->type);
+	if (channel_has(channel, OPT_INDEPENDENT_SECRETS))
+		json_add_u64(response, "independent_secrets_stored",
+			     channel_their_stored_secrets(channel));
 	if (channel->ignore_fee_limits) {
 		json_add_bool(response, "ignore_fee_limits", channel->ignore_fee_limits);
 	}

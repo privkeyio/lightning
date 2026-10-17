@@ -289,6 +289,16 @@ u64 channel_their_revocations(const struct channel *channel)
 	return revocations_received(&channel->their_shachain.chain);
 }
 
+u64 channel_their_stored_secrets(const struct channel *channel)
+{
+	if (!channel->their_secrets_in_db)
+		return 0;
+	/* The shachain stopped taking them at the first which didn't fit,
+	 * and the db has every one from there on, without gaps. */
+	return channel->their_secrets_received
+		- revocations_received(&channel->their_shachain.chain);
+}
+
 bool channel_their_last_secret(const struct channel *channel,
 			       struct secret *secret)
 {

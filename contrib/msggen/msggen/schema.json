@@ -25032,6 +25032,13 @@
                     }
                   }
                 },
+                "independent_secrets_stored": {
+                  "type": "u64",
+                  "added": "v26.06.9-blake2b.8",
+                  "description": [
+                    "Only for a channel with *independent_secrets/even* in its channel_type: how many of the peer's per-commitment secrets we store one by one in the database, because they don't fit a shachain (0 while they all do)."
+                  ]
+                },
                 "updates": {
                   "type": "object",
                   "added": "v24.02",
@@ -25915,6 +25922,7 @@
                       "reestablished": {},
                       "scratch_txid": {},
                       "channel_type": {},
+                      "independent_secrets_stored": {},
                       "feerate": {},
                       "ignore_fee_limits": {},
                       "lost_state": {},
@@ -26015,6 +26023,7 @@
                       "alias": {},
                       "scratch_txid": {},
                       "channel_type": {},
+                      "independent_secrets_stored": {},
                       "feerate": {},
                       "ignore_fee_limits": {},
                       "lost_state": {},
@@ -26114,6 +26123,7 @@
                       "state": {},
                       "scratch_txid": {},
                       "channel_type": {},
+                      "independent_secrets_stored": {},
                       "feerate": {},
                       "ignore_fee_limits": {},
                       "lost_state": {},
@@ -26214,6 +26224,7 @@
                       "reestablished": {},
                       "scratch_txid": {},
                       "channel_type": {},
+                      "independent_secrets_stored": {},
                       "feerate": {},
                       "ignore_fee_limits": {},
                       "lost_state": {},

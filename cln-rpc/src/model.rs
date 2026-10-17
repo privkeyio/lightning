@@ -7977,6 +7977,8 @@ pub mod responses {
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub in_payments_offered: Option<u64>,
 	    #[serde(skip_serializing_if = "Option::is_none")]
+	    pub independent_secrets_stored: Option<u64>,
+	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub initial_feerate: Option<String>,
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub last_feerate: Option<String>,
