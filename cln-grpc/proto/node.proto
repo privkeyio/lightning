@@ -3238,6 +3238,7 @@ message ListconfigsConfigs {
 	optional ListconfigsConfigsCurrencyrateaddsource currencyrate_add_source = 74;
 	optional ListconfigsConfigsCurrencyratedisablesource currencyrate_disable_source = 75;
 	optional ListconfigsConfigsIndependentsecrets independent_secrets = 76;
+	optional ListconfigsConfigsMaxindependentsecrets max_independent_secrets = 77;
 }
 
 message ListconfigsConfigsAddr {
@@ -3507,6 +3508,11 @@ message ListconfigsConfigsMaxconcurrenthtlcs {
 message ListconfigsConfigsMaxdusthtlcexposuremsat {
 	Amount value_msat = 1;
 	string source = 2;
+}
+
+message ListconfigsConfigsMaxindependentsecrets {
+	string source = 1;
+	uint64 value_int = 2;
 }
 
 message ListconfigsConfigsMincapacitysat {

@@ -2560,6 +2560,7 @@
             "ListConfigs.configs.mainnet": 5,
             "ListConfigs.configs.max-concurrent-htlcs": 42,
             "ListConfigs.configs.max-dust-htlc-exposure-msat": 45,
+            "ListConfigs.configs.max-independent-secrets": 77,
             "ListConfigs.configs.max-locktime-blocks": 34,
             "ListConfigs.configs.min-capacity-sat": 46,
             "ListConfigs.configs.network": 13,
@@ -2810,6 +2811,10 @@
         "ListconfigsConfigsMax-dust-htlc-exposure-msat": {
             "ListConfigs.configs.max-dust-htlc-exposure-msat.source": 2,
             "ListConfigs.configs.max-dust-htlc-exposure-msat.value_msat": 1
+        },
+        "ListconfigsConfigsMax-independent-secrets": {
+            "ListConfigs.configs.max-independent-secrets.source": 1,
+            "ListConfigs.configs.max-independent-secrets.value_int": 2
         },
         "ListconfigsConfigsMax-locktime-blocks": {
             "ListConfigs.configs.max-locktime-blocks.source": 2,
@@ -10411,6 +10416,18 @@
         },
         "ListConfigs.configs.max-dust-htlc-exposure-msat.value_msat": {
             "added": "v23.08",
+            "deprecated": null
+        },
+        "ListConfigs.configs.max-independent-secrets": {
+            "added": "v26.06.9-blake2b.8",
+            "deprecated": null
+        },
+        "ListConfigs.configs.max-independent-secrets.source": {
+            "added": "v26.06.9-blake2b.8",
+            "deprecated": null
+        },
+        "ListConfigs.configs.max-independent-secrets.value_int": {
+            "added": "v26.06.9-blake2b.8",
             "deprecated": null
         },
         "ListConfigs.configs.max-locktime-blocks": {

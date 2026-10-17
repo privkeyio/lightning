@@ -249,6 +249,69 @@ def test_independent_secrets_need_the_feature(node_factory, executor):
     wait_for(lambda: only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'AWAITING_UNILATERAL')
 
 
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_cap(node_factory, bitcoind):
+    """Once a channel stores max-independent-secrets of the peer's secrets,
+    we start a mutual close, after a warning at 90%.  A payment from l1
+    revokes two of its commitments, and l2 stores those from commitment 1 on,
+    so after n payments it stores 2n - 1."""
+    l1, l2 = node_factory.line_graph(2, opts=[SENDER,
+                                              {**ON, 'max-independent-secrets': 20}])
+    assert l2.rpc.listconfigs()['configs']['max-independent-secrets']['value_int'] == 20
+    assert l1.rpc.listconfigs()['configs']['max-independent-secrets']['value_int'] == 1000000
+
+    for _ in range(10):
+        l1.pay(l2, 10_000_000)
+    settle(l1, l2)
+    assert reported_stored(l2, l1) == 19
+    # Once, at 18.
+    l2.daemon.wait_for_log(r'Stored 18 of the peer.s per-commitment secrets:'
+                           r' at max-independent-secrets=20 we will close the channel')
+    assert not l2.daemon.is_in_log(r'Stored 19 of the peer.s per-commitment secrets:')
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'
+
+    # The 20th starts the close, and the payment in flight still completes:
+    # settling it stores one more, within the 10% we allow for that.
+    l1.pay(l2, 10_000_000)
+    l2.daemon.wait_for_logs([r'Stored 20 of the peer.s per-commitment secrets,'
+                             r' max-independent-secrets=20: closing the channel',
+                             r'State changed from CHANNELD_NORMAL to CHANNELD_SHUTTING_DOWN'])
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for n in (l1, l2):
+        wait_for(lambda: only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'ONCHAIN')
+    closed = only_one(l2.rpc.listpeerchannels()['channels'])
+    assert closed['independent_secrets_stored'] == 21
+    assert 'Reached max-independent-secrets' in [s['message'] for s in closed['state_changes']]
+    assert not l2.daemon.is_in_log('closing it unilaterally')
+
+
+def test_independent_secrets_cap_unilateral(node_factory, bitcoind, executor):
+    """A peer which keeps a closing channel updating has it closed
+    unilaterally once we store 10% more than max-independent-secrets (at
+    least one more).  With a cap of 10, settling the payment in flight when
+    the close starts is already one too many."""
+    l1, l2 = node_factory.line_graph(2, opts=[{**SENDER, 'may_reconnect': True},
+                                              {**ON, 'max-independent-secrets': 10,
+                                               'may_reconnect': True}])
+    for _ in range(5):
+        l1.pay(l2, 10_000_000)
+    settle(l1, l2)
+    assert reported_stored(l2, l1) == 9
+
+    # It never settles cleanly: the channel closes with it on.
+    inv = l2.rpc.invoice(10_000_000, 'last', 'last')['bolt11']
+    executor.submit(l1.rpc.xpay, inv)
+    l2.daemon.wait_for_logs([r'Stored 10 of the peer.s per-commitment secrets,'
+                             r' max-independent-secrets=10: closing the channel',
+                             r'Stored 11 of the peer.s per-commitment secrets,'
+                             r' max-independent-secrets=10, and the channel still'
+                             r" isn't closed: closing it unilaterally"])
+    l2.wait_for_channel_onchain(l1.info['id'])
+    closed = only_one(l2.rpc.listpeerchannels()['channels'])
+    assert 'Stored too many per-commitment secrets' in [s['message'] for s in closed['state_changes']]
+
+
 def test_independent_secrets_refused_options(node_factory):
     """--independent-secrets can't be used with an external signer, which
     checks the peer's secrets against a shachain, and the dev sender needs it,

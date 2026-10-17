@@ -3590,6 +3590,16 @@ impl From<responses::ListconfigsConfigsMaxdusthtlcexposuremsat> for pb::Listconf
 }
 
 #[allow(unused_variables)]
+impl From<responses::ListconfigsConfigsMaxindependentsecrets> for pb::ListconfigsConfigsMaxindependentsecrets {
+    fn from(c: responses::ListconfigsConfigsMaxindependentsecrets) -> Self {
+        Self {
+            source: c.source, // Rule #2 for type string
+            value_int: c.value_int, // Rule #2 for type u64
+        }
+    }
+}
+
+#[allow(unused_variables)]
 impl From<responses::ListconfigsConfigsMincapacitysat> for pb::ListconfigsConfigsMincapacitysat {
     fn from(c: responses::ListconfigsConfigsMincapacitysat) -> Self {
         Self {
@@ -3841,6 +3851,7 @@ impl From<responses::ListconfigsConfigs> for pb::ListconfigsConfigs {
             mainnet: c.mainnet.map(|v| v.into()),
             max_concurrent_htlcs: c.max_concurrent_htlcs.map(|v| v.into()),
             max_dust_htlc_exposure_msat: c.max_dust_htlc_exposure_msat.map(|v| v.into()),
+            max_independent_secrets: c.max_independent_secrets.map(|v| v.into()),
             min_capacity_sat: c.min_capacity_sat.map(|v| v.into()),
             network: c.network.map(|v| v.into()),
             offline: c.offline.map(|v| v.into()),
