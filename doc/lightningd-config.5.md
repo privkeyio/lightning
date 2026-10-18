@@ -500,9 +500,12 @@ secret).  We log a warning at 90%, and at the limit start a mutual close, as
 settle the HTLCs in flight.  A peer can still keep a closing channel updating
 (with `update_fee`), so once we store 10% more than the limit (at least one
 more) we close the channel unilaterally.  If the limit is lowered below what a
-channel already stores, the close starts at its next update.  A channel the
-peer leased from us is closed at its first update after the lease expires.  0
-means no limit (default 1000000).  (Added in v26.06.9-blake2b.8).
+channel already stores, the close starts at its next update, and the 10% counts
+from there.  If the mutual close hasn't finished within 48 hours, we close the
+channel unilaterally, as `close` does by default.  A channel the peer leased
+from us is closed at its first update after the lease expires, or unilaterally
+before then once the peer has made us store 10% more than the limit.  0 means
+no limit (default 1000000).  (Added in v26.06.9-blake2b.8).
 
 * **max-dust-htlc-exposure-msat**=*MILLISATOSHI*
 

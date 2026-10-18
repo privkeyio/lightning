@@ -161,8 +161,9 @@ struct feature_set *feature_set_dup(const tal_t *ctx,
 #define OPT_BLAKE2B 512
 /* Provisional signing capability; persisted as a channel type modifier. */
 #define OPT_UNIFIED_SIGS 514
-/* From a draft bLIP: the peer's per-commitment secrets need not come from
- * a shachain, so we keep every one.  A channel type modifier. */
+/* From lightning-blake2b/bolts#17: the peer's per-commitment secrets need
+ * not come from a shachain, so we keep every one.  A channel type
+ * modifier. */
 #define OPT_INDEPENDENT_SECRETS 266
 
 #endif /* LIGHTNING_COMMON_FEATURES_H */

@@ -16,7 +16,7 @@ This is an unofficial version of [Core Lightning](https://github.com/ElementsPro
 
 The required feature bit means you **cannot cooperatively close a channel opened before activation** with a counterparty that has not upgraded.
 
-The feature bits are the ones proposed for BOLT 9: 512 for `option_blake2b` and 514 for `option_unified_sigs`. `option_independent_secrets` uses 266, from a draft bLIP. A stored channel type using the earlier bit 70 is moved to 514 on upgrade.
+The feature bits are the ones proposed for BOLT 9: 512 for `option_blake2b` and 514 for `option_unified_sigs`. `option_independent_secrets` uses 266, from [lightning-blake2b/bolts#17](https://github.com/lightning-blake2b/bolts/pull/17). A stored channel type using the earlier bit 70 is moved to 514 on upgrade.
 
 Fund channels only from coins received past activation. A channel funded from a coin received before activation has a funding transaction a node that has not upgraded also accepts, which reopens the exposure unified signing exists to close.
 

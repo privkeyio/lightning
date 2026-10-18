@@ -2695,13 +2695,68 @@ REGISTER_PLUGIN_HOOK(commitment_revocation,
 		     commitment_revocation_hook_serialize,
 		     struct commitment_revocation_payload *);
 
+/* The mutual close we started at max_independent_secrets hasn't finished:
+ * a peer could leave it there for ever, so we close unilaterally, as `close`
+ * does when its timeout runs out. */
+static void independent_secrets_close_timeout(struct channel *channel)
+{
+	channel->independent_secrets_close_timer = NULL;
+	if (channel->state != CHANNELD_SHUTTING_DOWN
+	    && channel->state != CLOSINGD_SIGEXCHANGE)
+		return;
+
+	log_unusual(channel->log,
+		    "The mutual close started at max-independent-secrets"
+		    " hasn't finished in %u seconds: closing the channel"
+		    " unilaterally",
+		    channel->peer->ld->dev_independent_secrets_close_timeout);
+	channel_fail_permanent(channel, REASON_LOCAL,
+			       "Mutual close at max-independent-secrets timed out");
+}
+
+static void arm_independent_secrets_close_timer(struct channel *channel)
+{
+	struct lightningd *ld = channel->peer->ld;
+
+	tal_free(channel->independent_secrets_close_timer);
+	channel->independent_secrets_close_timer
+		= new_reltimer(ld->timers, channel,
+			       time_from_sec(ld->dev_independent_secrets_close_timeout),
+			       independent_secrets_close_timeout, channel);
+}
+
+void independent_secrets_arm_close_timers(struct lightningd *ld)
+{
+	struct peer *peer;
+	struct peer_node_id_map_iter it;
+	struct channel *channel;
+
+	if (ld->max_independent_secrets == 0)
+		return;
+	for (peer = peer_node_id_map_first(ld->peers, &it);
+	     peer;
+	     peer = peer_node_id_map_next(ld->peers, &it)) {
+		list_for_each(&peer->channels, channel, list) {
+			/* Closing, and over the limit: most likely our own
+			 * close, so it gets the same time to finish.  The
+			 * timer is not saved, so it restarts with us. */
+			if ((channel->state == CHANNELD_SHUTTING_DOWN
+			     || channel->state == CLOSINGD_SIGEXCHANGE)
+			    && channel_their_stored_secrets(channel)
+			    >= ld->max_independent_secrets)
+				arm_independent_secrets_close_timer(channel);
+		}
+	}
+}
+
 /* On an option_independent_secrets channel the peer's secrets which don't
  * fit a shachain cost us about 60 bytes each, and there is no end to them
  * while the channel is open.  So we warn at 90% of max_independent_secrets
  * and start a mutual close when it is reached: after `shutdown` the peer
- * only needs as many more as it takes to settle the HTLCs in flight.  But a
- * peer can keep a closing channel updating (update_fee needs no HTLCs), so
- * once it has made us store another 10% we close the channel unilaterally. */
+ * only needs as many more as it takes to settle the HTLCs in flight, and if
+ * the close hasn't finished in time we close unilaterally.  A peer can also
+ * keep a closing channel updating (update_fee needs no HTLCs), so once it
+ * has made us store another 10% we close the channel unilaterally too. */
 static void check_independent_secrets_cap(struct channel *channel)
 {
 	struct lightningd *ld = channel->peer->ld;
@@ -2726,22 +2781,30 @@ static void check_independent_secrets_cap(struct channel *channel)
 		return;
 	}
 
-	/* Like `close`, we keep a lease we sold. */
+	/* The backstop counts from where we first saw it over the limit, so
+	 * a lowered limit starts a mutual close rather than failing the
+	 * channel at the next update. */
+	if (channel->independent_secrets_over_at == 0)
+		channel->independent_secrets_over_at = stored;
+
+	/* Like `close`, we don't close a lease we sold before it expires.
+	 * The backstop below still applies: our funds stay locked until then
+	 * however the channel closes. */
 	if (channel->opener != LOCAL
 	    && get_block_height(ld->topology) < channel->lease_expiry) {
 		if (!channel->independent_secrets_lease_logged) {
 			log_unusual(channel->log,
 				    "Reached max-independent-secrets=%"PRIu64
 				    ", but the peer leased this channel until"
-				    " block %u: closing after that",
-				    max, channel->lease_expiry);
+				    " block %u: closing after that, or"
+				    " unilaterally if it has us store another"
+				    " %"PRIu64" first",
+				    max, channel->lease_expiry, slack);
 			channel->independent_secrets_lease_logged = true;
 		}
-		return;
-	}
-
-	/* Once: if it can't start, the backstop below still applies. */
-	if (!channel->independent_secrets_close_tried) {
+	} else if (!channel->independent_secrets_close_tried) {
+		/* Once: if it can't start, the backstop below still
+		 * applies. */
 		channel->independent_secrets_close_tried = true;
 		if (channel_start_mutual_close(channel,
 					       "Reached max-independent-secrets")) {
@@ -2751,11 +2814,12 @@ static void check_independent_secrets_cap(struct channel *channel)
 				    " max-independent-secrets=%"PRIu64
 				    ": closing the channel",
 				    stored, max);
+			arm_independent_secrets_close_timer(channel);
 			return;
 		}
 	}
 
-	if (stored - max >= slack) {
+	if (stored - channel->independent_secrets_over_at >= slack) {
 		log_unusual(channel->log,
 			    "Stored %"PRIu64" of the peer's per-commitment"
 			    " secrets, max-independent-secrets=%"PRIu64
@@ -2830,12 +2894,12 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 		 *     - MAY send a `warning` and close the connection, or send an
 		 *       `error` and fail the channel.
 		 */
-		/* bLIP-independent-secrets:
+		/* lightning-blake2b/bolts#17, BOLT 2:
 		 *
 		 *   - if `option_independent_secrets` applies to the channel:
 		 *     - MUST NOT fail the channel or close the connection because the
 		 *       `per_commitment_secret` is not related to earlier secrets as
-		 *       described in [BOLT #3](https://github.com/lightning/bolts/blob/master/03-transactions.md#per-commitment-secret-requirements).
+		 *       described in [BOLT #3](03-transactions.md#per-commitment-secret-requirements).
 		 */
 		if (!channel_has(channel, OPT_INDEPENDENT_SECRETS)) {
 			channel_fail_permanent(channel,
@@ -2846,9 +2910,9 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 			return;
 		}
 
-		/* bLIP-independent-secrets:
-		 *   - MAY store per-commitment secrets in the compact
-		 *     representation in [Efficient Per-commitment Secret Storage](https://github.com/lightning/bolts/blob/master/03-transactions.md#efficient-per-commitment-secret-storage),
+		/* lightning-blake2b/bolts#17, BOLT 3:
+		 *   - MAY store per-commitment secrets in the compact representation of
+		 *     [Efficient Per-commitment Secret Storage](#efficient-per-commitment-secret-storage),
 		 *     for as long as each one it receives can be inserted into it:
 		 *     - otherwise, MUST store that secret, and every later one,
 		 *       individually, together with the number of the commitment

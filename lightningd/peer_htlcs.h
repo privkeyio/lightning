@@ -23,6 +23,10 @@ void peer_sending_commitsig(struct channel *channel, const u8 *msg);
 void peer_got_commitsig(struct channel *channel, const u8 *msg);
 void peer_got_revoke(struct channel *channel, const u8 *msg);
 
+/* At startup: fail any option_independent_secrets channel whose mutual close
+ * at max-independent-secrets doesn't finish in time. */
+void independent_secrets_arm_close_timers(struct lightningd *ld);
+
 void update_per_commit_point(struct channel *channel,
 			     const struct pubkey *per_commitment_point);
 

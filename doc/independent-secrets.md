@@ -1,7 +1,8 @@
 # Independent per-commitment secrets
 
 This version of Core Lightning supports `option_independent_secrets` (feature
-bits 266/267, proposed in a draft bLIP). On a
+bits 266/267, proposed in
+[lightning-blake2b/bolts#17](https://github.com/lightning-blake2b/bolts/pull/17)). On a
 channel with it, the node accepts per-commitment secrets from its peer that do
 not come from a shachain, and keeps each one it needs to punish a breach.
 
@@ -77,8 +78,12 @@ to settle the HTLCs in flight. A peer can still keep a closing channel updating
 (with `update_fee`), so once it has made us store 10% more than the limit (at
 least one more), lightningd closes the channel unilaterally. If the limit is
 lowered below what a channel already stores, the close starts at its next
-update. A channel the peer leased from us is closed at its first update after
-the lease expires. 0 means no limit.
+update, and the 10% counts from there. If the mutual close hasn't finished
+within 48 hours, lightningd closes the channel unilaterally, as `close` does
+by default. A channel the peer leased from us is closed at its first update
+after the lease expires, or unilaterally before then once the peer has made us
+store 10% more than the limit: our funds stay locked until the lease expires
+either way. 0 means no limit.
 
 ## Limits
 
