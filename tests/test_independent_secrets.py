@@ -18,6 +18,8 @@ from utils import (
 )
 
 import pytest
+import re
+import time
 
 
 pytestmark = pytest.mark.skipif(TEST_NETWORK != 'regtest',
@@ -646,3 +648,59 @@ def test_independent_secrets_cap_lease(node_factory, bitcoind, executor):
                            r" isn't closed: closing it unilaterally")
     assert not l2.daemon.is_in_log(r'max-independent-secrets=10: closing the channel')
     l2.wait_for_channel_onchain(l1.info['id'])
+
+
+def test_independent_secrets_cap_close_restart(node_factory, executor):
+    """A restart resets neither the backstop nor the timeout of the mutual
+    close we started at the limit: we save how many we stored when it
+    started, and when it started is in the channel's state changes."""
+    l1, l2 = node_factory.line_graph(2, opts=[{**SENDER, 'may_reconnect': True,
+                                               'dev-no-reconnect': None,
+                                               'disconnect': ['-WIRE_SHUTDOWN']},
+                                              {**ON, 'max-independent-secrets': 20,
+                                               'dev-independent-secrets-close-timeout': 30,
+                                               'may_reconnect': True,
+                                               'dev-no-reconnect': None}])
+    for _ in range(10):
+        l1.pay(l2, 10_000_000)
+    settle(l1, l2)
+    executor.submit(l1.pay, l2, 10_000_000)
+    l2.daemon.wait_for_log(r'Stored 20 of the peer.s per-commitment secrets,'
+                           r' max-independent-secrets=20: closing the channel')
+    assert only_one(l2.db_query('SELECT independent_secrets_close_at FROM channels'))['independent_secrets_close_at'] == 20
+
+    time.sleep(10)
+    l2.restart()
+    # Logged while starting up, before the log search begins.
+    line = l2.daemon.is_in_log(r'The mutual close started at max-independent-secrets'
+                               r' has [0-9]+ seconds left')
+    assert int(re.search(r'has ([0-9]+) seconds left', line).group(1)) <= 20
+    l2.daemon.wait_for_log(r"hasn't finished in 30 seconds: closing the channel unilaterally")
+    l2.wait_for_channel_onchain(l1.info['id'])
+
+
+def test_independent_secrets_cap_not_our_close(node_factory, executor):
+    """Only a close we started at the limit is timed out by it.  Here the
+    user closes the channel with no timeout while the peer is away, and the
+    limit is lowered below what the channel stores before a restart: the
+    close keeps waiting."""
+    l1, l2 = node_factory.line_graph(2, opts=[{**SENDER, 'may_reconnect': True},
+                                              {**ON, 'may_reconnect': True,
+                                               'dev-no-reconnect': None,
+                                               'dev-independent-secrets-close-timeout': 5}])
+    for _ in range(5):
+        l1.pay(l2, 10_000_000)
+    settle(l1, l2)
+    assert reported_stored(l2, l1) == 9
+
+    l1.stop()
+    executor.submit(l2.rpc.close, l1.info['id'], 0)
+    wait_for(lambda: only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_SHUTTING_DOWN')
+
+    l2.stop()
+    l2.daemon.opts['max-independent-secrets'] = 5
+    l2.start()
+    time.sleep(10)
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_SHUTTING_DOWN'
+    assert not l2.daemon.is_in_log('seconds left')
+    assert not l2.daemon.is_in_log('closing the channel unilaterally')

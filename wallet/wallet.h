@@ -652,6 +652,15 @@ void wallet_revocation_secret_add(struct wallet *w,
 				  const struct secret *secret);
 
 /**
+ * wallet_independent_secrets_close_at_set -- save how many of the peer's
+ * secrets an option_independent_secrets channel stored when we started a
+ * mutual close at max-independent-secrets.
+ */
+void wallet_independent_secrets_close_at_set(struct wallet *w,
+					     u64 channel_dbid,
+					     u64 close_at);
+
+/**
  * wallet_revocation_secret_get -- look up the per-commitment secret for a
  * revoked commitment of the peer's on an option_independent_secrets channel.
  * @w: the wallet
