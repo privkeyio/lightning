@@ -167,6 +167,8 @@ static struct lightningd *new_lightningd(const tal_t *ctx)
 	ld->dev_hsmd_independent_secrets_sender = false;
 	/* 32MB of secrets, about 60MB in the db. */
 	ld->max_independent_secrets = 1000000;
+	/* As long as `close` waits by default. */
+	ld->dev_independent_secrets_close_timeout = 48 * 60 * 60;
 	ld->dev_handshake_no_reply = false;
 	ld->dev_strict_forwarding = false;
 	ld->dev_limit_connections_inflight = false;
@@ -1530,6 +1532,7 @@ int main(int argc, char *argv[])
 								 &num_channels));
 	check_dev_independent_secrets_sender(ld, num_channels);
 	check_independent_secrets_channels(ld);
+	independent_secrets_arm_close_timers(ld);
 	db_commit_transaction(ld->wallet->db);
 
 	/*~ Now we have channels, try to ensure we have enough file descriptors

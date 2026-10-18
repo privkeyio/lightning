@@ -1026,6 +1026,12 @@ static void dev_register_opts(struct lightningd *ld)
 		     "Generate our per-commitment secrets without a shachain,"
 		     " which only a peer with option_independent_secrets"
 		     " accepts");
+	clnopt_witharg("--dev-independent-secrets-close-timeout", OPT_DEV|OPT_SHOWINT,
+		       opt_set_u32, opt_show_u32,
+		       &ld->dev_independent_secrets_close_timeout,
+		       "Seconds the mutual close started at"
+		       " max-independent-secrets may take before we close the"
+		       " channel unilaterally");
 	clnopt_witharg("--dev-save-plugin-io", OPT_DEV,
 		       opt_set_charp, opt_show_charp,
 		       &ld->plugins->dev_save_io,

@@ -538,3 +538,111 @@ def test_independent_secrets_closed_channel_reestablish(node_factory, bitcoind):
     assert not l1.daemon.is_in_log('cannot get')
 
     l2.daemon.rpcproxy.mock_rpc('getblockhash', None)
+
+
+def test_independent_secrets_cap_lowered(node_factory, bitcoind):
+    """A limit lowered below what a channel already stores starts a mutual
+    close at the channel's next update, and the 10% we allow before closing
+    unilaterally counts from there, so the payment in flight still settles."""
+    l1, l2 = node_factory.line_graph(2, opts=[{**SENDER, 'may_reconnect': True},
+                                              {**ON, 'may_reconnect': True}])
+    for _ in range(15):
+        l1.pay(l2, 10_000_000)
+    settle(l1, l2)
+    assert reported_stored(l2, l1) == 29
+
+    l2.stop()
+    l2.daemon.opts['max-independent-secrets'] = 20
+    l2.start()
+    for n, peer in ((l1, l2), (l2, l1)):
+        wait_for(lambda: only_one(n.rpc.listpeerchannels(peer.info['id'])['channels'])['peer_connected'])
+        wait_for(lambda: only_one(n.rpc.listpeerchannels(peer.info['id'])['channels'])['state'] == 'CHANNELD_NORMAL')
+
+    # 30 starts the close, and settling the payment stores 31: within the
+    # slack of 2, counted from 30 rather than from 20.
+    l1.pay(l2, 10_000_000)
+    l2.daemon.wait_for_logs([r'Stored 30 of the peer.s per-commitment secrets,'
+                             r' max-independent-secrets=20: closing the channel',
+                             r'State changed from CHANNELD_NORMAL to CHANNELD_SHUTTING_DOWN'])
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for n in (l1, l2):
+        wait_for(lambda: only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'ONCHAIN')
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['independent_secrets_stored'] == 31
+    assert not l2.daemon.is_in_log('closing it unilaterally')
+
+
+def test_independent_secrets_cap_close_timeout(node_factory, executor):
+    """If the mutual close started at the limit doesn't finish in time, we
+    close the channel unilaterally, as `close` does.  Here the peer
+    disconnects rather than answer our shutdown, and doesn't come back."""
+    l1, l2 = node_factory.line_graph(2, opts=[{**SENDER, 'may_reconnect': True,
+                                               'dev-no-reconnect': None,
+                                               'disconnect': ['-WIRE_SHUTDOWN']},
+                                              {**ON, 'max-independent-secrets': 20,
+                                               'dev-independent-secrets-close-timeout': 10,
+                                               'may_reconnect': True,
+                                               'dev-no-reconnect': None}])
+    for _ in range(10):
+        l1.pay(l2, 10_000_000)
+    settle(l1, l2)
+    assert reported_stored(l2, l1) == 19
+
+    # It never settles: the peer is gone.
+    executor.submit(l1.pay, l2, 10_000_000)
+    l2.daemon.wait_for_logs([r'Stored 20 of the peer.s per-commitment secrets,'
+                             r' max-independent-secrets=20: closing the channel',
+                             r'The mutual close started at max-independent-secrets'
+                             r" hasn't finished in 10 seconds: closing the channel"
+                             r' unilaterally'])
+    l2.wait_for_channel_onchain(l1.info['id'])
+    closed = only_one(l2.rpc.listpeerchannels()['channels'])
+    assert 'Mutual close at max-independent-secrets timed out' in [s['message'] for s in closed['state_changes']]
+
+
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_cap_lease(node_factory, bitcoind, executor):
+    """We don't start a mutual close of a channel the peer leased from us
+    before the lease expires, but the backstop still applies: once the peer
+    has made us store 10% more than the limit, we close unilaterally."""
+    lease = {'funder-policy': 'match', 'funder-policy-mod': 100,
+             'lease-fee-base-sat': '100sat', 'lease-fee-basis': 100,
+             'may_reconnect': True}
+    l1, l2 = node_factory.get_nodes(2, opts=[{**SENDER, **lease},
+                                             {**ON, **lease, 'max-independent-secrets': 10}])
+    amount = 500000
+    l1.fundwallet(20000000)
+    l2.fundwallet(20000000)
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    rates = l1.rpc.dev_queryrates(l2.info['id'], amount, amount)
+    # l1 leases a channel from l2.
+    l1.rpc.fundchannel(l2.info['id'], amount, request_amt=amount,
+                       feerate='2000perkw', compact_lease=rates['compact_lease'])
+    bitcoind.generate_block(6)
+    for n, peer in ((l1, l2), (l2, l1)):
+        wait_for(lambda: only_one(n.rpc.listpeerchannels(peer.info['id'])['channels'])['state'] == 'CHANNELD_NORMAL')
+    assert has_independent_secrets(l2, l1)
+
+    # On this dual-funded channel, l2 stores 2n of l1's secrets after n
+    # payments.
+    for _ in range(4):
+        l1.pay(l2, 10_000_000)
+    settle(l1, l2)
+    assert reported_stored(l2, l1) == 8
+
+    # 10 reaches the limit, but the lease holds off the close.
+    l1.pay(l2, 10_000_000)
+    settle(l1, l2)
+    l2.daemon.wait_for_log(r'Reached max-independent-secrets=10, but the peer'
+                           r' leased this channel until block [0-9]+: closing'
+                           r' after that, or unilaterally if it has us store'
+                           r' another 1 first')
+    assert reported_stored(l2, l1) == 10
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'
+
+    # With a limit of 10 the slack is 1, so the next one closes it.
+    executor.submit(l1.pay, l2, 10_000_000)
+    l2.daemon.wait_for_log(r'Stored 11 of the peer.s per-commitment secrets,'
+                           r' max-independent-secrets=10, and the channel still'
+                           r" isn't closed: closing it unilaterally")
+    assert not l2.daemon.is_in_log(r'max-independent-secrets=10: closing the channel')
+    l2.wait_for_channel_onchain(l1.info['id'])

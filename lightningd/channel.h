@@ -175,6 +175,12 @@ struct channel {
 	/* What we have done about max_independent_secrets (not saved). */
 	bool independent_secrets_warned, independent_secrets_lease_logged;
 	bool independent_secrets_close_tried;
+	/* The count when we first saw it at or over the cap (0 if not yet),
+	 * from which the backstop counts. */
+	u64 independent_secrets_over_at;
+	/* Fails the channel if the mutual close we started at the cap
+	 * doesn't finish in time. */
+	struct oneshot *independent_secrets_close_timer;
 
  	/* What's happening. */
  	enum channel_state state;
