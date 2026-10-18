@@ -80,10 +80,11 @@ least one more), lightningd closes the channel unilaterally. If the limit is
 lowered below what a channel already stores, the close starts at its next
 update, and the 10% counts from there. If the mutual close hasn't finished
 within 48 hours, lightningd closes the channel unilaterally, as `close` does
-by default. A channel the peer leased from us is closed at its first update
-after the lease expires, or unilaterally before then once the peer has made us
-store 10% more than the limit: our funds stay locked until the lease expires
-either way. 0 means no limit.
+by default. A restart resets neither the 10% nor the 48 hours. A channel the
+peer leased from us is closed at its first update after the lease expires, or
+unilaterally before then once the peer has made us store 10% more than the
+limit: our funds stay locked until the lease expires either way. 0 means no
+limit.
 
 ## Limits
 

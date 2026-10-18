@@ -99,9 +99,10 @@ def test_splice_stored_feerate_repaired_on_upgrade(node_factory, bitcoind,
     # They are plain idempotent UPDATEs, so re-running them is safe.  The
     # count has to reach back past both of them, so it grows whenever a
     # migration is appended after them, and what those create has to go
-    # first: here, option_independent_secrets' table.
+    # first: here, option_independent_secrets' table and column.
     l1.db_manip("DROP TABLE channel_revocation_secrets")
-    l1.db_manip("UPDATE version SET version = version - 5")
+    l1.db_manip("ALTER TABLE channels DROP COLUMN independent_secrets_close_at")
+    l1.db_manip("UPDATE version SET version = version - 6")
     l1.daemon.opts['database-upgrade'] = 'true'
     l1.start()
 
@@ -1678,9 +1679,10 @@ def test_splice_sent_sigs_marked_on_upgrade(node_factory, bitcoind, executor):
                                " FROM channel_funding_inflights;"))
     assert row['i_am_initiator'] == 1 and row['i_sent_sigs'] == 0
     # Migrations appended after it go first: option_independent_secrets'
-    # table.
+    # table and column.
     l1.db_manip("DROP TABLE channel_revocation_secrets")
-    l1.db_manip("UPDATE version SET version = version - 2")
+    l1.db_manip("ALTER TABLE channels DROP COLUMN independent_secrets_close_at")
+    l1.db_manip("UPDATE version SET version = version - 3")
     l1.daemon.opts['database-upgrade'] = 'true'
 
     # l2 forgets the splice, so it answers l1's next_funding with tx_abort.

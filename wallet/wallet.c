@@ -1290,6 +1290,38 @@ static bool wallet_shachain_load(struct wallet *wallet, u64 id,
 	return true;
 }
 
+void wallet_independent_secrets_close_at_set(struct wallet *w,
+					     u64 channel_dbid,
+					     u64 close_at)
+{
+	struct db_stmt *stmt;
+
+	stmt = db_prepare_v2(w->db,
+			     SQL("UPDATE channels"
+				 " SET independent_secrets_close_at = ?"
+				 " WHERE id = ?;"));
+	db_bind_u64(stmt, close_at);
+	db_bind_u64(stmt, channel_dbid);
+	db_exec_prepared_v2(take(stmt));
+}
+
+static u64 wallet_independent_secrets_close_at(struct wallet *w,
+					       u64 channel_dbid)
+{
+	struct db_stmt *stmt;
+	u64 close_at = 0;
+
+	stmt = db_prepare_v2(w->db,
+			     SQL("SELECT independent_secrets_close_at"
+				 " FROM channels WHERE id = ?;"));
+	db_bind_u64(stmt, channel_dbid);
+	db_query_prepared(stmt);
+	if (db_step(stmt))
+		close_at = db_col_u64(stmt, "independent_secrets_close_at");
+	tal_free(stmt);
+	return close_at;
+}
+
 void wallet_revocation_secret_add(struct wallet *w,
 				  u64 channel_dbid,
 				  u64 commitnum,
@@ -2280,11 +2312,14 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 		return NULL;
 	}
 
-	if (channel_has(chan, OPT_INDEPENDENT_SECRETS))
+	if (channel_has(chan, OPT_INDEPENDENT_SECRETS)) {
 		chan->their_secrets_in_db
 			= wallet_revocation_secrets_latest(w, chan->dbid,
 							   &chan->their_secrets_received,
 							   &chan->their_last_secret);
+		chan->independent_secrets_close_at
+			= wallet_independent_secrets_close_at(w, chan->dbid);
+	}
 
 	return chan;
 }

@@ -5,6 +5,7 @@
 #include <channeld/channeld_wiregen.h>
 #include <common/amount.h>
 #include <common/blinding.h>
+#include <common/clock_time.h>
 #include <common/ecdh.h>
 #include <common/json_command.h>
 #include <common/json_parse.h>
@@ -2714,14 +2715,14 @@ static void independent_secrets_close_timeout(struct channel *channel)
 			       "Mutual close at max-independent-secrets timed out");
 }
 
-static void arm_independent_secrets_close_timer(struct channel *channel)
+static void arm_independent_secrets_close_timer(struct channel *channel,
+						u64 seconds)
 {
 	struct lightningd *ld = channel->peer->ld;
 
 	tal_free(channel->independent_secrets_close_timer);
 	channel->independent_secrets_close_timer
-		= new_reltimer(ld->timers, channel,
-			       time_from_sec(ld->dev_independent_secrets_close_timeout),
+		= new_reltimer(ld->timers, channel, time_from_sec(seconds),
 			       independent_secrets_close_timeout, channel);
 }
 
@@ -2731,20 +2732,40 @@ void independent_secrets_arm_close_timers(struct lightningd *ld)
 	struct peer_node_id_map_iter it;
 	struct channel *channel;
 
-	if (ld->max_independent_secrets == 0)
-		return;
 	for (peer = peer_node_id_map_first(ld->peers, &it);
 	     peer;
 	     peer = peer_node_id_map_next(ld->peers, &it)) {
 		list_for_each(&peer->channels, channel, list) {
-			/* Closing, and over the limit: most likely our own
-			 * close, so it gets the same time to finish.  The
-			 * timer is not saved, so it restarts with us. */
-			if ((channel->state == CHANNELD_SHUTTING_DOWN
-			     || channel->state == CLOSINGD_SIGEXCHANGE)
-			    && channel_their_stored_secrets(channel)
-			    >= ld->max_independent_secrets)
-				arm_independent_secrets_close_timer(channel);
+			u64 timeout = ld->dev_independent_secrets_close_timeout;
+			u64 elapsed = 0, left;
+
+			/* Only a close we started at the cap, which is
+			 * still under way. */
+			if (channel->independent_secrets_close_at == 0
+			    || (channel->state != CHANNELD_SHUTTING_DOWN
+				&& channel->state != CLOSINGD_SIGEXCHANGE))
+				continue;
+
+			/* It has whatever is left of its time since it
+			 * started: when the channel last moved to
+			 * CHANNELD_SHUTTING_DOWN. */
+			for (size_t i = tal_count(channel->state_changes); i > 0; i--) {
+				const struct channel_state_change *c
+					= channel->state_changes[i - 1];
+				if (c->new_state != CHANNELD_SHUTTING_DOWN)
+					continue;
+				elapsed = time_to_sec(time_between(clock_time(),
+								   c->timestamp));
+				break;
+			}
+			left = elapsed < timeout ? timeout - elapsed : 1;
+			channel->independent_secrets_close_tried = true;
+			log_info(channel->log,
+				 "The mutual close started at"
+				 " max-independent-secrets has %"PRIu64
+				 " seconds left",
+				 left);
+			arm_independent_secrets_close_timer(channel, left);
 		}
 	}
 }
@@ -2781,12 +2802,6 @@ static void check_independent_secrets_cap(struct channel *channel)
 		return;
 	}
 
-	/* The backstop counts from where we first saw it over the limit, so
-	 * a lowered limit starts a mutual close rather than failing the
-	 * channel at the next update. */
-	if (channel->independent_secrets_over_at == 0)
-		channel->independent_secrets_over_at = stored;
-
 	/* Like `close`, we don't close a lease we sold before it expires.
 	 * The backstop below still applies: our funds stay locked until then
 	 * however the channel closes. */
@@ -2808,18 +2823,29 @@ static void check_independent_secrets_cap(struct channel *channel)
 		channel->independent_secrets_close_tried = true;
 		if (channel_start_mutual_close(channel,
 					       "Reached max-independent-secrets")) {
+			/* The backstop counts from here, so a lowered limit
+			 * starts a mutual close rather than failing the
+			 * channel at the next update.  Saved, as is when the
+			 * close started (in its state changes), so a restart
+			 * resets neither. */
+			channel->independent_secrets_close_at = stored;
+			wallet_independent_secrets_close_at_set(ld->wallet,
+								channel->dbid,
+								stored);
 			log_unusual(channel->log,
 				    "Stored %"PRIu64" of the peer's"
 				    " per-commitment secrets,"
 				    " max-independent-secrets=%"PRIu64
 				    ": closing the channel",
 				    stored, max);
-			arm_independent_secrets_close_timer(channel);
+			arm_independent_secrets_close_timer(channel,
+							    ld->dev_independent_secrets_close_timeout);
 			return;
 		}
 	}
 
-	if (stored - channel->independent_secrets_over_at >= slack) {
+	if (stored - (channel->independent_secrets_close_at
+		      ? channel->independent_secrets_close_at : max) >= slack) {
 		log_unusual(channel->log,
 			    "Stored %"PRIu64" of the peer's per-commitment"
 			    " secrets, max-independent-secrets=%"PRIu64
