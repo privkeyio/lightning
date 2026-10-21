@@ -729,3 +729,65 @@ def test_independent_secrets_even_bit_in_init(node_factory, offered):
     l3 = node_factory.get_node(options=ON)
     l3.rpc.connect(l1.info['id'], 'localhost', l1.port)
     wait_for(lambda: only_one(l1.rpc.listpeers(l3.info['id'])['peers'])['connected'])
+
+
+def pay_direct(src, dst, amt):
+    """Like LightningNode.pay, but also while a splice is pending, when the
+    channel is in CHANNELD_AWAITING_SPLICE rather than CHANNELD_NORMAL."""
+    label = 'direct-{}'.format(time.time())
+    inv = dst.rpc.invoice(amt, label, label)
+    scid = only_one(src.rpc.listpeerchannels(dst.info['id'])['channels'])['short_channel_id']
+    route = [{'amount_msat': amt, 'id': dst.info['id'], 'delay': 5, 'channel': scid}]
+    src.rpc.sendpay(route, inv['payment_hash'], payment_secret=inv['payment_secret'])
+    src.rpc.waitsendpay(inv['payment_hash'])
+
+
+def splice_in(l1, l2, amount=100000):
+    """l1 splices amount into its channel with l2, leaving the splice
+    pending: its transaction is in the mempool, unconfirmed."""
+    chan_id = l1.get_channel_id(l2)
+    funds = l1.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
+    result = l1.rpc.splice_init(chan_id, amount, funds['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    assert result['commitments_secured'] is True
+    result = l1.rpc.signpsbt(result['psbt'])
+    result = l1.rpc.splice_signed(chan_id, result['signed_psbt'])
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'CHANNELD_NORMAL to CHANNELD_AWAITING_SPLICE')
+    return result['txid']
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_cap_during_splice(node_factory, bitcoind):
+    """Reaching max-independent-secrets while a splice is pending doesn't
+    send shutdown, which BOLT 2 doesn't allow then: the mutual close starts
+    once the splice locks."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     wait_for_announce=True,
+                                     opts=[{**ON, 'max-independent-secrets': 20},
+                                           SENDER])
+    splice_txid = splice_in(l1, l2)
+
+    # Each payment has l2 revoke a commitment or two.
+    while (reported_stored(l1, l2) or 0) < 20:
+        pay_direct(l1, l2, 10_000_000)
+        settle(l1, l2)
+    # Within the backstop's 10% (2 here).
+    assert reported_stored(l1, l2) < 22
+
+    l1.daemon.wait_for_log('Reached max-independent-secrets=20, but a splice'
+                           ' is pending')
+    chan = only_one(l1.rpc.listpeerchannels(l2.info['id'])['channels'])
+    assert chan['state'] == 'CHANNELD_AWAITING_SPLICE'
+    assert not l1.daemon.is_in_log('closing the channel')
+
+    bitcoind.generate_block(6, wait_for_mempool=splice_txid)
+    l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    l1.daemon.wait_for_logs([r'CHANNELD_NORMAL to CHANNELD_SHUTTING_DOWN',
+                             r'max-independent-secrets=20: closing the channel'])
+    l1.daemon.wait_for_log(r'to CLOSINGD_COMPLETE')
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'to ONCHAIN')
+    assert not l1.daemon.is_in_log('closing it unilaterally')

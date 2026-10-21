@@ -174,6 +174,7 @@ struct channel {
 	struct secret their_last_secret;
 	/* What we have done about max_independent_secrets (not saved). */
 	bool independent_secrets_warned, independent_secrets_lease_logged;
+	bool independent_secrets_splice_logged;
 	bool independent_secrets_close_tried;
 	/* How many we stored when we started a mutual close at the cap (0
 	 * if we haven't): the backstop counts from there.  Saved in the db,

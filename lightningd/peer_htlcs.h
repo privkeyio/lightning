@@ -27,6 +27,10 @@ void peer_got_revoke(struct channel *channel, const u8 *msg);
  * at max-independent-secrets doesn't finish in time. */
 void independent_secrets_arm_close_timers(struct lightningd *ld);
 
+/* At max-independent-secrets, starts the mutual close (once a pending
+ * splice has locked), or closes unilaterally if the peer has gone on. */
+void check_independent_secrets_cap(struct channel *channel);
+
 void update_per_commit_point(struct channel *channel,
 			     const struct pubkey *per_commitment_point);
 
