@@ -760,6 +760,56 @@ def splice_in(l1, l2, amount=100000):
 
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
+@pytest.mark.parametrize("locked", [False, True])
+def test_independent_secrets_penalty_spliced(node_factory, bitcoind, locked):
+    """A revoked commitment on a splice's funding output is punished with
+    the secret we stored for its number: one secret revokes that number on
+    every funding output.  Either while the splice is pending (the cheater
+    broadcasts its commitment on the new funding, spending the splice
+    transaction) or after it locked."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     wait_for_announce=True,
+                                     opts=[{**CHEATER_OPTS, **SENDER}, ON])
+    assert has_independent_secrets(l2, l1)
+    l1.pay(l2, 100_000_000)
+    settle(l1, l2)
+
+    splice_txid = splice_in(l1, l2)
+    if locked:
+        bitcoind.generate_block(6, wait_for_mempool=splice_txid)
+        for n in (l1, l2):
+            n.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+        l1.pay(l2, 10_000_000)
+        settle(l1, l2)
+        old_tx = l1.rpc.dev_sign_last_tx(l2.info['id'])['tx']
+    else:
+        pay_direct(l1, l2, 10_000_000)
+        settle(l1, l2)
+        # Its commitment on the splice's funding output.
+        old_tx = only_one(l1.rpc.dev_sign_last_tx(l2.info['id'])['inflights'])['tx']
+    old_num = their_revocations(l2, l1)
+
+    # Revoke it, and some after it.
+    for _ in range(3):
+        pay_direct(l1, l2, 50_000_000)
+        pay_direct(l2, l1, 10_000_000)
+    settle(l1, l2)
+    assert old_num in stored_secrets(l2)
+    revocations = their_revocations(l2, l1)
+
+    bitcoind.rpc.sendrawtransaction(old_tx)
+    bitcoind.generate_block(1, wait_for_mempool=bitcoind.rpc.decoderawtransaction(old_tx)['txid'])
+    l2.daemon.wait_for_log(' to ONCHAIN')
+    wait_for(lambda: l2.daemon.is_in_log(f'commitnum = {old_num}, revocations_received = {revocations}'))
+    ((_, txid, blocks),) = l2.wait_for_onchaind_txs(
+        ('OUR_PENALTY_TX', 'THEIR_REVOKED_UNILATERAL/DELAYED_CHEAT_OUTPUT_TO_THEM'))
+    assert blocks == 0
+    bitcoind.generate_block(1, wait_for_mempool=txid)
+    l2.daemon.wait_for_log(r'Resolved THEIR_REVOKED_UNILATERAL/DELAYED_CHEAT_OUTPUT_TO_THEM by our proposal OUR_PENALTY_TX')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
 def test_independent_secrets_cap_during_splice(node_factory, bitcoind):
     """Reaching max-independent-secrets while a splice is pending doesn't
     send shutdown, which BOLT 2 doesn't allow then: the mutual close starts
