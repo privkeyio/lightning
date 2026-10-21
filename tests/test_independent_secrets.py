@@ -704,3 +704,28 @@ def test_independent_secrets_cap_not_our_close(node_factory, executor):
     assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_SHUTTING_DOWN'
     assert not l2.daemon.is_in_log('seconds left')
     assert not l2.daemon.is_in_log('closing the channel unilaterally')
+
+
+@pytest.mark.parametrize("offered", [True, False])
+def test_independent_secrets_even_bit_in_init(node_factory, offered):
+    """lightning-blake2b/bolts#17, BOLT 3: a receiver of bit 266 in init MUST
+    close the connection, whether or not it offers the option (when it
+    does, it knows the bit, so the generic check would let it through)."""
+    l1, l2 = node_factory.get_nodes(2, opts=[
+        ON if offered else {},
+        {'dev-force-features': '+266', 'may_fail': True},
+    ])
+
+    with pytest.raises(RpcError):
+        l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
+
+    if offered:
+        l1.daemon.wait_for_log('Feature 266 is only valid in channel_type')
+    else:
+        l1.daemon.wait_for_log('Unsupported feature 266')
+    assert l1.rpc.listpeers(l2.info['id'])['peers'] == []
+
+    # A peer setting only the odd bit connects.
+    l3 = node_factory.get_node(options=ON)
+    l3.rpc.connect(l1.info['id'], 'localhost', l1.port)
+    wait_for(lambda: only_one(l1.rpc.listpeers(l3.info['id'])['peers'])['connected'])
