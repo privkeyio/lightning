@@ -1054,10 +1054,13 @@ bool channel_start_mutual_close(struct channel *channel, const char *why)
 	const u8 *script = channel->shutdown_scriptpubkey[LOCAL];
 	bool anysegwit;
 
-	/* Revocations come from channeld, so it is the owner, if any. */
+	/* Revocations come from channeld, so it is the owner, if any.  Not
+	 * while a splice is pending: BOLT 2 doesn't allow `shutdown` then,
+	 * and the caller waits for it to lock. */
 	if (channel->state != CHANNELD_NORMAL
-	    && channel->state != CHANNELD_AWAITING_SPLICE
 	    && channel->state != CHANNELD_AWAITING_LOCKIN)
+		return false;
+	if (!list_empty(&channel->inflights))
 		return false;
 
 	assert(channel->final_key_idx <= UINT32_MAX);

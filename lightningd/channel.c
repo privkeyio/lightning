@@ -492,6 +492,7 @@ struct channel *new_unsaved_channel(struct peer *peer,
 	channel->their_secrets_received = 0;
 	channel->independent_secrets_warned = false;
 	channel->independent_secrets_lease_logged = false;
+	channel->independent_secrets_splice_logged = false;
 	channel->independent_secrets_close_tried = false;
 	channel->independent_secrets_close_at = 0;
 	channel->independent_secrets_close_timer = NULL;
@@ -665,6 +666,7 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 	channel->their_secrets_received = 0;
 	channel->independent_secrets_warned = false;
 	channel->independent_secrets_lease_logged = false;
+	channel->independent_secrets_splice_logged = false;
 	channel->independent_secrets_close_tried = false;
 	channel->independent_secrets_close_at = 0;
 	channel->independent_secrets_close_timer = NULL;

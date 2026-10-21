@@ -2778,7 +2778,7 @@ void independent_secrets_arm_close_timers(struct lightningd *ld)
  * the close hasn't finished in time we close unilaterally.  A peer can also
  * keep a closing channel updating (update_fee needs no HTLCs), so once it
  * has made us store another 10% we close the channel unilaterally too. */
-static void check_independent_secrets_cap(struct channel *channel)
+void check_independent_secrets_cap(struct channel *channel)
 {
 	struct lightningd *ld = channel->peer->ld;
 	u64 max = ld->max_independent_secrets;
@@ -2816,6 +2816,22 @@ static void check_independent_secrets_cap(struct channel *channel)
 				    " %"PRIu64" first",
 				    max, channel->lease_expiry, slack);
 			channel->independent_secrets_lease_logged = true;
+		}
+	} else if (channel->state == CHANNELD_AWAITING_SPLICE
+		   || !list_empty(&channel->inflights)) {
+		/* BOLT 2 doesn't allow `shutdown` while a splice is pending,
+		 * so we start the close once it locks (see
+		 * handle_peer_splice_locked).  Nobody asked us to close, so we
+		 * don't try to cut the splice short for it; the backstop below
+		 * still bounds what we store meanwhile. */
+		if (!channel->independent_secrets_splice_logged) {
+			log_unusual(channel->log,
+				    "Reached max-independent-secrets=%"PRIu64
+				    ", but a splice is pending: closing once it"
+				    " locks, or unilaterally if the peer has us"
+				    " store another %"PRIu64" first",
+				    max, slack);
+			channel->independent_secrets_splice_logged = true;
 		}
 	} else if (!channel->independent_secrets_close_tried) {
 		/* Once: if it can't start, the backstop below still
