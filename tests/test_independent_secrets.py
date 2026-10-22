@@ -822,6 +822,14 @@ def test_independent_secrets_penalty_spliced(node_factory, bitcoind, locked):
         # Its commitment on the splice's funding output.
         old_tx = only_one(l1.rpc.dev_sign_last_tx(l2.info['id'])['inflights'])['tx']
     old_num = their_revocations(l2, l1)
+    # The cheater's balance in that commitment: while the splice is pending,
+    # listpeerchannels still counts the old funding, without the splice-in.
+    cheater_sat = int(only_one(l1.rpc.listpeerchannels(l2.info['id'])['channels'])['to_us_msat']) // 1000
+    if not locked:
+        cheater_sat += 100000
+    # Either way it is a commitment on the splice's funding output.
+    decoded = bitcoind.rpc.decoderawtransaction(old_tx)
+    assert only_one(decoded['vin'])['txid'] == splice_txid
 
     # Revoke it, and some after it.
     for _ in range(3):
@@ -838,6 +846,17 @@ def test_independent_secrets_penalty_spliced(node_factory, bitcoind, locked):
     ((_, txid, blocks),) = l2.wait_for_onchaind_txs(
         ('OUR_PENALTY_TX', 'THEIR_REVOKED_UNILATERAL/DELAYED_CHEAT_OUTPUT_TO_THEM'))
     assert blocks == 0
+
+    # The penalty takes the cheater's to_local: its balance, less what it
+    # pays for the commitment as opener (the fee and the anchors).
+    penalty = bitcoind.rpc.getrawtransaction(txid, True)
+    spent = only_one(penalty['vin'])
+    assert spent['txid'] == decoded['txid']
+    to_local_sat = round(decoded['vout'][spent['vout']]['value'] * 10**8)
+    assert cheater_sat - 10_000 < to_local_sat <= cheater_sat
+    swept_sat = sum(round(o['value'] * 10**8) for o in penalty['vout'])
+    assert to_local_sat - 10_000 < swept_sat < to_local_sat
+
     bitcoind.generate_block(1, wait_for_mempool=txid)
     l2.daemon.wait_for_log(r'Resolved THEIR_REVOKED_UNILATERAL/DELAYED_CHEAT_OUTPUT_TO_THEM by our proposal OUR_PENALTY_TX')
 
