@@ -28,7 +28,9 @@ void peer_got_revoke(struct channel *channel, const u8 *msg);
 void independent_secrets_arm_close_timers(struct lightningd *ld);
 
 /* At max-independent-secrets, starts the mutual close (once a pending
- * splice has locked), or closes unilaterally if the peer has gone on. */
+ * splice has locked), or closes unilaterally if the peer has gone on.
+ * Closing unilaterally forgets a channel whose funding we withheld, which
+ * frees it, so a caller must not touch the channel afterwards. */
 void check_independent_secrets_cap(struct channel *channel);
 
 void update_per_commit_point(struct channel *channel,
