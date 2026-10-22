@@ -262,6 +262,12 @@ def test_independent_secrets_cap(node_factory, bitcoind):
                                               {**ON, 'max-independent-secrets': 20}])
     assert l2.rpc.listconfigs()['configs']['max-independent-secrets']['value_int'] == 20
     assert l1.rpc.listconfigs()['configs']['max-independent-secrets']['value_int'] == 1000000
+    # Below what BOLT 3 recommends, so we say so at startup.
+    assert l2.daemon.is_in_log(r'max-independent-secrets=20 is below 1,000,000,'
+                               r' the lowest limit BOLT 3 recommends: an honest peer'
+                               r' may reach it, and have its channel closed'
+                               r' unilaterally once it has us store another 2')
+    assert not l1.daemon.is_in_log(r'is below 1,000,000')
 
     for _ in range(10):
         l1.pay(l2, 10_000_000)

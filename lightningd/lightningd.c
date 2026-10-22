@@ -1279,6 +1279,21 @@ static void pipe_recover_secret(const char *secret)
  * itself, against a shachain, so we refuse to offer it with one. */
 static void check_independent_secrets(struct lightningd *ld)
 {
+	/* BOLT 3 says a limit SHOULD NOT be below 1,000,000: the peer can't
+	 * learn it, so an honest one could meet a smaller one, and with it a
+	 * backstop of a few secrets. */
+	if (ld->max_independent_secrets != 0
+	    && ld->max_independent_secrets < 1000000)
+		log_unusual(ld->log,
+			    "max-independent-secrets=%"PRIu64" is below"
+			    " 1,000,000, the lowest limit BOLT 3 recommends: an"
+			    " honest peer may reach it, and have its channel"
+			    " closed unilaterally once it has us store another"
+			    " %"PRIu64,
+			    ld->max_independent_secrets,
+			    ld->max_independent_secrets / 10
+			    ? ld->max_independent_secrets / 10 : 1);
+
 	if (!feature_offered(ld->our_features->bits[INIT_FEATURE],
 			     OPT_INDEPENDENT_SECRETS)) {
 		/* Only such a peer accepts the secrets it makes. */
