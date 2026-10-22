@@ -406,6 +406,11 @@ static void handle_splice_abort(struct lightningd *ld,
 
 	if (peer_start_channeld(channel, pfd, NULL, false)) {
 		connectd_connect_subd(peer, &channel->cid, other_fd);
+		/* If max-independent-secrets was reached while the splice was
+		 * pending, its close waited for the splice; with the splice
+		 * gone it can start now, rather than at the next
+		 * revocation. */
+		check_independent_secrets_cap(channel);
 	} else {
 		log_info(channel->log, "peer_start_channeld failed");
 		close(other_fd);
