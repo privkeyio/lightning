@@ -13,7 +13,7 @@ it the db holds every secret from the second on.
 from fixtures import *  # noqa: F401,F403
 from pyln.client import RpcError
 from utils import (
-    TEST_NETWORK, only_one, wait_for, sync_blockheight, first_scid,
+    TEST_NETWORK, TIMEOUT, only_one, wait_for, sync_blockheight, first_scid,
     expected_peer_features
 )
 
@@ -758,6 +758,80 @@ def test_independent_secrets_cap_close_restart(node_factory, executor):
     l2.wait_for_channel_onchain(l1.info['id'])
 
 
+@pytest.mark.parametrize("how", ["overdue", "clock_back"])
+def test_independent_secrets_cap_close_restart_late(node_factory, executor, how):
+    """After a restart, the mutual close we started at the limit gets a
+    tenth of its timeout, up to 10 minutes (so 10 minutes by default), to
+    finish, even if we were down for longer than the whole timeout, so the
+    peer can reconnect;
+    and a clock which has gone back counts as no time having passed."""
+    l1, l2 = node_factory.line_graph(2, opts=[{**SENDER, 'may_reconnect': True,
+                                               'dev-no-reconnect': None,
+                                               'disconnect': ['-WIRE_SHUTDOWN']},
+                                              {**ON, 'max-independent-secrets': 20,
+                                               'dev-independent-secrets-close-timeout': 30,
+                                               'may_reconnect': True,
+                                               'dev-no-reconnect': None}])
+    for _ in range(10):
+        l1.pay(l2, 10_000_000)
+    settle(l1, l2)
+    executor.submit(l1.pay, l2, 10_000_000)
+    l2.daemon.wait_for_log(r'Stored 20 of the peer.s per-commitment secrets,'
+                           r' max-independent-secrets=20: closing the channel')
+
+    l2.stop()
+    if how == "overdue":
+        time.sleep(32)
+        expect = 3
+    else:
+        l2.daemon.env['CLN_DEV_SET_TIME'] = str(int(time.time()) - 3600)
+        expect = 30
+    l2.start()
+    assert l2.daemon.is_in_log(r'The mutual close started at max-independent-secrets'
+                               r' has {} seconds left'.format(expect))
+    l2.daemon.wait_for_log(r"hasn't finished in 30 seconds: closing the channel unilaterally")
+    l2.wait_for_channel_onchain(l1.info['id'])
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_cap_lowered_during_splice(node_factory, bitcoind):
+    """A limit lowered below what a channel stores while it can't close
+    mutually (here, a splice is pending) counts the backstop from where the
+    channel first reached it, rather than failing the channel at its next
+    update; the mutual close starts once the splice locks."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     wait_for_announce=True,
+                                     opts=[{**ON, 'may_reconnect': True},
+                                           {**SENDER, 'may_reconnect': True}])
+    while (reported_stored(l1, l2) or 0) < 29:
+        pay_direct(l1, l2, 10_000_000)
+        settle(l1, l2)
+    assert reported_stored(l1, l2) == 29
+
+    splice_txid = splice_in(l1, l2)
+    l1.stop()
+    l1.daemon.opts['max-independent-secrets'] = 20
+    l1.start()
+    wait_for(lambda: only_one(l1.rpc.listpeers()['peers'])['connected'])
+    wait_for(lambda: only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
+
+    # Two more: the first finds the limit reached, and the slack (2) counts
+    # from there.
+    pay_direct(l1, l2, 10_000_000)
+    settle(l1, l2)
+    assert reported_stored(l1, l2) == 31
+    l1.daemon.wait_for_log('Reached max-independent-secrets=20, but a splice is pending')
+    assert only_one(l1.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_AWAITING_SPLICE'
+    assert not l1.daemon.is_in_log('closing it unilaterally')
+
+    bitcoind.generate_block(6, wait_for_mempool=splice_txid)
+    l1.daemon.wait_for_logs([r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL',
+                             r'max-independent-secrets=20: closing the channel'])
+    l1.daemon.wait_for_log(r'to CLOSINGD_COMPLETE')
+    assert not l1.daemon.is_in_log('closing it unilaterally')
+
+
 def test_independent_secrets_cap_not_our_close(node_factory, executor):
     """Only a close we started at the limit is timed out by it.  Here the
     user closes the channel with no timeout while the peer is away, and the
@@ -818,7 +892,8 @@ def pay_direct(src, dst, amt):
     scid = only_one(src.rpc.listpeerchannels(dst.info['id'])['channels'])['short_channel_id']
     route = [{'amount_msat': amt, 'id': dst.info['id'], 'delay': 5, 'channel': scid}]
     src.rpc.sendpay(route, inv['payment_hash'], payment_secret=inv['payment_secret'])
-    src.rpc.waitsendpay(inv['payment_hash'])
+    # A payment caught in a channel that closes would wait for ever.
+    src.rpc.waitsendpay(inv['payment_hash'], timeout=TIMEOUT)
 
 
 def splice_in(l1, l2, amount=100000):

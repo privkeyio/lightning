@@ -498,11 +498,13 @@ bounds what one channel costs (about 60 bytes each in sqlite3, 32 of them the
 secret).  We log a warning at 90%, and at the limit start a mutual close, as
 `close` would; after that the peer only needs as many more as it takes to
 settle the HTLCs in flight.  A peer can still keep a closing channel updating
-(with `update_fee`), so once we store 10% more than the limit (at least one
-more) we close the channel unilaterally.  If the limit is lowered below what a
-channel already stores, the close starts at its next update, and the 10% counts
-from there.  If the mutual close hasn't finished within 48 hours, we close the
-channel unilaterally, as `close` does by default.  A restart resets neither.  A channel the peer leased
+while HTLCs remain (with `update_fee`), so once we store 10% more than the
+limit (at least one more) we close the channel unilaterally.  If the limit is
+lowered below what a channel already stores, the 10% counts from where the
+channel is at its next update, and the close starts then if it can.  If the
+mutual close hasn't finished within 48 hours, we close the channel
+unilaterally, as `close` does by default.  A restart resets neither, but gives
+the peer at least 10 minutes to finish the close.  A channel the peer leased
 from us is closed at its first update after the lease expires, or unilaterally
 before then once the peer has made us store 10% more than the limit.  A channel
 with a pending splice is closed once the splice locks, or straight away if it
