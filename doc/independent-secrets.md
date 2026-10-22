@@ -41,6 +41,8 @@ generates its own: they still come from its shachain.
   `channel_reestablish` needs.
 - **Checks.** A secret must be a valid private key that generates the point of
   the commitment it revokes. It doesn't have to be related to earlier secrets.
+- **The even bit, 266,** is only valid in `channel_type`. A peer that sets it in
+  `init` is refused, whether or not this node offers the add-on.
 - **Breaches.** When the funding output is spent, lightningd works out which
   commitment the transaction is from its locktime and sequence. If it is a
   commitment of the peer's which they revoked, and its secret is in the
@@ -83,8 +85,18 @@ within 48 hours, lightningd closes the channel unilaterally, as `close` does
 by default. A restart resets neither the 10% nor the 48 hours. A channel the
 peer leased from us is closed at its first update after the lease expires, or
 unilaterally before then once the peer has made us store 10% more than the
-limit: our funds stay locked until the lease expires either way. 0 means no
-limit.
+limit: our funds stay locked until the lease expires either way. A channel
+with a pending splice is closed once the splice locks, since BOLT 2 doesn't
+allow `shutdown` before then, or straight away if the splice is aborted; the
+10% applies meanwhile, and is all that bounds a splice which never confirms.
+So the 10% can close a channel unilaterally without a mutual close having been
+tried: during a lease, while a splice is pending, or after the 48 hours. 0
+means no limit.
+
+The peer can't learn the limit, so BOLT 3 recommends one of at least 1,000,000,
+which an ordinary channel never reaches. Below that lightningd logs a warning
+at startup: with a small limit the 10% comes down to a single secret, and an
+honest peer could have its channel closed unilaterally.
 
 ## Limits
 
@@ -116,9 +128,12 @@ secret(n) = HMAC-SHA256(shaseed, "independent-per-commitment-secret" ||
 The counter starts at 0 and only goes up in the negligible case that the result
 is not a valid private key. This is the same function as Lightning Fork's dev
 option, and like the shachain it needs nothing but the seed, so a restarted
-node produces the same secrets. It applies to every channel the node has, so
-only a peer with `option_independent_secrets` accepts them: any other fails the
-channel at the second revocation. For the same reason lightningd won't start
+node produces the same secrets. It applies to every channel the node has, and
+only a peer with `option_independent_secrets` accepts such secrets: any other
+fails the channel at the second revocation. So, as BOLT 3 requires of a node
+whose secrets don't come from the seed, the node then only opens and accepts
+channels with the add-on; `--dev-independent-secrets-any-channel` lifts that,
+to show such a channel failing. For the same reason lightningd won't start
 with the option changed while any channel is open or still being resolved,
 since that channel's secrets, and the keys for our own unilateral close, would
 change under it. It is not available outside developer mode: a single signer

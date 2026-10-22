@@ -460,7 +460,7 @@ with `--subdaemon`), which expects the peer's secrets to come from a shachain.
 Channels already open keep the channel type they opened with, so lightningd
 also refuses an external signer while one with the add-on is open or being
 resolved, with or without this option.  Not available on Liquid.  (Added in
-v26.06.9-blake2b.8).
+v26.06.9-blake2b.9).
 
 * (deprecated in v23.05) **max-locktime-blocks**=*BLOCKS*
 
@@ -504,8 +504,11 @@ channel already stores, the close starts at its next update, and the 10% counts
 from there.  If the mutual close hasn't finished within 48 hours, we close the
 channel unilaterally, as `close` does by default.  A restart resets neither.  A channel the peer leased
 from us is closed at its first update after the lease expires, or unilaterally
-before then once the peer has made us store 10% more than the limit.  0 means
-no limit (default 1000000).  (Added in v26.06.9-blake2b.8).
+before then once the peer has made us store 10% more than the limit.  A channel
+with a pending splice is closed once the splice locks, or straight away if it
+is aborted, with the 10% applying meanwhile.  BOLT 3 recommends a limit of at
+least 1,000,000, since the peer can't learn it: below that we log a warning at
+startup.  0 means no limit (default 1000000).  (Added in v26.06.9-blake2b.9).
 
 * **max-dust-htlc-exposure-msat**=*MILLISATOSHI*
 
