@@ -17,6 +17,7 @@ from utils import (
     expected_peer_features
 )
 
+from pathlib import Path
 import pytest
 import re
 import time
@@ -346,6 +347,50 @@ def test_independent_secrets_cap_unilateral(node_factory, bitcoind, executor):
     l2.wait_for_channel_onchain(l1.info['id'])
     closed = only_one(l2.rpc.listpeerchannels()['channels'])
     assert 'Stored too many per-commitment secrets' in [s['message'] for s in closed['state_changes']]
+
+
+def test_independent_secrets_cap_withheld(node_factory, bitcoind, executor):
+    """The backstop on a channel whose funding we withheld: failing it
+    forgets the channel outright (there is nothing to broadcast), so nothing
+    may touch it afterwards.  It stays forgotten across a restart."""
+    plugin_path = Path(__file__).parent / "plugins" / "zeroconf-selective.py"
+    l1, l2 = node_factory.get_nodes(2, opts=[{**ON, 'max-independent-secrets': 10,
+                                              'may_reconnect': True},
+                                             {**SENDER, 'plugin': str(plugin_path),
+                                              'zeroconf_allow': 'any',
+                                              'may_reconnect': True}])
+    l1.fundwallet(10**7)
+    l1.connect(l2)
+    amount = 1000000
+    funding_addr = l1.rpc.fundchannel_start(l2.info['id'], f"{amount}sat", mindepth=0)['funding_address']
+    psbt = l1.rpc.fundpsbt(amount, "1000perkw", 1000, excess_as_change=True)['psbt']
+    psbt = l1.rpc.addpsbtoutput(amount, psbt, destination=funding_addr)['psbt']
+    assert l1.rpc.fundchannel_complete(l2.info['id'], psbt, withhold=True)['commitments_secured']
+    assert only_one(l1.rpc.listpeerchannels()['channels'])['funding']['withheld'] is True
+    assert has_independent_secrets(l1, l2)
+    wait_for(lambda: 'remote' in only_one(l1.rpc.listpeerchannels()['channels'])['updates'])
+
+    # A payment has l2 revoke two commitments, and l1 stores those from
+    # commitment 1 on.
+    for i in range(5):
+        l1.rpc.xpay(l2.rpc.invoice(10_000_000, f'w{i}', f'w{i}')['bolt11'])
+    settle(l1, l2)
+    assert reported_stored(l1, l2) == 9
+
+    # The 10th starts the close, and settling the payment in flight is one
+    # too many: the channel is failed, and as it was withheld, forgotten.
+    inv = l2.rpc.invoice(10_000_000, 'last', 'last')['bolt11']
+    executor.submit(l1.rpc.xpay, inv)
+    l1.daemon.wait_for_logs([r'Stored 10 of the peer.s per-commitment secrets,'
+                             r' max-independent-secrets=10: closing the channel',
+                             r"and the channel still isn't closed: closing it unilaterally",
+                             r'Withheld channel: not sending a close transaction'])
+    wait_for(lambda: l1.rpc.listpeerchannels()['channels'] == [])
+    assert bitcoind.rpc.getrawmempool() == []
+
+    # Nothing wrote the forgotten channel back.
+    l1.restart()
+    assert l1.rpc.listpeerchannels()['channels'] == []
 
 
 def test_independent_secrets_refused_options(node_factory):

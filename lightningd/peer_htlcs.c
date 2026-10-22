@@ -3036,9 +3036,6 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 					     : fromwire_peektype(failmsgs[i]));
 	}
 
-	if (channel->their_secrets_in_db)
-		check_independent_secrets_cap(channel);
-
 	wallet_channel_save(ld->wallet, channel);
 
 	/* Maybe graceful wants to know? */
@@ -3058,6 +3055,10 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 		payload->channel_id = channel->cid;
 		plugin_hook_call_commitment_revocation(ld, NULL, payload);
 	}
+
+	/* Last, since it can free the channel: see the header. */
+	if (channel->their_secrets_in_db)
+		check_independent_secrets_cap(channel);
 }
 
 
