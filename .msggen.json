@@ -10299,15 +10299,15 @@
             "deprecated": null
         },
         "ListConfigs.configs.independent-secrets": {
-            "added": "v26.06.9-blake2b.8",
+            "added": "v26.06.9-blake2b.9",
             "deprecated": null
         },
         "ListConfigs.configs.independent-secrets.set": {
-            "added": "v26.06.9-blake2b.8",
+            "added": "v26.06.9-blake2b.9",
             "deprecated": null
         },
         "ListConfigs.configs.independent-secrets.source": {
-            "added": "v26.06.9-blake2b.8",
+            "added": "v26.06.9-blake2b.9",
             "deprecated": null
         },
         "ListConfigs.configs.large-channels": {
@@ -10419,15 +10419,15 @@
             "deprecated": null
         },
         "ListConfigs.configs.max-independent-secrets": {
-            "added": "v26.06.9-blake2b.8",
+            "added": "v26.06.9-blake2b.9",
             "deprecated": null
         },
         "ListConfigs.configs.max-independent-secrets.source": {
-            "added": "v26.06.9-blake2b.8",
+            "added": "v26.06.9-blake2b.9",
             "deprecated": null
         },
         "ListConfigs.configs.max-independent-secrets.value_int": {
-            "added": "v26.06.9-blake2b.8",
+            "added": "v26.06.9-blake2b.9",
             "deprecated": null
         },
         "ListConfigs.configs.max-locktime-blocks": {
@@ -11807,7 +11807,7 @@
             "deprecated": null
         },
         "ListPeerChannels.channels[].independent_secrets_stored": {
-            "added": "v26.06.9-blake2b.8",
+            "added": "v26.06.9-blake2b.9",
             "deprecated": null
         },
         "ListPeerChannels.channels[].inflight[]": {

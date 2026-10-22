@@ -507,7 +507,7 @@
             }
           },
           "independent-secrets": {
-            "added": "v26.06.9-blake2b.8",
+            "added": "v26.06.9-blake2b.9",
             "type": "object",
             "additionalProperties": false,
             "required": [
@@ -935,7 +935,7 @@
             }
           },
           "max-independent-secrets": {
-            "added": "v26.06.9-blake2b.8",
+            "added": "v26.06.9-blake2b.9",
             "type": "object",
             "additionalProperties": false,
             "required": [
