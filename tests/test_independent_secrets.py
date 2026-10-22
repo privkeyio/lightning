@@ -239,8 +239,10 @@ def test_independent_secrets_kept_without_the_option(node_factory, bitcoind):
 def test_independent_secrets_need_the_feature(node_factory, executor):
     """A sender whose secrets don't form a shachain fails a channel without
     option_independent_secrets: that is what the feature is for, and it shows
-    the other tests really do give the receiver unrelated secrets."""
-    l1, l2 = node_factory.line_graph(2, opts=[SENDER, {}])
+    the other tests really do give the receiver unrelated secrets.  The dev
+    sender only opens such a channel with --dev-independent-secrets-any-channel
+    (see test_independent_secrets_sender_needs_the_add_on)."""
+    l1, l2 = node_factory.line_graph(2, opts=[{**SENDER, 'dev-independent-secrets-any-channel': None}, {}])
     assert not has_independent_secrets(l2, l1)
 
     # Any first secret starts a shachain, but the second has to derive it.
@@ -249,6 +251,32 @@ def test_independent_secrets_need_the_feature(node_factory, executor):
     executor.submit(l1.rpc.xpay, inv)
     l2.daemon.wait_for_log(r'Bad per_commitment_secret [0-9a-f]{64} for 1')
     wait_for(lambda: only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'AWAITING_UNILATERAL')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_sender_needs_the_add_on(node_factory):
+    """BOLT 3: a node whose secrets don't come from the seed MUST include
+    option_independent_secrets in the channel_type it proposes, and MUST NOT
+    accept a channel without it.  The dev sender keeps to that, both ways."""
+    l1, l2, l3 = node_factory.get_nodes(3, opts=[SENDER, {}, ON])
+    for n in (l2, l3):
+        l1.fundwallet(10**7)
+        n.fundwallet(10**7)
+        l1.rpc.connect(n.info['id'], 'localhost', n.port)
+
+    # It doesn't open a channel the peer can't give the add-on.
+    with pytest.raises(RpcError, match=r"a channel needs option_independent_secrets"):
+        l1.rpc.fundchannel(l2.info['id'], 10**6)
+
+    # Nor accept one without it.
+    with pytest.raises(RpcError):
+        l2.rpc.fundchannel(l1.info['id'], 10**6)
+    l1.daemon.wait_for_log(r"a channel needs option_independent_secrets")
+
+    # With a peer that has it, the add-on joins, so it opens.
+    l1.rpc.fundchannel(l3.info['id'], 10**6)
+    assert has_independent_secrets(l1, l3)
 
 
 @pytest.mark.openchannel('v1')

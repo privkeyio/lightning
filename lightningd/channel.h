@@ -1043,4 +1043,9 @@ struct channel_type *desired_channel_type(const tal_t *ctx,
 					  const struct feature_set *our_features,
 					  const u8 *their_features);
 
+/* Why --dev-independent-secrets-sender won't open or accept a channel of this
+ * type, or NULL if it will. */
+const char *dev_independent_secrets_refused(const struct lightningd *ld,
+					    const struct channel_type *ctype);
+
 #endif /* LIGHTNING_LIGHTNINGD_CHANNEL_H */

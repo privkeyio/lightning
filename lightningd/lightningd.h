@@ -429,6 +429,8 @@ struct lightningd {
 	/* Generate our per-commitment secrets without a shachain, to
 	 * exercise a peer's option_independent_secrets. */
 	bool dev_hsmd_independent_secrets_sender;
+	/* ...even on channels without the add-on, to show they fail. */
+	bool dev_independent_secrets_any_channel;
 
 	/* On an option_independent_secrets channel, how many of the peer's
 	 * secrets we store one by one before we close it (0: no limit). */

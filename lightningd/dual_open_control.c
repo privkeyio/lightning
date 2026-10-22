@@ -2296,6 +2296,7 @@ static void accepter_got_offer(struct subd *dualopend,
 			       const u8 *msg)
 {
 	struct openchannel2_payload *payload;
+	const char *err;
 
 	if (channel->open_attempt) {
 		subd_send_msg(dualopend,
@@ -2333,6 +2334,14 @@ static void accepter_got_offer(struct subd *dualopend,
 					  &payload->channel_type)) {
 		channel_internal_error(channel, "Bad DUALOPEND_GOT_OFFER: %s",
 				       tal_hex(tmpctx, msg));
+		return;
+	}
+
+	err = dev_independent_secrets_refused(dualopend->ld,
+					      payload->channel_type);
+	if (err) {
+		subd_send_msg(dualopend, take(towire_dualopend_fail(NULL, err)));
+		tal_free(payload);
 		return;
 	}
 
@@ -3506,6 +3515,7 @@ static struct command_result *json_openchannel_init(struct command *cmd,
 	struct peer *peer;
 	struct amount_sat psbt_val;
 	struct command_result *res;
+	const char *err;
 
 	info->cmd = cmd;
 	if (!param_check(cmd, buffer, params,
@@ -3594,6 +3604,10 @@ static struct command_result *json_openchannel_init(struct command *cmd,
 		return command_fail(cmd, JSONRPC2_INVALID_PARAMS,
 				    "channel_type not supported");
 	}
+
+	err = dev_independent_secrets_refused(cmd->ld, info->ctype);
+	if (err)
+		return command_fail(cmd, JSONRPC2_INVALID_PARAMS, "%s", err);
 
 	/* BOLT #2:
 	 *  - if both nodes advertised `option_support_large_channel`:

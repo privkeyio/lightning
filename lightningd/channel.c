@@ -282,6 +282,22 @@ struct channel_type *desired_channel_type(const tal_t *ctx,
 	return type;
 }
 
+/* The fork's BOLT 3 (lightning-blake2b/bolts#17) says that a node whose
+ * per-commitment secrets don't come from the seed MUST include
+ * option_independent_secrets in the channel_type it proposes, and MUST NOT
+ * accept a channel whose channel_type doesn't include it. */
+const char *dev_independent_secrets_refused(const struct lightningd *ld,
+					    const struct channel_type *ctype)
+{
+	if (!ld->dev_hsmd_independent_secrets_sender
+	    || ld->dev_independent_secrets_any_channel
+	    || feature_offered(ctype->features, OPT_INDEPENDENT_SECRETS))
+		return NULL;
+	return "With --dev-independent-secrets-sender our per-commitment"
+		" secrets don't come from a shachain, so a channel needs"
+		" option_independent_secrets";
+}
+
 u64 channel_their_revocations(const struct channel *channel)
 {
 	if (channel->their_secrets_in_db)

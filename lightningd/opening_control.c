@@ -869,6 +869,7 @@ static void opening_got_offer(struct subd *openingd,
 			      struct uncommitted_channel *uc)
 {
 	struct openchannel_hook_payload *payload;
+	const char *errmsg;
 
 	payload = tal(openingd, struct openchannel_hook_payload);
 	payload->openingd = openingd;
@@ -891,6 +892,17 @@ static void opening_got_offer(struct subd *openingd,
 		log_broken(openingd->log, "Malformed opening_got_offer %s",
 			   tal_hex(tmpctx, msg));
 		tal_free(openingd);
+		return;
+	}
+
+	errmsg = dev_independent_secrets_refused(openingd->ld,
+						 payload->channel_type);
+	if (errmsg) {
+		subd_send_msg(openingd,
+			      take(towire_openingd_got_offer_reply(NULL, errmsg,
+								   NULL, NULL,
+								   NULL, 0)));
+		tal_free(payload);
 		return;
 	}
 
@@ -1310,6 +1322,7 @@ static struct command_result *json_fundchannel_start(struct command *cmd,
 	u32 *upfront_shutdown_script_wallet_index;
 	struct channel_id tmp_channel_id;
 	struct channel_type *ctype;
+	const char *err;
 
 	fc->cmd = cmd;
 	fc->cancels = tal_arr(fc, struct command *, 0);
@@ -1468,6 +1481,10 @@ static struct command_result *json_fundchannel_start(struct command *cmd,
 				    peer->their_features,
 				    OPT_INDEPENDENT_SECRETS))
 		channel_type_set_independent_secrets(fc->channel_type);
+
+	err = dev_independent_secrets_refused(cmd->ld, fc->channel_type);
+	if (err)
+		return command_fail(cmd, JSONRPC2_INVALID_PARAMS, "%s", err);
 
 	fc->push = push_msat ? *push_msat : AMOUNT_MSAT(0);
 	fc->channel_flags = OUR_CHANNEL_FLAGS;
