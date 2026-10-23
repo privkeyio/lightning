@@ -90,8 +90,10 @@ leased from us is closed at its first update after the lease expires, or
 unilaterally before then once the peer has made us store 10% more than the
 limit: our funds stay locked until the lease expires either way. A channel
 with a pending splice is closed once the splice locks, since BOLT 2 doesn't
-allow `shutdown` before then, or straight away if the splice is aborted; the
-10% applies meanwhile, and is all that bounds a splice which never confirms.
+allow `shutdown` before then, or straight away if the splice is aborted. An
+aborted RBF attempt only drops that attempt, so the close then waits for the
+splice it would have replaced. The 10% applies meanwhile, and is all that
+bounds a splice which never confirms.
 So the 10% can close a channel unilaterally without a mutual close having been
 tried: during a lease, while a splice is pending, or after the 48 hours. 0
 means no limit.
