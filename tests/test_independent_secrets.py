@@ -266,7 +266,18 @@ def test_independent_secrets_sender_needs_the_add_on(node_factory):
         n.fundwallet(10**7)
         l1.rpc.connect(n.info['id'], 'localhost', n.port)
 
-    # It doesn't open a channel the peer can't give the add-on.
+    # It doesn't open a channel the peer can't give the add-on, and `check`
+    # of the command that would open it says so too.
+    if l1.config('experimental-dual-fund'):
+        psbt = l1.rpc.fundpsbt(10**6, 'normal', 0, reserve=0)['psbt']
+        to_check = {'command_to_check': 'openchannel_init',
+                    'id': l2.info['id'], 'amount': 10**6,
+                    'initialpsbt': psbt}
+    else:
+        to_check = {'command_to_check': 'fundchannel_start',
+                    'id': l2.info['id'], 'amount': 10**6}
+    with pytest.raises(RpcError, match=r"a channel needs option_independent_secrets"):
+        l1.rpc.check(**to_check)
     with pytest.raises(RpcError, match=r"a channel needs option_independent_secrets"):
         l1.rpc.fundchannel(l2.info['id'], 10**6)
 

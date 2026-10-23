@@ -1467,9 +1467,6 @@ static struct command_result *json_fundchannel_start(struct command *cmd,
 		}
 	}
 
-	if (command_check_only(cmd))
-		return command_check_done(cmd);
-
 	/* Now we know the peer, we can derive the channel type to ask for */
 	if (!fc->channel_type)
 		fc->channel_type = desired_channel_type(fc, cmd->ld->our_features,
@@ -1485,6 +1482,10 @@ static struct command_result *json_fundchannel_start(struct command *cmd,
 	err = dev_independent_secrets_refused(cmd->ld, fc->channel_type);
 	if (err)
 		return command_fail(cmd, JSONRPC2_INVALID_PARAMS, "%s", err);
+
+	/* After the refusal above, so `check` reports it too. */
+	if (command_check_only(cmd))
+		return command_check_done(cmd);
 
 	fc->push = push_msat ? *push_msat : AMOUNT_MSAT(0);
 	fc->channel_flags = OUR_CHANNEL_FLAGS;
