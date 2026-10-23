@@ -1025,3 +1025,75 @@ def test_independent_secrets_cap_during_splice(node_factory, bitcoind):
     bitcoind.generate_block(1, wait_for_mempool=1)
     l1.daemon.wait_for_log(r'to ONCHAIN')
     assert not l1.daemon.is_in_log('closing it unilaterally')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_cap_splice_aborted(node_factory, bitcoind):
+    """An aborted splice has the limit checked again, so a close it held up
+    starts straight away rather than at the next revocation.  Here the limit
+    was lowered while l1 was down, so nothing has checked it when l1 starts a
+    splice and aborts it."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     wait_for_announce=True,
+                                     opts=[{**ON, 'may_reconnect': True},
+                                           {**SENDER, 'may_reconnect': True}])
+    chan_id = l1.get_channel_id(l2)
+    while (reported_stored(l1, l2) or 0) < 21:
+        pay_direct(l1, l2, 10_000_000)
+        settle(l1, l2)
+
+    l1.stop()
+    l1.daemon.opts['max-independent-secrets'] = 20
+    l1.start()
+    wait_for(lambda: only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
+    assert not l1.daemon.is_in_log('closing the channel')
+
+    funds = l1.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
+    l1.rpc.splice_init(chan_id, 100000, funds['psbt'])
+    l1.rpc.abort_channels([chan_id])
+    l1.daemon.wait_for_logs([r'Restarting channeld after tx_abort on CHANNELD_NORMAL',
+                             r'max-independent-secrets=20: closing the channel',
+                             r'CHANNELD_NORMAL to CHANNELD_SHUTTING_DOWN'])
+    l1.daemon.wait_for_log(r'to CLOSINGD_COMPLETE')
+    assert not l1.daemon.is_in_log('closing it unilaterally')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_cap_splice_rbf_aborted(node_factory, bitcoind):
+    """Aborting an RBF attempt drops only the attempt: the splice it would
+    have replaced is still pending, so a close waiting at the limit keeps
+    waiting until that splice locks."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     wait_for_announce=True,
+                                     opts=[{**ON, 'max-independent-secrets': 20},
+                                           SENDER])
+    chan_id = l1.get_channel_id(l2)
+    # A second confirmed output, to fund the RBF attempt with.
+    l1.fundwallet(200000)
+    splice_txid = splice_in(l1, l2)
+    while (reported_stored(l1, l2) or 0) < 20:
+        pay_direct(l1, l2, 10_000_000)
+        settle(l1, l2)
+    l1.daemon.wait_for_log('Reached max-independent-secrets=20, but a splice'
+                           ' is pending')
+
+    funds = l1.rpc.fundpsbt("109000sat", 0, 0, excess_as_change=True)
+    l1.rpc.splice_init(chan_id, 100000, funds['psbt'])
+    l2.daemon.wait_for_log(r'peer_in WIRE_TX_INIT_RBF')
+    l1.rpc.abort_channels([chan_id])
+    l1.daemon.wait_for_log(r'Restarting channeld after tx_abort on CHANNELD_AWAITING_SPLICE')
+    l1.rpc.unreserveinputs(funds['psbt'])
+
+    wait_for(lambda: only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
+    chan = only_one(l1.rpc.listpeerchannels()['channels'])
+    assert chan['state'] == 'CHANNELD_AWAITING_SPLICE'
+    assert [i['funding_txid'] for i in chan['inflight']] == [splice_txid]
+    assert not l1.daemon.is_in_log('closing the channel')
+
+    bitcoind.generate_block(6, wait_for_mempool=splice_txid)
+    l1.daemon.wait_for_logs([r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL',
+                             r'max-independent-secrets=20: closing the channel'])
+    l1.daemon.wait_for_log(r'to CLOSINGD_COMPLETE')
+    assert not l1.daemon.is_in_log('closing it unilaterally')
