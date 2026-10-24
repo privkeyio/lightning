@@ -1097,3 +1097,52 @@ def test_independent_secrets_cap_splice_rbf_aborted(node_factory, bitcoind):
                              r'max-independent-secrets=20: closing the channel'])
     l1.daemon.wait_for_log(r'to CLOSINGD_COMPLETE')
     assert not l1.daemon.is_in_log('closing it unilaterally')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_cap_refuses_splice(node_factory, bitcoind, executor):
+    """A peer that starts a splice just as a revocation reaches
+    max-independent-secrets has it refused: BOLT 2 doesn't allow the
+    shutdown we're about to send while a splice is unlocked.  The close
+    then completes on the funding we had.  (commit-time on l1 holds its
+    shutdown back, so the peer's stfu comes first.)"""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     wait_for_announce=True,
+                                     opts=[{**ON, 'may_reconnect': True,
+                                            'max-independent-secrets': 11,
+                                            'commit-time': 4000,
+                                            'allow_warning': True},
+                                           {**SENDER, 'may_reconnect': True,
+                                            'allow_warning': True}])
+    l2.fundwallet(500000)
+    while (reported_stored(l1, l2) or 0) < 9:
+        l1.pay(l2, 10_000_000)
+        settle(l1, l2)
+    assert reported_stored(l1, l2) == 9
+
+    # l2 asks to splice as soon as it has fulfilled this payment, so its
+    # stfu follows the revoke_and_ack that reaches the limit.
+    chan_id = l2.get_channel_id(l1)
+    funds = l2.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
+    l2.daemon.logs_catchup()
+    l2.daemon.logsearch_start = len(l2.daemon.logs)
+    fut = executor.submit(l1.pay, l2, 10_000_000)
+    l2.daemon.wait_for_log('peer_out WIRE_UPDATE_FULFILL_HTLC')
+    # The splice_init command doesn't return once the peer disconnects, so
+    # we don't wait for it.
+    executor.submit(l2.rpc.splice_init, chan_id, 100000, funds['psbt'])
+    fut.result(TIMEOUT)
+
+    l1.daemon.wait_for_logs([r'max-independent-secrets=11: closing the channel',
+                             r'Now dealing with deferred WIRE_CHANNELD_SEND_SHUTDOWN',
+                             r'peer_in WIRE_STFU',
+                             r'Splice refused: the channel is closing'])
+    l2.daemon.wait_for_log(r'Received WARNING .*Splice refused: the channel is closing')
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'to CLOSINGD_COMPLETE')
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'to ONCHAIN')
+    assert not l1.daemon.is_in_log(r'CHANNELD_SHUTTING_DOWN to CHANNELD_AWAITING_SPLICE')
+    assert not l1.daemon.is_in_log(r'unexpected value CHANNELD_SHUTTING_DOWN')
+    assert not l1.daemon.is_in_log('closing it unilaterally')

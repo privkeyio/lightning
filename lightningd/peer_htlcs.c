@@ -2799,8 +2799,11 @@ void independent_secrets_arm_close_timers(struct lightningd *ld)
  * only needs as many more as it takes to settle the HTLCs in flight, and if
  * the close hasn't finished in time we close unilaterally.  A peer can also
  * keep a closing channel updating (update_fee needs no HTLCs), so once it
- * has made us store another 10% we close the channel unilaterally too. */
-void check_independent_secrets_cap(struct channel *channel)
+ * has made us store another 10% we close the channel unilaterally too.
+ *
+ * Without @backstop, it stops before that last part, so it never frees the
+ * channel. */
+static void independent_secrets_cap(struct channel *channel, bool backstop)
 {
 	struct lightningd *ld = channel->peer->ld;
 	u64 max = ld->max_independent_secrets;
@@ -2882,6 +2885,9 @@ void check_independent_secrets_cap(struct channel *channel)
 		}
 	}
 
+	if (!backstop)
+		return;
+
 	/* Without a close of ours under way (a lease, a pending splice, a
 	 * close someone else started, or one that couldn't start), the
 	 * backstop counts from where the channel first reached the limit,
@@ -2904,6 +2910,11 @@ void check_independent_secrets_cap(struct channel *channel)
 		channel_fail_permanent(channel, REASON_LOCAL,
 				       "Stored too many per-commitment secrets");
 	}
+}
+
+void check_independent_secrets_cap(struct channel *channel)
+{
+	independent_secrets_cap(channel, true);
 }
 
 void peer_got_revoke(struct channel *channel, const u8 *msg)
@@ -3038,6 +3049,14 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 	channel->blockheight_states = tal_steal(channel, blockheight_states);
 
 	update_per_commit_point(channel, &next_per_commitment_point);
+
+	/* If this reaches max-independent-secrets, start the close before we
+	 * reply: channeld, waiting for the reply, keeps the shutdown request
+	 * and handles it before anything else the peer sends, such as an
+	 * `stfu` to start a splice, which it then refuses.  The backstop,
+	 * which can free the channel, waits until the end. */
+	if (channel->their_secrets_in_db)
+		independent_secrets_cap(channel, false);
 
 	/* BOLT #2:
 	 *  - MUST respond with a `revoke_and_ack` message.

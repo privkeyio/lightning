@@ -1084,6 +1084,20 @@ static void maybe_send_shutdown(struct peer *peer)
 	billboard_update(peer);
 }
 
+/* BOLT 2 doesn't allow `splice_init` after `shutdown`, nor `shutdown` while
+ * a splice isn't locked.  So a channel stops splicing once either side has
+ * sent `shutdown`, or once lightningd has asked us to send one (which it can
+ * do by itself, say at max-independent-secrets): otherwise that shutdown
+ * would have to wait for a splice that may never lock.  A shutdown already
+ * waiting for a signed splice to lock (maybe_send_shutdown()) still lets
+ * that splice be replaced by RBF. */
+static bool channel_closing(const struct peer *peer)
+{
+	if (peer->shutdown_sent[LOCAL] || peer->shutdown_sent[REMOTE])
+		return true;
+	return peer->send_shutdown && !have_signed_splice(peer);
+}
+
 static void send_shutdown_complete(struct peer *peer)
 {
 	/* Now we can tell master shutdown is complete. */
@@ -4680,6 +4694,14 @@ static void splice_accepter(struct peer *peer, const u8 *inmsg)
 		peer_failed_warn(peer->pps, &peer->channel_id,
 				 "Can't splice while shutting down");
 
+	/* Nor once we are going to send ours, unless it is waiting for a
+	 * signed splice to lock (see channel_closing()).  We warn and close the
+	 * connection, as for a peer that has sent `shutdown`, and reestablish
+	 * with ours. */
+	if (channel_closing(peer))
+		peer_failed_warn(peer->pps, &peer->channel_id,
+				 "Splice refused: the channel is closing");
+
 	peer->splicing = splicing_new(peer);
 
 	ictx = new_interactivetx_context(tmpctx, our_role,
@@ -5469,6 +5491,12 @@ static void handle_splice_stfu_success(struct peer *peer)
 {
 	u8 *msg;
 	struct tlv_tx_init_rbf_tlvs *init_rbf_tlvs;
+
+	/* We were asked to close while we waited for quiescence.  We can't
+	 * leave it without the peer, so we reestablish, and close then. */
+	if (channel_closing(peer))
+		peer_failed_warn(peer->pps, &peer->channel_id,
+				 "Splice cancelled: the channel is closing");
 	if (!last_inflight(peer)) {
 		msg = towire_splice(tmpctx,
 				    &peer->channel_id,
@@ -5514,6 +5542,14 @@ static void handle_splice_init(struct peer *peer, const u8 *inmsg)
 		msg = towire_channeld_splice_state_error(NULL, "Can't start two"
 							 " splices on the same"
 							 " channel at once.");
+		wire_sync_write(MASTER_FD, take(msg));
+		return;
+	}
+
+	if (channel_closing(peer)) {
+		msg = towire_channeld_splice_state_error(NULL, "Can't splice"
+							 " a channel that is"
+							 " closing.");
 		wire_sync_write(MASTER_FD, take(msg));
 		return;
 	}

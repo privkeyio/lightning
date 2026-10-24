@@ -93,7 +93,9 @@ with a pending splice is closed once the splice locks, since BOLT 2 doesn't
 allow `shutdown` before then, or straight away if the splice is aborted. An
 aborted RBF attempt only drops that attempt, so the close then waits for the
 splice it would have replaced. The 10% applies meanwhile, and is all that
-bounds a splice which never confirms.
+bounds a splice which never confirms. Once the close has started, neither side
+can start a splice: one the peer proposes is refused, and the connection
+closed, before it can delay the `shutdown`.
 So the 10% can close a channel unilaterally without a mutual close having been
 tried: during a lease, while a splice is pending, or after the 48 hours. 0
 means no limit.
