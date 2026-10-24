@@ -163,6 +163,27 @@ struct channel {
 	/* Their shachain. */
 	struct wallet_shachain their_shachain;
 
+	/* With option_independent_secrets the peer's per-commitment secrets
+	 * still go in their_shachain for as long as they fit it, as they
+	 * always do from a peer which uses one.  From the first one which
+	 * doesn't, they all go in the db (wallet_revocation_secret_add): then
+	 * their_secrets_in_db is set, their_secrets_received counts every
+	 * secret we hold, and their_last_secret is the latest. */
+	bool their_secrets_in_db;
+	u64 their_secrets_received;
+	struct secret their_last_secret;
+	/* What we have done about max_independent_secrets (not saved). */
+	bool independent_secrets_warned, independent_secrets_lease_logged;
+	bool independent_secrets_splice_logged;
+	bool independent_secrets_close_tried;
+	/* How many we stored when we started a mutual close at the cap (0
+	 * if we haven't): the backstop counts from there.  Saved in the db,
+	 * so a restart doesn't reset it. */
+	u64 independent_secrets_close_at;
+	/* Fails the channel if the mutual close we started at the cap
+	 * doesn't finish in time. */
+	struct oneshot *independent_secrets_close_timer;
+
  	/* What's happening. */
  	enum channel_state state;
 
@@ -972,6 +993,23 @@ static inline bool channel_has(const struct channel *channel, int f)
 	return channel_type_has(channel->type, f);
 }
 
+/* How many per-commitment secrets the peer has revealed to us: the number of
+ * their commitments which are revoked.  The first revocations_received() of
+ * them are in their_shachain, and on an option_independent_secrets channel
+ * any after that are in the db. */
+u64 channel_their_revocations(const struct channel *channel);
+
+/* How many of the peer's per-commitment secrets we store individually, in
+ * the db, on an option_independent_secrets channel: those from the first
+ * which didn't fit their_shachain.  0 while they all do. */
+u64 channel_their_stored_secrets(const struct channel *channel);
+
+/* The last per-commitment secret the peer revealed, for
+ * `your_last_per_commitment_secret`: all zeroes if they have revealed none.
+ * False if it should exist but we can't produce it. */
+bool channel_their_last_secret(const struct channel *channel,
+			       struct secret *secret);
+
 /**
  * Either returns the short_channel_id if it is known or the local alias.
  *
@@ -1004,5 +1042,10 @@ struct amount_msat htlc_max_possible_send(const struct channel *channel);
 struct channel_type *desired_channel_type(const tal_t *ctx,
 					  const struct feature_set *our_features,
 					  const u8 *their_features);
+
+/* Why --dev-independent-secrets-sender won't open or accept a channel of this
+ * type, or NULL if it will. */
+const char *dev_independent_secrets_refused(const struct lightningd *ld,
+					    const struct channel_type *ctype);
 
 #endif /* LIGHTNING_LIGHTNINGD_CHANNEL_H */

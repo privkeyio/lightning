@@ -415,6 +415,18 @@ struct lightningd {
 	bool dev_hsmd_no_preapprove_check;
 	bool dev_hsmd_fail_preapprove;
 	bool dev_hsmd_warn_on_overgrind;
+	/* Generate our per-commitment secrets without a shachain, to
+	 * exercise a peer's option_independent_secrets. */
+	bool dev_hsmd_independent_secrets_sender;
+	/* ...even on channels without the add-on, to show they fail. */
+	bool dev_independent_secrets_any_channel;
+
+	/* On an option_independent_secrets channel, how many of the peer's
+	 * secrets we store one by one before we close it (0: no limit). */
+	u64 max_independent_secrets;
+	/* How long the mutual close we start at that limit may take before
+	 * we close the channel unilaterally, in seconds. */
+	u32 dev_independent_secrets_close_timeout;
 
 	/* Tell connectd not to talk after handshake */
 	bool dev_handshake_no_reply;

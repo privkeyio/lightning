@@ -444,6 +444,22 @@ use the RPC call lightning-setchannel(7).
 we tell our peer that this is how long they'll have to wait if they
 perform a unilateral close.
 
+* **independent-secrets**
+
+  Offer `option_independent_secrets` (feature 267), so that a new channel
+with a peer which offers it too uses it: the peer may then generate its
+per-commitment secrets any way it likes, rather than from a shachain, for
+example jointly with several signers.  Secrets which fit a shachain still go in
+one, as they always do from a peer which uses one; from the first which
+doesn't, we store every secret it reveals (about 60 bytes each, in sqlite3)
+until the channel has closed and its outputs are resolved, then only the last.
+Off by default.  It can't be used with an external signer (an hsmd replaced
+with `--subdaemon`), which expects the peer's secrets to come from a shachain.
+Channels already open keep the channel type they opened with, so lightningd
+also refuses an external signer while one with the add-on is open or being
+resolved, with or without this option.  Not available on Liquid.  (Added in
+v26.06.9-blake2b.10).
+
 * (deprecated in v23.05) **max-locktime-blocks**=*BLOCKS*
 
   The longest our funds can be delayed (ie. the longest
@@ -470,6 +486,31 @@ lessen the odds of a disconnect due to feerate disagreement (default 5).
 
   Number of HTLCs one channel can handle concurrently in each direction.
 Should be between 1 and 483 (default 30).
+
+* **max-independent-secrets**=*INTEGER*
+
+  On a channel with `option_independent_secrets` (see **independent-secrets**),
+close the channel once we store this many of the peer's per-commitment secrets
+one by one, because they don't fit a shachain: each update adds one, so this
+bounds what one channel costs (about 60 bytes each in sqlite3, 32 of them the
+secret).  We log a warning at 90%, and at the limit start a mutual close, as
+`close` would; after that the peer only needs as many more as it takes to
+settle the HTLCs in flight.  A peer can still keep a closing channel updating
+while HTLCs remain (with `update_fee`), so once we store 10% more than the
+limit (at least one more) we close the channel unilaterally.  If the limit is
+lowered below what a channel already stores, the 10% counts from where the
+channel is at its next update, and the close starts then if it can.  If the
+mutual close hasn't finished within 48 hours, we close the channel
+unilaterally, as `close` does by default.  A restart resets neither, but gives
+the peer at least 10 minutes to finish the close.  A channel the peer leased
+from us is closed at its first update after the lease expires, or unilaterally
+before then once the peer has made us store 10% more than the limit.  A channel
+with a pending splice is closed once the splice locks, or straight away if it
+is aborted (an aborted RBF attempt leaves the splice it would have replaced, so
+the close waits for that), with the 10% applying meanwhile.  BOLT 3 recommends
+a limit of at least 1,000,000, since the peer can't learn it: below that we log
+a warning at startup.  0 means no limit (default 1000000).  (Added in
+v26.06.9-blake2b.10).
 
 * **max-dust-htlc-exposure-msat**=*MILLISATOSHI*
 

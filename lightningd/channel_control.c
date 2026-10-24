@@ -405,6 +405,11 @@ static void handle_splice_abort(struct lightningd *ld,
 
 	if (peer_start_channeld(channel, pfd, NULL, false)) {
 		connectd_connect_subd(peer, &channel->cid, other_fd);
+		/* If max-independent-secrets was reached while the splice was
+		 * pending, its close waited for the splice; with the splice
+		 * gone it can start now, rather than at the next
+		 * revocation. */
+		check_independent_secrets_cap(channel);
 	} else {
 		log_info(channel->log, "peer_start_channeld failed");
 		close(other_fd);
@@ -1324,6 +1329,11 @@ static void handle_peer_splice_locked(struct channel *channel, const u8 *msg)
 	channel_watch_inflight_outs(channel->peer->ld, channel);
 
 	lockin_complete(channel, CHANNELD_AWAITING_SPLICE);
+
+	/* If max-independent-secrets was reached while the splice was
+	 * pending, the mutual close we held back can start now. */
+	if (channel_type_has(channel->type, OPT_INDEPENDENT_SECRETS))
+		check_independent_secrets_cap(channel);
 }
 
 /* We were informed by channeld that channel is ready (reached mindepth) */
@@ -1906,21 +1916,12 @@ bool peer_start_channeld(struct channel *channel,
 		memset(&scid, 0, sizeof(scid));
 	}
 
-	num_revocations = revocations_received(&channel->their_shachain.chain);
+	num_revocations = channel_their_revocations(channel);
 
-	/* BOLT #2:
-	 *     - if `next_revocation_number` equals 0:
-	 *       - MUST set `your_last_per_commitment_secret` to all zeroes
-	 *     - otherwise:
-	 *       - MUST set `your_last_per_commitment_secret` to the last
-	 *         `per_commitment_secret` it received
-	 */
-	if (num_revocations == 0)
-		memset(&last_remote_per_commit_secret, 0,
-		       sizeof(last_remote_per_commit_secret));
-	else if (!shachain_get_secret(&channel->their_shachain.chain,
-				      num_revocations-1,
-				      &last_remote_per_commit_secret)) {
+	/* channel_their_last_secret() gives all zeroes before the first
+	 * revocation, as BOLT #2 asks for `your_last_per_commitment_secret`. */
+	if (!channel_their_last_secret(channel,
+				       &last_remote_per_commit_secret)) {
 		channel_fail_permanent(channel,
 				       REASON_LOCAL,
 				       "Could not get revocation secret %"PRIu64,

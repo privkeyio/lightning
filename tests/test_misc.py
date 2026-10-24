@@ -3138,19 +3138,25 @@ def test_emergencyrecover_old_format_handling(node_factory, bitcoind):
 
 @unittest.skipIf(TEST_NETWORK == 'liquid-regtest', "Txid on elements is different")
 @unittest.skipIf(os.getenv('TEST_DB_PROVIDER', 'sqlite3') != 'sqlite3', "deletes database, which is assumed sqlite3")
-def test_emergencyrecoverpenaltytxn(node_factory, bitcoind):
+@pytest.mark.parametrize("independent_secrets", [False, True])
+def test_emergencyrecoverpenaltytxn(node_factory, bitcoind, independent_secrets):
     """
     Test test_emergencyrecoverpenaltytxn
+
+    With option_independent_secrets, a peer which uses a shachain still has
+    its secrets kept in one, so the backup can still punish it.
     """
+    extra = {'independent-secrets': None} if independent_secrets else {}
     l1, l2 = node_factory.get_nodes(2, [{'broken_log': r"onchaind-chan#[0-9]*: Could not find resolution for output .*: did \*we\* cheat\?",
                                          'may_reconnect': True,
                                          'allow_bad_gossip': True,
-                                         'rescan': 10},
+                                         'rescan': 10, **extra},
                                     {'broken_log': r"onchaind-chan#[0-9]*: Could not find resolution for output .*: did \*we\* cheat\?",
-                                        'may_reconnect': True}])
+                                        'may_reconnect': True, **extra}])
 
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     c12, _ = l2.fundchannel(l1, 10**5)
+    assert (266 in _['channel_type']['bits']) == independent_secrets
     stubs = l1.rpc.emergencyrecover()["stubs"]
     assert l1.daemon.is_in_log('channel {} already exists!'.format(_['channel_id']))
 

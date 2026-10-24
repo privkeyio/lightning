@@ -130,6 +130,7 @@ enum ChannelTypeName {
   zeroconf_even = 4;
   anchors_even = 5;
   unified_sigs_even = 6;
+  independent_secrets_even = 7;
 }
 
 enum AutocleanSubsystem {

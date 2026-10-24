@@ -160,6 +160,12 @@ static struct lightningd *new_lightningd(const tal_t *ctx)
 	ld->dev_hsmd_no_preapprove_check = false;
 	ld->dev_hsmd_fail_preapprove = false;
 	ld->dev_hsmd_warn_on_overgrind = false;
+	ld->dev_hsmd_independent_secrets_sender = false;
+	ld->dev_independent_secrets_any_channel = false;
+	/* 32MB of secrets, about 60MB in the db. */
+	ld->max_independent_secrets = 1000000;
+	/* As long as `close` waits by default. */
+	ld->dev_independent_secrets_close_timeout = 48 * 60 * 60;
 	ld->dev_handshake_no_reply = false;
 	ld->dev_strict_forwarding = false;
 	ld->dev_limit_connections_inflight = false;
@@ -1179,6 +1185,86 @@ static void setup_fd_limit(struct lightningd *ld, size_t num_channels)
 	}
 }
 
+/*~ With option_independent_secrets we keep a peer's per-commitment secrets
+ * which don't fit a shachain, and punish with them.  An external signer
+ * (an hsmd replaced with --subdaemon, such as VLS) checks those secrets
+ * itself, against a shachain, so we refuse to offer it with one. */
+static void check_independent_secrets(struct lightningd *ld)
+{
+	/* BOLT 3 says a limit SHOULD NOT be below 1,000,000: the peer can't
+	 * learn it, so an honest one could meet a smaller one, and with it a
+	 * backstop of a few secrets. */
+	if (ld->max_independent_secrets != 0
+	    && ld->max_independent_secrets < 1000000)
+		log_unusual(ld->log,
+			    "max-independent-secrets=%"PRIu64" is below"
+			    " 1,000,000, the lowest limit BOLT 3 recommends: an"
+			    " honest peer may reach it, and have its channel"
+			    " closed unilaterally once it has us store another"
+			    " %"PRIu64,
+			    ld->max_independent_secrets,
+			    ld->max_independent_secrets / 10
+			    ? ld->max_independent_secrets / 10 : 1);
+
+	if (!feature_offered(ld->our_features->bits[INIT_FEATURE],
+			     OPT_INDEPENDENT_SECRETS)) {
+		/* Only such a peer accepts the secrets it makes. */
+		if (ld->dev_hsmd_independent_secrets_sender)
+			errx(1, "--dev-independent-secrets-sender needs"
+			     " --independent-secrets");
+		return;
+	}
+	if (strmap_get(&ld->alt_subdaemons, "hsmd"))
+		errx(1, "--independent-secrets can't be used with an external"
+		     " signer (--subdaemon=hsmd:...), which expects the peer's"
+		     " per-commitment secrets to come from a shachain");
+}
+
+/*~ A channel opened with option_independent_secrets keeps it after
+ * --independent-secrets is removed, so we also refuse an external signer
+ * while any such channel is open or being resolved. */
+static void check_independent_secrets_channels(struct lightningd *ld)
+{
+	struct peer *peer;
+	struct peer_node_id_map_iter it;
+	struct channel *channel;
+
+	if (!strmap_get(&ld->alt_subdaemons, "hsmd"))
+		return;
+	for (peer = peer_node_id_map_first(ld->peers, &it);
+	     peer;
+	     peer = peer_node_id_map_next(ld->peers, &it)) {
+		list_for_each(&peer->channels, channel, list) {
+			if (channel_has(channel, OPT_INDEPENDENT_SECRETS))
+				errx(1, "Channel %s has option_independent_secrets,"
+				     " which can't be used with an external"
+				     " signer (--subdaemon=hsmd:...)",
+				     fmt_channel_id(tmpctx, &channel->cid));
+		}
+	}
+}
+
+/*~ --dev-independent-secrets-sender changes how hsmd derives the
+ * per-commitment secrets of every channel.  Flipping it under a channel which
+ * is open or still being resolved would make that channel fail at its next
+ * update, and leave the outputs of our own unilateral close unspendable, so
+ * we refuse to start. */
+static void check_dev_independent_secrets_sender(struct lightningd *ld,
+						 size_t num_channels)
+{
+	s64 was = db_get_intvar(ld->wallet->db,
+				"dev_independent_secrets_sender", 0);
+
+	if (was == ld->dev_hsmd_independent_secrets_sender)
+		return;
+	if (num_channels != 0)
+		errx(1, "Our channels were made with --dev-independent-secrets-sender"
+		     " %s: it can't change while any is open or being resolved",
+		     was ? "set" : "unset");
+	db_set_intvar(ld->wallet->db, "dev_independent_secrets_sender",
+		      ld->dev_hsmd_independent_secrets_sender);
+}
+
 int main(int argc, char *argv[])
 {
 	struct lightningd *ld;
@@ -1278,6 +1364,7 @@ int main(int argc, char *argv[])
 
 	/*~ Handle options and config. */
 	handle_opts(ld);
+	check_independent_secrets(ld);
 
 	/*~ Now create the PID file: this errors out if there's already a
 	 * daemon running, so we call before doing almost anything else. */
@@ -1373,6 +1460,9 @@ int main(int argc, char *argv[])
 	 *  know the blockheight. */
 	unconnected_htlcs_in = notleak(load_channels_from_wallet(ld,
 								 &num_channels));
+	check_dev_independent_secrets_sender(ld, num_channels);
+	check_independent_secrets_channels(ld);
+	independent_secrets_arm_close_timers(ld);
 	db_commit_transaction(ld->wallet->db);
 
 	/*~ Now we have channels, try to ensure we have enough file descriptors

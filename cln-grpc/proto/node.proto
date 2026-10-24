@@ -1500,6 +1500,7 @@ message ListpeerchannelsChannels {
 	optional Amount their_max_htlc_value_in_flight_msat = 61;
 	optional Amount our_max_htlc_value_in_flight_msat = 62;
 	repeated string features = 63;
+	optional uint64 independent_secrets_stored = 64;
 }
 
 message ListpeerchannelsChannelsAlias {
@@ -3236,6 +3237,8 @@ message ListconfigsConfigs {
 	optional ListconfigsConfigsAutoconnectseekerpeers autoconnect_seeker_peers = 71;
 	optional ListconfigsConfigsCurrencyrateaddsource currencyrate_add_source = 74;
 	optional ListconfigsConfigsCurrencyratedisablesource currencyrate_disable_source = 75;
+	optional ListconfigsConfigsIndependentsecrets independent_secrets = 76;
+	optional ListconfigsConfigsMaxindependentsecrets max_independent_secrets = 77;
 }
 
 message ListconfigsConfigsAddr {
@@ -3457,6 +3460,11 @@ message ListconfigsConfigsImportantplugin {
 	repeated string sources = 2;
 }
 
+message ListconfigsConfigsIndependentsecrets {
+	bool set = 1;
+	string source = 2;
+}
+
 message ListconfigsConfigsLargechannels {
 	bool set = 1;
 	string source = 2;
@@ -3500,6 +3508,11 @@ message ListconfigsConfigsMaxconcurrenthtlcs {
 message ListconfigsConfigsMaxdusthtlcexposuremsat {
 	Amount value_msat = 1;
 	string source = 2;
+}
+
+message ListconfigsConfigsMaxindependentsecrets {
+	string source = 1;
+	uint64 value_int = 2;
 }
 
 message ListconfigsConfigsMincapacitysat {

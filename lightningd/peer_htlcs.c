@@ -5,6 +5,7 @@
 #include <channeld/channeld_wiregen.h>
 #include <common/amount.h>
 #include <common/blinding.h>
+#include <common/clock_time.h>
 #include <common/ecdh.h>
 #include <common/json_command.h>
 #include <common/json_parse.h>
@@ -13,6 +14,7 @@
 #include <common/timeout.h>
 #include <db/exec.h>
 #include <lightningd/channel.h>
+#include <lightningd/closing_control.h>
 #include <lightningd/coin_mvts.h>
 #include <lightningd/notification.h>
 #include <lightningd/peer_htlcs.h>
@@ -2678,6 +2680,216 @@ REGISTER_PLUGIN_HOOK(commitment_revocation,
 		     commitment_revocation_hook_serialize,
 		     struct commitment_revocation_payload *);
 
+/* Why we start the mutual close at max_independent_secrets: its state change
+ * says the close was ours, which is what a restart re-arms the timeout for. */
+static const char independent_secrets_close_reason[]
+	= "Reached max-independent-secrets";
+
+/* The mutual close we started at max_independent_secrets hasn't finished:
+ * a peer could leave it there for ever, so we close unilaterally, as `close`
+ * does when its timeout runs out. */
+static void independent_secrets_close_timeout(struct channel *channel)
+{
+	channel->independent_secrets_close_timer = NULL;
+	if (channel->state != CHANNELD_SHUTTING_DOWN
+	    && channel->state != CLOSINGD_SIGEXCHANGE)
+		return;
+
+	log_unusual(channel->log,
+		    "The mutual close started at max-independent-secrets"
+		    " hasn't finished in %u seconds: closing the channel"
+		    " unilaterally",
+		    channel->peer->ld->dev_independent_secrets_close_timeout);
+	channel_fail_permanent(channel, REASON_LOCAL,
+			       "Mutual close at max-independent-secrets timed out");
+}
+
+static void arm_independent_secrets_close_timer(struct channel *channel,
+						u64 seconds)
+{
+	struct lightningd *ld = channel->peer->ld;
+
+	tal_free(channel->independent_secrets_close_timer);
+	channel->independent_secrets_close_timer
+		= new_reltimer(ld->timers, channel, time_from_sec(seconds),
+			       independent_secrets_close_timeout, channel);
+}
+
+void independent_secrets_arm_close_timers(struct lightningd *ld)
+{
+	struct peer *peer;
+	struct peer_node_id_map_iter it;
+	struct channel *channel;
+
+	for (peer = peer_node_id_map_first(ld->peers, &it);
+	     peer;
+	     peer = peer_node_id_map_next(ld->peers, &it)) {
+		list_for_each(&peer->channels, channel, list) {
+			u64 timeout = ld->dev_independent_secrets_close_timeout;
+			/* A peer gets at least this long to reconnect and
+			 * finish the close after we start: we may have been
+			 * down for longer than the whole timeout. */
+			u64 grace = timeout / 10 < 600 ? timeout / 10 : 600;
+			u64 elapsed = 0, left;
+			const struct channel_state_change *started = NULL;
+
+			/* Only a close which is still under way... */
+			if (channel->state != CHANNELD_SHUTTING_DOWN
+			    && channel->state != CLOSINGD_SIGEXCHANGE)
+				continue;
+
+			/* ...and which we started at the cap: the channel
+			 * last moved to CHANNELD_SHUTTING_DOWN for it. */
+			for (size_t i = tal_count(channel->state_changes); i > 0; i--) {
+				const struct channel_state_change *c
+					= channel->state_changes[i - 1];
+				if (c->new_state == CHANNELD_SHUTTING_DOWN) {
+					started = c;
+					break;
+				}
+			}
+			if (!started
+			    || started->cause != REASON_LOCAL
+			    || !started->message
+			    || !streq(started->message,
+				      independent_secrets_close_reason))
+				continue;
+
+			/* It has whatever is left of its time since then.  A
+			 * clock which has gone back counts as no time. */
+			if (time_after(clock_time(), started->timestamp))
+				elapsed = time_to_sec(time_between(clock_time(),
+								   started->timestamp));
+			left = elapsed < timeout ? timeout - elapsed : 0;
+			if (left < grace)
+				left = grace;
+			if (left == 0)
+				left = 1;
+			channel->independent_secrets_close_tried = true;
+			log_info(channel->log,
+				 "The mutual close started at"
+				 " max-independent-secrets has %"PRIu64
+				 " seconds left",
+				 left);
+			arm_independent_secrets_close_timer(channel, left);
+		}
+	}
+}
+
+/* On an option_independent_secrets channel the peer's secrets which don't
+ * fit a shachain cost us about 60 bytes each, and there is no end to them
+ * while the channel is open.  So we warn at 90% of max_independent_secrets
+ * and start a mutual close when it is reached: after `shutdown` the peer
+ * only needs as many more as it takes to settle the HTLCs in flight, and if
+ * the close hasn't finished in time we close unilaterally.  A peer can also
+ * keep a closing channel updating (update_fee needs no HTLCs), so once it
+ * has made us store another 10% we close the channel unilaterally too. */
+void check_independent_secrets_cap(struct channel *channel)
+{
+	struct lightningd *ld = channel->peer->ld;
+	u64 max = ld->max_independent_secrets;
+	u64 stored = channel_their_stored_secrets(channel);
+	u64 slack = max / 10 ? max / 10 : 1;
+
+	if (max == 0 || stored == 0)
+		return;
+
+	if (stored < max) {
+		if (stored >= max - max / 10
+		    && !channel->independent_secrets_warned) {
+			log_unusual(channel->log,
+				    "Stored %"PRIu64" of the peer's"
+				    " per-commitment secrets: at"
+				    " max-independent-secrets=%"PRIu64
+				    " we will close the channel",
+				    stored, max);
+			channel->independent_secrets_warned = true;
+		}
+		return;
+	}
+
+	/* Like `close`, we don't close a lease we sold before it expires.
+	 * The backstop below still applies: our funds stay locked until then
+	 * however the channel closes. */
+	if (channel->opener != LOCAL
+	    && get_block_height(ld->topology) < channel->lease_expiry) {
+		if (!channel->independent_secrets_lease_logged) {
+			log_unusual(channel->log,
+				    "Reached max-independent-secrets=%"PRIu64
+				    ", but the peer leased this channel until"
+				    " block %u: closing after that, or"
+				    " unilaterally if it has us store another"
+				    " %"PRIu64" first",
+				    max, channel->lease_expiry, slack);
+			channel->independent_secrets_lease_logged = true;
+		}
+	} else if (channel->state == CHANNELD_AWAITING_SPLICE
+		   || !list_empty(&channel->inflights)) {
+		/* BOLT 2 doesn't allow `shutdown` while a splice is pending,
+		 * so we start the close once it locks (see
+		 * handle_peer_splice_locked).  Nobody asked us to close, so we
+		 * don't try to cut the splice short for it; the backstop below
+		 * still bounds what we store meanwhile. */
+		if (!channel->independent_secrets_splice_logged) {
+			log_unusual(channel->log,
+				    "Reached max-independent-secrets=%"PRIu64
+				    ", but a splice is pending: closing once it"
+				    " locks, or unilaterally if the peer has us"
+				    " store another %"PRIu64" first",
+				    max, slack);
+			channel->independent_secrets_splice_logged = true;
+		}
+	} else if (!channel->independent_secrets_close_tried) {
+		/* Once: if it can't start, the backstop below still
+		 * applies. */
+		channel->independent_secrets_close_tried = true;
+		if (channel_start_mutual_close(channel,
+					       independent_secrets_close_reason)) {
+			/* The backstop counts from here, so a lowered limit
+			 * starts a mutual close rather than failing the
+			 * channel at the next update.  Saved, as is when the
+			 * close started (in its state changes), so a restart
+			 * resets neither. */
+			channel->independent_secrets_close_at = stored;
+			wallet_independent_secrets_close_at_set(ld->wallet,
+								channel->dbid,
+								stored);
+			log_unusual(channel->log,
+				    "Stored %"PRIu64" of the peer's"
+				    " per-commitment secrets,"
+				    " max-independent-secrets=%"PRIu64
+				    ": closing the channel",
+				    stored, max);
+			arm_independent_secrets_close_timer(channel,
+							    ld->dev_independent_secrets_close_timeout);
+			return;
+		}
+	}
+
+	/* Without a close of ours under way (a lease, a pending splice, a
+	 * close someone else started, or one that couldn't start), the
+	 * backstop counts from where the channel first reached the limit,
+	 * saved likewise: so a limit lowered below what such a channel
+	 * stores doesn't fail it at its next update, and a restart doesn't
+	 * reset the slack.  A limit raised since counts from itself. */
+	if (channel->independent_secrets_close_at == 0) {
+		channel->independent_secrets_close_at = stored;
+		wallet_independent_secrets_close_at_set(ld->wallet,
+							channel->dbid, stored);
+	}
+	if (stored - (channel->independent_secrets_close_at > max
+		      ? channel->independent_secrets_close_at : max) >= slack) {
+		log_unusual(channel->log,
+			    "Stored %"PRIu64" of the peer's per-commitment"
+			    " secrets, max-independent-secrets=%"PRIu64
+			    ", and the channel still isn't closed:"
+			    " closing it unilaterally",
+			    stored, max);
+		channel_fail_permanent(channel, REASON_LOCAL,
+				       "Stored too many per-commitment secrets");
+	}
+}
+
 void peer_got_revoke(struct channel *channel, const u8 *msg)
 {
 	u64 revokenum;
@@ -2743,30 +2955,64 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 		return;
 	}
 
-	if (revokenum != revocations_received(&channel->their_shachain.chain)) {
+	if (revokenum != channel_their_revocations(channel)) {
 		channel_internal_error(channel, "got_revoke: expected %"PRIu64
 				    " got %"PRIu64,
-				    revocations_received(&channel->their_shachain.chain), revokenum);
+				    channel_their_revocations(channel), revokenum);
 		return;
 	}
 
-	/* BOLT #2:
-	 *
-	 *   - if the `per_commitment_secret` was not generated by the protocol
-	 *     in [BOLT #3](03-transactions.md#per-commitment-secret-requirements):
-	 *     - MAY send a `warning` and close the connection, or send an
-	 *       `error` and fail the channel.
-	 */
-	if (!wallet_shachain_add_hash(ld->wallet,
-				      &channel->their_shachain,
-				      shachain_index(revokenum),
-				      &per_commitment_secret)) {
-		channel_fail_permanent(channel,
-				       REASON_PROTOCOL,
-				       "Bad per_commitment_secret %s for %"PRIu64,
-				       fmt_secret(msg, &per_commitment_secret),
-				       revokenum);
-		return;
+	/* channeld checked that it is a valid secret key which generates the
+	 * point of the commitment it revokes.  The shachain takes it if it is
+	 * consistent with the secrets before it, as it always is from a peer
+	 * which uses one. */
+	if (channel->their_secrets_in_db
+	    || !wallet_shachain_add_hash(ld->wallet,
+					 &channel->their_shachain,
+					 shachain_index(revokenum),
+					 &per_commitment_secret)) {
+		/* BOLT #2:
+		 *
+		 *   - if the `per_commitment_secret` was not generated by the protocol
+		 *     in [BOLT #3](03-transactions.md#per-commitment-secret-requirements):
+		 *     - MAY send a `warning` and close the connection, or send an
+		 *       `error` and fail the channel.
+		 */
+		/* lightning-blake2b/bolts#17, BOLT 2:
+		 *
+		 *   - if `option_independent_secrets` applies to the channel:
+		 *     - MUST NOT fail the channel or close the connection because the
+		 *       `per_commitment_secret` is not related to earlier secrets as
+		 *       described in [BOLT #3](03-transactions.md#per-commitment-secret-requirements).
+		 */
+		if (!channel_has(channel, OPT_INDEPENDENT_SECRETS)) {
+			channel_fail_permanent(channel,
+					       REASON_PROTOCOL,
+					       "Bad per_commitment_secret %s for %"PRIu64,
+					       fmt_secret(msg, &per_commitment_secret),
+					       revokenum);
+			return;
+		}
+
+		/* lightning-blake2b/bolts#17, BOLT 3:
+		 *   - MAY store per-commitment secrets in the compact representation of
+		 *     [Efficient Per-commitment Secret Storage](#efficient-per-commitment-secret-storage),
+		 *     for as long as each one it receives can be inserted into it:
+		 *     - otherwise, MUST store that secret, and every later one,
+		 *       individually, together with the number of the commitment
+		 *       transaction it revokes.
+		 */
+		if (!channel->their_secrets_in_db)
+			log_info(channel->log,
+				 "Per-commitment secret %"PRIu64" doesn't fit"
+				 " a shachain: storing it, and every later one,"
+				 " individually", revokenum);
+		/* The same db transaction as the rest of the revocation. */
+		wallet_revocation_secret_add(ld->wallet, channel->dbid,
+					     revokenum, &per_commitment_secret);
+		channel->their_secrets_in_db = true;
+		channel->their_secrets_received = revokenum + 1;
+		channel->their_last_secret = per_commitment_secret;
 	}
 
 	tal_free(channel->fee_states);
@@ -2775,7 +3021,6 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 	tal_free(channel->blockheight_states);
 	channel->blockheight_states = tal_steal(channel, blockheight_states);
 
-	/* FIXME: Check per_commitment_secret -> per_commit_point */
 	update_per_commit_point(channel, &next_per_commitment_point);
 
 	/* BOLT #2:
@@ -2807,19 +3052,23 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 					 badonions[i] ? badonions[i]
 					     : fromwire_peektype(failmsgs[i]));
 	}
+
 	wallet_channel_save(ld->wallet, channel);
 
-	if (penalty_tx == NULL)
-		return;
+	if (penalty_tx) {
+		payload = tal(tmpctx, struct commitment_revocation_payload);
+		payload->commitment_txid = pbase->txid;
+		payload->penalty_tx = tal_steal(payload, penalty_tx);
+		payload->wallet = ld->wallet;
+		payload->channel_dbid = channel->dbid;
+		payload->commitnum = pbase->commitment_num;
+		payload->channel_id = channel->cid;
+		plugin_hook_call_commitment_revocation(ld, NULL, payload);
+	}
 
-	payload = tal(tmpctx, struct commitment_revocation_payload);
-	payload->commitment_txid = pbase->txid;
-	payload->penalty_tx = tal_steal(payload, penalty_tx);
-	payload->wallet = ld->wallet;
-	payload->channel_dbid = channel->dbid;
-	payload->commitnum = pbase->commitment_num;
-	payload->channel_id = channel->cid;
-	plugin_hook_call_commitment_revocation(ld, NULL, payload);
+	/* Last, since it can free the channel: see the header. */
+	if (channel->their_secrets_in_db)
+		check_independent_secrets_cap(channel);
 }
 
 

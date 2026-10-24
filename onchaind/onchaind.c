@@ -3426,6 +3426,8 @@ int main(int argc, char *argv[])
 	enum side opener;
 	struct basepoints basepoints[NUM_SIDES];
 	struct shachain shachain;
+	u64 revocations;
+	struct secret *revocation_secret;
 	struct tx_parts *tx;
 	struct tracked_output **outs;
 	struct bitcoin_outpoint funding;
@@ -3472,7 +3474,9 @@ int main(int argc, char *argv[])
 				   &static_remotekey_start[REMOTE],
 				   &option_anchor_outputs,
 				   &option_anchors_zero_fee_htlc_tx,
-				   &min_relay_feerate)) {
+				   &min_relay_feerate,
+				   &revocations,
+				   &revocation_secret)) {
 		master_badmsg(WIRE_ONCHAIND_INIT, msg);
 	}
 
@@ -3535,7 +3539,7 @@ int main(int argc, char *argv[])
 
 		status_debug("commitnum = %"PRIu64
 			     ", revocations_received = %"PRIu64,
-			     commit_num, revocations_received(&shachain));
+			     commit_num, revocations);
 
 		if (is_local_commitment(&tx->txid, &our_broadcast_txid))
 			handle_our_unilateral(tx, tx_blockheight,
@@ -3550,8 +3554,13 @@ int main(int argc, char *argv[])
 		 * *outdated commitment transaction* (presumably, a prior
 		 * version, which is more in its favor).
 		 */
-		else if (shachain_get_secret(&shachain, commit_num,
-					     &revocation_preimage)) {
+		else if (revocation_secret
+			 || shachain_get_secret(&shachain, commit_num,
+						&revocation_preimage)) {
+			/* With option_independent_secrets, lightningd gives
+			 * us the secret if it isn't in the shachain. */
+			if (revocation_secret)
+				revocation_preimage = *revocation_secret;
 			handle_their_cheat(tx,
 					   tx_blockheight,
 					   &revocation_preimage,
@@ -3567,14 +3576,14 @@ int main(int argc, char *argv[])
 		 * the *remote node's* commitment transaction; hence, the
 		 * local node is required to handle both.
 		 */
-		} else if (commit_num == revocations_received(&shachain)) {
+		} else if (commit_num == revocations) {
 			status_debug("Their unilateral tx, old commit point");
 			handle_their_unilateral(tx, tx_blockheight,
 						&old_remote_per_commit_point,
 						basepoints,
 						opener,
 						outs);
-		} else if (commit_num == revocations_received(&shachain) + 1) {
+		} else if (commit_num == revocations + 1) {
 			status_debug("Their unilateral tx, new commit point");
 			handle_their_unilateral(tx, tx_blockheight,
 						&remote_per_commit_point,

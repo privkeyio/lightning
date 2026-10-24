@@ -4,6 +4,7 @@
 #include <ccan/cast/cast.h>
 #include <ccan/tal/str/str.h>
 #include <common/htlc_tx.h>
+#include <common/initial_commit_tx.h>
 #include <common/memleak.h>
 #include <common/psbt_keypath.h>
 #include <common/timeout.h>
@@ -1899,6 +1900,67 @@ static void onchain_error(struct channel *channel,
 	channel_set_billboard(channel, true, desc);
 }
 
+/* onchaind derives the secret of a revoked commitment from the shachain we
+ * give it.  With option_independent_secrets the secrets after the first which
+ * didn't fit the shachain are in the db instead, so if this transaction is a
+ * commitment of the peer's which they revoked, and its secret is one of
+ * those, we look it up.  NULL otherwise. */
+static const struct secret *independent_revocation_secret(const tal_t *ctx,
+							  const struct channel *channel,
+							  const struct bitcoin_tx *tx)
+{
+	const struct pubkey *keys[NUM_SIDES];
+	struct secret *secret;
+	u64 commit_num;
+
+	if (!channel->their_secrets_in_db)
+		return NULL;
+
+	/* A commitment transaction has exactly one input, the funding. */
+	if (tx->wtx->num_inputs != 1)
+		return NULL;
+
+	/* The same as onchaind's unmask_commit_number(). */
+	/* BOLT #3:
+	 *
+	 * * locktime: upper 8 bits are 0x20, lower 24 bits are the lower 24
+	 *   bits of the obscured commitment number
+	 *...
+	 *    * `txin[0]` sequence: upper 8 bits are 0x80, lower 24 bits are
+	 *      upper 24 bits of the obscured commitment number
+	 *...
+	 * The 48-bit commitment number is obscured by `XOR` with the lower 48
+	 * bits of...
+	 */
+	keys[LOCAL] = &channel->local_basepoints.payment;
+	keys[REMOTE] = &channel->channel_info.theirbase.payment;
+	commit_num = ((tx->wtx->locktime & 0x00FFFFFF)
+		      | ((u64)tx->wtx->inputs[0].sequence & 0x00FFFFFF) << 24)
+		^ commit_number_obscurer(keys[channel->opener],
+					 keys[!channel->opener]);
+
+	/* Only a commitment of theirs which they revoked needs a secret, and
+	 * onchaind finds those below this in the shachain.  A mutual close or
+	 * our latest commitment can unmask to a revoked number too: onchaind
+	 * recognizes those first, and won't use the secret.  An older
+	 * commitment of ours (from an old backup, say) isn't recognized, and
+	 * is taken for a revoked one of theirs, as it already is when its
+	 * number is in the shachain. */
+	if (commit_num < revocations_received(&channel->their_shachain.chain)
+	    || commit_num >= channel_their_revocations(channel))
+		return NULL;
+
+	secret = tal(ctx, struct secret);
+	if (!wallet_revocation_secret_get(channel->peer->ld->wallet,
+					  channel->dbid, commit_num, secret)) {
+		log_broken(channel->log,
+			   "No per-commitment secret stored for revoked"
+			   " commitment %"PRIu64, commit_num);
+		return tal_free(secret);
+	}
+	return secret;
+}
+
 /* With a reorg, this can get called multiple times; each time we'll kill
  * onchaind (like any other owner), and restart */
 enum watch_result onchaind_funding_spent(struct channel *channel,
@@ -2029,7 +2091,9 @@ enum watch_result onchaind_funding_spent(struct channel *channel,
 				  channel->static_remotekey_start[REMOTE],
 				   channel_has(channel, OPT_ANCHOR_OUTPUTS_DEPRECATED),
 				   channel_has(channel, OPT_ANCHORS_ZERO_FEE_HTLC_TX),
-				  feerate_min(ld, NULL));
+				  feerate_min(ld, NULL),
+				  channel_their_revocations(channel),
+				  independent_revocation_secret(tmpctx, channel, tx));
 	subd_send_msg(channel->owner, take(msg));
 
 	/* If we're replaying, we just watch this */
