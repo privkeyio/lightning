@@ -504,10 +504,11 @@ lowered below what a channel already stores, the 10% counts from where the
 channel is at its next update, and the close starts then if it can.  If the
 mutual close hasn't finished within 48 hours, we close the channel
 unilaterally, as `close` does by default.  A restart resets neither, but gives
-the peer at least 10 minutes to finish the close.  A channel the peer leased
-from us is closed at its first update after the lease expires, or unilaterally
-before then once the peer has made us store 10% more than the limit.  A channel
-with a pending splice is closed once the splice locks, or straight away if it
+the peer at least 10 minutes to finish the close; and, like `close`'s own, the
+timeout of a close already started stays even if the limit is then set to 0.
+A channel the peer leased from us is closed at its first update after the
+lease expires, or unilaterally before then once the peer has made us store 10%
+more than the limit.  A channel with a pending splice is closed once the splice locks, or straight away if it
 is aborted (an aborted RBF attempt leaves the splice it would have replaced, so
 the close waits for that), with the 10% applying meanwhile.  BOLT 3 recommends
 a limit of at least 1,000,000, since the peer can't learn it: below that we log

@@ -1188,9 +1188,10 @@ static const struct db_migration dbmigrations[] = {
 	 ")"), NULL,
      /* Make sure no open channel uses it, then drop the table. */
      NULL, revert_channel_revocation_secrets},
-    /* How many of the peer's secrets an option_independent_secrets channel
-     * stored when we started a mutual close at max-independent-secrets, so
-     * the backstop counts from there across a restart. */
+    /* Where the backstop's 10% counts from on an option_independent_secrets
+     * channel, kept across a restart: how many of the peer's secrets it
+     * stored when we started a mutual close at max-independent-secrets, or,
+     * until then (a lease, a pending splice), when it first reached it. */
     {SQL("ALTER TABLE channels ADD independent_secrets_close_at BIGINT DEFAULT 0;"), NULL,
      SQL("ALTER TABLE channels DROP COLUMN independent_secrets_close_at"), NULL},
 };
