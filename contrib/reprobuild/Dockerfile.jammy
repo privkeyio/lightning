@@ -6,6 +6,9 @@ ENV SOURCE_DATE_EPOCH=1672531200
 ENV RUST_PROFILE=release
 ENV PATH=/root/.pyenv/shims:/root/.pyenv/bin:/root/.cargo/bin:/root/.local/bin:$PATH
 ENV PROTOC_VERSION=29.4
+ENV PYENV_COMMIT=c7eaf99f36d04ddc1b9a9b4faca3b7bf9a296041
+ENV UV_VERSION=0.13.5
+ENV RUST_VERSION=1.85.1
 
 RUN sed -i '/updates/d' /etc/apt/sources.list && \
     sed -i '/security/d' /etc/apt/sources.list
@@ -32,6 +35,7 @@ RUN apt-get update && \
     zip \
     && cd /tmp \
     && wget https://github.com/kristapsdz/lowdown/archive/refs/tags/VERSION_1_0_2.tar.gz \
+    && echo "049b7883874f8a8e528dc7c4ed7b27cf7ceeb9ecf8fe71c3a8d51d574fddf84b  VERSION_1_0_2.tar.gz" | sha256sum -c \
     && tar -xzf VERSION_1_0_2.tar.gz \
     && cd lowdown-VERSION_1_0_2 \
     && ./configure \
@@ -48,6 +52,7 @@ RUN chown root:root /usr/libexec/sudo/sudoers.so
 
 # Install Python3.10 (more reproducible than relying on python3-setuptools)
 RUN git clone https://github.com/pyenv/pyenv.git /root/.pyenv && \
+    git -C /root/.pyenv checkout --detach ${PYENV_COMMIT} && \
     apt-get install -y --no-install-recommends \
     libbz2-dev \
     libffi-dev \
@@ -58,21 +63,42 @@ RUN git clone https://github.com/pyenv/pyenv.git /root/.pyenv && \
     pyenv install 3.10.0 && \
     pyenv global 3.10.0
 
-RUN wget -qO- https://astral.sh/uv/install.sh | sh
+# Downloads below are checked against pinned hashes.  uv's match the
+# .sha256 files published beside them, so they only detect a change since
+# pinning, as protoc's and lowdown's do.  Rust's match its signed
+# channel-rust-${RUST_VERSION}.toml.
+RUN cd /tmp/ && \
+    case "$(dpkg --print-architecture)" in \
+      arm64) UV_ARCH=aarch64 UV_SHA256=4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403 ;; \
+      *)     UV_ARCH=x86_64 UV_SHA256=f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f ;; \
+    esac && \
+    wget https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_ARCH}-unknown-linux-gnu.tar.gz && \
+    echo "${UV_SHA256}  uv-${UV_ARCH}-unknown-linux-gnu.tar.gz" | sha256sum -c && \
+    tar -xzf uv-${UV_ARCH}-unknown-linux-gnu.tar.gz && \
+    mkdir -p /root/.local/bin && \
+    mv uv-${UV_ARCH}-unknown-linux-gnu/uv uv-${UV_ARCH}-unknown-linux-gnu/uvx /root/.local/bin/ && \
+    rm -rf uv-${UV_ARCH}-unknown-linux-gnu*
 
-RUN wget https://sh.rustup.rs -O rustup-install.sh && \
-    bash rustup-install.sh --default-toolchain none --quiet -y && \
-    rm rustup-install.sh && \
-    /root/.cargo/bin/rustup install 1.85
+RUN cd /tmp/ && \
+    case "$(dpkg --print-architecture)" in \
+      arm64) RUST_ARCH=aarch64 RUST_SHA256=6945d648b19f62052ee619b05e79e8ab8a2e18b5d5310c6c0899d552669ee61b ;; \
+      *)     RUST_ARCH=x86_64 RUST_SHA256=912c76f602f5f630138fca2388b2688c2c1aabcf823d71890b2b9155f743792e ;; \
+    esac && \
+    wget https://static.rust-lang.org/dist/rust-${RUST_VERSION}-${RUST_ARCH}-unknown-linux-gnu.tar.xz && \
+    echo "${RUST_SHA256}  rust-${RUST_VERSION}-${RUST_ARCH}-unknown-linux-gnu.tar.xz" | sha256sum -c && \
+    tar -xJf rust-${RUST_VERSION}-${RUST_ARCH}-unknown-linux-gnu.tar.xz && \
+    rust-${RUST_VERSION}-${RUST_ARCH}-unknown-linux-gnu/install.sh --prefix=/usr/local && \
+    rm -rf rust-${RUST_VERSION}-${RUST_ARCH}-unknown-linux-gnu*
 
 # Download protoc manually, it is in the update repos which we
 # disabled above, so `apt-get` can't find it anymore.
 RUN cd /tmp/ && \
     case "$(dpkg --print-architecture)" in \
-      arm64) PROTOC_ARCH=aarch_64 ;; \
-      *)     PROTOC_ARCH=x86_64 ;; \
+      arm64) PROTOC_ARCH=aarch_64 PROTOC_SHA256=c219a9213a8fa26bc9f644e36e7d756a5b8a7c8a629b60f9d0d1248e59d2fa31 ;; \
+      *)     PROTOC_ARCH=x86_64 PROTOC_SHA256=3074ee900792fa7bf06ab56bd14af83048016cac08abf2a2ae34aaa571a9c110 ;; \
     esac && \
     wget https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip && \
+    echo "${PROTOC_SHA256}  protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" | sha256sum -c && \
     unzip protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip && \
     mv bin/protoc /usr/local/bin && \
     rm -rf include bin protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip

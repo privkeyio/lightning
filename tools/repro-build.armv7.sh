@@ -291,8 +291,15 @@ sha256sum -c /tmp/SHASUMS
 # shellcheck disable=SC2046
 $INST $(cut -c66- < /tmp/SHASUMS)
 
+# The hash is for the RUST_VERSION pinned in contrib/reprobuild/Dockerfile.*,
+# so bump both together.
 RUST_TARGET=armv7-unknown-linux-gnueabihf
-rustup target add "$RUST_TARGET"
+RUST_STD=rust-std-${RUST_VERSION}-${RUST_TARGET}
+wget -q -O "/tmp/$RUST_STD.tar.xz" "https://static.rust-lang.org/dist/$RUST_STD.tar.xz"
+echo "994c3c192dd312e422ba0008bf97b3f121692658658390882558d34d29927d45  /tmp/$RUST_STD.tar.xz" | sha256sum -c
+tar -C /tmp -xJf "/tmp/$RUST_STD.tar.xz"
+"/tmp/$RUST_STD/install.sh" --prefix=/usr/local
+rm -rf "/tmp/$RUST_STD" "/tmp/$RUST_STD.tar.xz"
 CARGO_BUILD_TARGET=$RUST_TARGET
 CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
 export CARGO_BUILD_TARGET CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER
