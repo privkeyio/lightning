@@ -28,6 +28,8 @@ The build environments are a set of docker images that are created directly from
 
 The script `contrib/cl-repro.sh` covers below `Base image creation` and `Builder image setup` steps. You can skip these steps by simply running the `contrib/cl-repro.sh` script.
 
+With rootless Docker, run `ROOTLESS=1 contrib/cl-repro.sh`. A rootless container cannot create device nodes, so this skips debootstrap's device setup; Docker provides `/dev` when the image runs, and packages are still checked against Ubuntu's signed `Release` file. To build the arm64 images on an amd64 host under qemu-user emulation (with `qemu-aarch64` registered in binfmt_misc with the `F` flag), add `PLATFORM=linux/arm64`. Both produce the same tarballs as the default path.
+
 ## Base image creation
 
 Depending on the distribution that we want to build for the instructions to create a base image can vary. In the following sections we discuss the specific instructions for each distribution, whereas the instructions are identical again once we have the base image.

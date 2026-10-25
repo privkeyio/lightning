@@ -1,9 +1,11 @@
 name: Release BLAKE2b
 
 # Builds the reproducible Ubuntu amd64 and arm64 tarballs for a
-# vX.Y.Z-blake2b.N tag and drafts its GitHub release with an unsigned
-# SHA256SUMS. The release captain rebuilds, signs SHA256SUMS with their own
-# key, uploads the .asc and publishes the draft by hand.
+# vX.Y.Z-blake2b.N tag and drafts its GitHub release with unsigned
+# SHA256SUMS manifests, one for amd64 and one for arm64. The release captain
+# rebuilds, signs only the manifests whose tarballs they rebuilt, uploads the
+# .asc files, deletes any manifest left unsigned with its tarballs, and
+# publishes the draft by hand.
 on:
   push:
     tags:
@@ -121,7 +123,7 @@ jobs:
           sudo docker run --rm -v "$(pwd)":/build "ubuntu:$distribution" bash -c "\
               apt-get update && \
               apt-get install -y debootstrap && \
-              debootstrap $distribution /build/$distribution"
+              debootstrap --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg $distribution /build/$distribution"
           sudo tar -C "$distribution" -c . | docker import - "$distribution"
           docker build -t "cl-repro-$distribution$suffix" - < "contrib/reprobuild/Dockerfile.$distribution"
 
@@ -166,8 +168,15 @@ jobs:
             echo "::error::Expected exactly 6 tarballs for $VERSION, found: $(ls)"
             exit 1
           fi
-          LC_ALL=C sha256sum "$@" > SHA256SUMS-"$VERSION"
-          cat SHA256SUMS-"$VERSION"
+          # One manifest per architecture, so a signer signs only what they
+          # rebuilt.
+          LC_ALL=C sha256sum clightning-"$VERSION"-*-amd64.tar.xz > SHA256SUMS-"$VERSION"
+          LC_ALL=C sha256sum clightning-"$VERSION"-*-arm64.tar.xz > SHA256SUMS-"$VERSION"-arm64
+          if [ "$(wc -l < SHA256SUMS-"$VERSION")" -ne 3 ] || [ "$(wc -l < SHA256SUMS-"$VERSION"-arm64)" -ne 3 ]; then
+            echo "::error::Expected 3 amd64 and 3 arm64 tarballs for $VERSION"
+            exit 1
+          fi
+          cat SHA256SUMS-"$VERSION" SHA256SUMS-"$VERSION"-arm64
           cp ../contrib/keys/privkeyio.txt privkeyio-signing-key.asc
 
       - name: Upload release files
@@ -212,4 +221,5 @@ jobs:
           fi
           cd release
           gh release create "$VERSION" --draft --verify-tag --title "$VERSION" --notes "" \
-            clightning-"$VERSION"-*.tar.xz SHA256SUMS-"$VERSION" privkeyio-signing-key.asc
+            clightning-"$VERSION"-*.tar.xz SHA256SUMS-"$VERSION" SHA256SUMS-"$VERSION"-arm64 \
+            privkeyio-signing-key.asc

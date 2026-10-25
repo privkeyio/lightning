@@ -58,3 +58,5 @@ gpg --import privkeyio-signing-key.asc
 gpg --verify SHA256SUMS-<version>.asc SHA256SUMS-<version>
 sha256sum -c --ignore-missing SHA256SUMS-<version>
 ```
+
+arm64 tarballs have their own manifest, `SHA256SUMS-<version>-arm64`, verified the same way. Releases up to `v26.06.9-blake2b.9` have a single `SHA256SUMS-<version>` covering both.
