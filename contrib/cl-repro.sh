@@ -7,6 +7,11 @@
 # It automates the process described here:
 # https://docs.corelightning.org/docs/repro#build-environment-setup
 # https://docs.corelightning.org/docs/repro#builder-image-setup
+#
+# ROOTLESS=1 builds without root, for rootless Docker.  PLATFORM=linux/arm64
+# builds the arm64 images on an amd64 host, under qemu-user emulation.
+
+set -e
 
 # Assuming script will be used from the root of lightning directory
 LIGHTNING_DIR=$PWD
@@ -14,18 +19,39 @@ LIGHTNING_DIR=$PWD
 LIGHTNING_DIR=$(echo "$LIGHTNING_DIR" | sed 's|/contrib$||')
 echo "Lightning Directory: $LIGHTNING_DIR"
 
+SUDO=sudo
+NODEV=""
+if [ -n "$ROOTLESS" ]; then
+  SUDO=""
+  # A rootless container cannot create device nodes, so skip debootstrap's
+  # device setup: docker provides /dev when the image runs.  Packages are
+  # still checked against the signed Release file.
+  NODEV="sed -i -e 's/^check_sane_mount () {/check_sane_mount () { return 0;/' -e 's/^setup_devices () {/setup_devices () { return 0;/' /usr/share/debootstrap/functions &&"
+fi
+PLAT=""
+case "$PLATFORM" in
+  "") ;;
+  linux/amd64|linux/arm64) PLAT="--platform $PLATFORM" ;;
+  *) echo "Unsupported PLATFORM $PLATFORM: use linux/amd64 or linux/arm64" >&2; exit 1 ;;
+esac
+
+# arm64 images are suffixed so both architectures can coexist, and so the
+# bin-Ubuntu-<dist>-arm64 targets resolve.  amd64 keeps its bare name.
+SUFFIX=""
+case "${PLATFORM:-$(uname -m)}" in
+  linux/arm64|aarch64|arm64) SUFFIX="-arm64" ;;
+esac
+
 for v in jammy noble resolute; do
   echo "Building base image for $v"
-  sudo docker run -v "$LIGHTNING_DIR":/build ubuntu:$v \
-	bash -c "apt-get update && apt-get install -y debootstrap && debootstrap $v /build/$v"
-  sudo tar -C $v -c . | sudo docker import - $v
+  # shellcheck disable=SC2086
+  $SUDO docker run --rm $PLAT -v "$LIGHTNING_DIR":/build ubuntu:$v \
+	bash -c "rm -rf /build/$v && apt-get update && apt-get install -y debootstrap && $NODEV debootstrap $v /build/$v"
+  # shellcheck disable=SC2086
+  $SUDO docker run --rm $PLAT -v "$LIGHTNING_DIR":/build ubuntu:$v tar -C /build/$v -c . | $SUDO docker import $PLAT - $v
   echo "$v release:"
-  sudo docker run ubuntu:$v cat /etc/lsb-release
+  $SUDO docker run --rm $v cat /etc/lsb-release
   echo "Building CL repro $v:"
-  # arm64 images are suffixed so both architectures can coexist, and so the
-  # bin-Ubuntu-<dist>-arm64 targets resolve.  amd64 keeps its bare name.
-  SUFFIX=""
-  [ "$(dpkg --print-architecture)" = arm64 ] && SUFFIX="-arm64"
-  # shellcheck disable=SC2024
-  sudo docker build --no-cache -t cl-repro-$v$SUFFIX - < "$LIGHTNING_DIR"/contrib/reprobuild/Dockerfile.$v
+  # shellcheck disable=SC2024,SC2086
+  $SUDO docker build $PLAT --no-cache -t cl-repro-$v$SUFFIX - < "$LIGHTNING_DIR"/contrib/reprobuild/Dockerfile.$v
 done
