@@ -38,7 +38,7 @@ git clone https://github.com/privkeyio/lightning.git
 
 ## Releases
 
-Published under [Releases](https://github.com/privkeyio/lightning/releases) with signed checksum files covering every artifact, one for amd64 (`SHA256SUMS-<version>`) and one for arm64 (`SHA256SUMS-<version>-arm64`). For amd64:
+Published under [Releases](https://github.com/privkeyio/lightning/releases) with signed checksum files, one for amd64 (`SHA256SUMS-<version>`) and one for arm64 (`SHA256SUMS-<version>-arm64`). Releases up to `v26.06.9-blake2b.9` have a single `SHA256SUMS-<version>` covering both. For amd64:
 
 ```bash
 gpg --import privkeyio-signing-key.asc
@@ -46,9 +46,19 @@ gpg --verify SHA256SUMS-<version>.asc SHA256SUMS-<version>
 sha256sum -c SHA256SUMS-<version> --ignore-missing
 ```
 
-For arm64, use `SHA256SUMS-<version>-arm64` and its `.asc` the same way.
+For arm64, use `SHA256SUMS-<version>-arm64` and its `.asc` the same way. A manifest without an `.asc` is not published.
 
 The signing key is `A47D 99B6 DB0D 715D 40C5 9A20 23AE 8A8E A7E2 4E38`. From `v26.06.9-blake2b.8` on, releases are signed by its subkey `1004 97C5 8727 107D 9B9D A0FA F160 CC14 F64F 8EF8`.
+
+A manifest is only signed by someone who rebuilt every tarball it lists and got the same hashes. To rebuild a release yourself, download and verify its manifest as above into the repository root, check out its tag and run:
+
+```bash
+ROOTLESS=1 contrib/cl-repro.sh
+tools/build-release.sh --without-zip --force-version <version> --force-mtime <date> bin-Ubuntu
+(cd release && sha256sum -c --ignore-missing ../SHA256SUMS-<version>)
+```
+
+`<date>` is the tag's commit date in UTC, from `TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%d <version>`. Drop `ROOTLESS=1` on rootful Docker. `v26.06.9-blake2b.8` and `v26.06.9-blake2b.9` predate the pinned builder images, so build their images from `blake2b-unified` before checking out the tag. For arm64, add `PLATFORM=linux/arm64` on an amd64 host, build `bin-Ubuntu-jammy-arm64 bin-Ubuntu-noble-arm64 bin-Ubuntu-resolute-arm64`, and check `release-arm64/` against `SHA256SUMS-<version>-arm64`, or the single manifest for releases up to `v26.06.9-blake2b.9`.
 
 For StartOS, the packaged build lives at [privkeyio/cln-startos](https://github.com/privkeyio/cln-startos).
 
