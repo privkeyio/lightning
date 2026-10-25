@@ -18,6 +18,11 @@ LIGHTNING_DIR=$PWD
 # Remove '/contrib' from the end if it exists
 LIGHTNING_DIR=$(echo "$LIGHTNING_DIR" | sed 's|/contrib$||')
 echo "Lightning Directory: $LIGHTNING_DIR"
+# The base image steps delete $LIGHTNING_DIR/<dist> as root.
+if [ ! -f "$LIGHTNING_DIR"/contrib/cl-repro.sh ]; then
+  echo "Run this from the root of the lightning repository" >&2
+  exit 1
+fi
 
 SUDO=sudo
 NODEV=""
@@ -42,16 +47,21 @@ case "${PLATFORM:-$(uname -m)}" in
   linux/arm64|aarch64|arm64) SUFFIX="-arm64" ;;
 esac
 
+ROOTFS=$(mktemp -d)
 for v in jammy noble resolute; do
   echo "Building base image for $v"
   # shellcheck disable=SC2086
   $SUDO docker run --rm $PLAT -v "$LIGHTNING_DIR":/build ubuntu:$v \
 	bash -c "rm -rf /build/$v && apt-get update && apt-get install -y debootstrap && $NODEV debootstrap --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg $v /build/$v"
   # shellcheck disable=SC2086
-  $SUDO docker run --rm $PLAT -v "$LIGHTNING_DIR":/build ubuntu:$v tar -C /build/$v -c . | $SUDO docker import $PLAT - $v
+  $SUDO docker run --rm $PLAT -v "$LIGHTNING_DIR":/build -v "$ROOTFS":/out ubuntu:$v tar -C /build/$v -cf /out/$v.tar .
+  # shellcheck disable=SC2086
+  $SUDO docker import $PLAT "$ROOTFS/$v.tar" $v
+  $SUDO rm -f "$ROOTFS/$v.tar"
   echo "$v release:"
   $SUDO docker run --rm $v cat /etc/lsb-release
   echo "Building CL repro $v:"
   # shellcheck disable=SC2024,SC2086
   $SUDO docker build $PLAT --no-cache -t cl-repro-$v$SUFFIX - < "$LIGHTNING_DIR"/contrib/reprobuild/Dockerfile.$v
 done
+rmdir "$ROOTFS"
