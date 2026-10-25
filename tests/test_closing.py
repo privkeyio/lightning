@@ -699,6 +699,35 @@ def test_penalty_htlc_min_feerate(node_factory, bitcoind, executor, chainparams,
 
 
 @pytest.mark.parametrize("anchors", [False, True])
+def test_onchain_delayed_sweep_min_feerate(node_factory, bitcoind, chainparams, anchors):
+    """Our sweep of a delayed output aims far out, so it pays the lowest
+    feerate: with bitcoind's minimum above 1 sat/vB, that still has to relay."""
+
+    if chainparams['elements'] and anchors:
+        pytest.skip('elementsd anchors unsupported')
+
+    bitcoind.stop()
+    bitcoind.cmd_line += ['-minrelaytxfee=0.00002000']
+    bitcoind.start()
+
+    opts = {'feerates': (253, 253, 253, 253)}
+    if anchors is False:
+        opts['dev-force-features'] = "-23"
+
+    l1, l2 = node_factory.line_graph(2, opts=opts)
+    l2.stop()
+    l1.rpc.close(l2.info['id'], 1)
+    bitcoind.generate_block(1, wait_for_mempool=1)
+
+    _, txid, blocks = l1.wait_for_onchaind_tx('OUR_DELAYED_RETURN_TO_WALLET',
+                                              'OUR_UNILATERAL/DELAYED_OUTPUT_TO_US')
+    bitcoind.generate_block(blocks)
+    l1.mine_txid_or_rbf(txid)
+    l1.daemon.wait_for_log('Resolved OUR_UNILATERAL/DELAYED_OUTPUT_TO_US by our proposal OUR_DELAYED_RETURN_TO_WALLET')
+    assert not l1.daemon.is_in_log('min relay fee not met')
+
+
+@pytest.mark.parametrize("anchors", [False, True])
 def test_penalty_outhtlc(node_factory, bitcoind, executor, chainparams, anchors):
     """Test penalty transaction with an outgoing HTLC"""
 
