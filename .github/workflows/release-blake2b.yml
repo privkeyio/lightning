@@ -123,7 +123,7 @@ jobs:
           sudo docker run --rm -v "$(pwd)":/build "ubuntu:$distribution" bash -c "\
               apt-get update && \
               apt-get install -y debootstrap && \
-              debootstrap $distribution /build/$distribution"
+              debootstrap --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg $distribution /build/$distribution"
           sudo tar -C "$distribution" -c . | docker import - "$distribution"
           docker build -t "cl-repro-$distribution$suffix" - < "contrib/reprobuild/Dockerfile.$distribution"
 

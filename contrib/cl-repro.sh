@@ -46,7 +46,7 @@ for v in jammy noble resolute; do
   echo "Building base image for $v"
   # shellcheck disable=SC2086
   $SUDO docker run --rm $PLAT -v "$LIGHTNING_DIR":/build ubuntu:$v \
-	bash -c "rm -rf /build/$v && apt-get update && apt-get install -y debootstrap && $NODEV debootstrap $v /build/$v"
+	bash -c "rm -rf /build/$v && apt-get update && apt-get install -y debootstrap && $NODEV debootstrap --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg $v /build/$v"
   # shellcheck disable=SC2086
   $SUDO docker run --rm $PLAT -v "$LIGHTNING_DIR":/build ubuntu:$v tar -C /build/$v -c . | $SUDO docker import $PLAT - $v
   echo "$v release:"
