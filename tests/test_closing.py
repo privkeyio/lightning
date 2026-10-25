@@ -2558,6 +2558,10 @@ def test_onchain_middleman_fulfill_after_fail(node_factory, bitcoind):
                    partid=1, groupid=1)
     l3.daemon.wait_for_log('holding htlc {}'.format(rhash))
 
+    # A block between the two gives them different deadlines.
+    bitcoind.generate_block(1)
+    sync_blockheight(bitcoind, [l1, l2, l3])
+
     # And it fails this one.
     l1.rpc.sendpay(l1.single_route(l3.info['id'], amt2), rhash,
                    amount_msat=amt1 + amt2,
@@ -2578,9 +2582,12 @@ def test_onchain_middleman_fulfill_after_fail(node_factory, bitcoind):
 
     # Now l3 learns the preimage, and spends what it's owed.
     l3.rpc.releasehtlc(preimage)
-    _, txid, _ = l3.wait_for_onchaind_tx('OUR_HTLC_SUCCESS_TX',
-                                         'OUR_UNILATERAL/THEIR_HTLC')
-    bitcoind.generate_block(1, wait_for_mempool=[txid])
+    l3.wait_for_onchaind_tx('OUR_HTLC_SUCCESS_TX',
+                            'OUR_UNILATERAL/THEIR_HTLC')
+    # Both HTLC claims spend l3's only wallet UTXO, and their deadlines
+    # differ, so only the higher-feerate one stays in the mempool.  Either
+    # reveals the preimage.
+    bitcoind.generate_block(1, wait_for_mempool=1)
     l2.daemon.wait_for_log('THEIR_UNILATERAL/OUR_HTLC gave us preimage')
 
     # Both payments must succeed, including the one l3 said it failed.
