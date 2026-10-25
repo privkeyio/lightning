@@ -106,6 +106,9 @@ struct chain_topology {
 
 	/* This is the lowest feerate that bitcoind is saying will broadcast. */
 	u32 feerate_floor;
+	/* And the lowest we pay ourselves, so our rounding doesn't fall
+	 * short of it (see feerate_relay_floor). */
+	u32 relay_feerate_floor;
 
 	/* We keep last three feerates we got: this is useful for min/max. */
 	struct feerate_est *feerates[FEE_HISTORY_NUM];
@@ -163,6 +166,11 @@ struct txlocator {
 
 /* Get the minimum feerate that bitcoind will accept */
 u32 get_feerate_floor(const struct chain_topology *topo);
+
+/* Get the minimum feerate we use for our own transactions: a little above
+ * get_feerate_floor() when that is above 1 sat/vB.  Use get_feerate_floor()
+ * for what we accept from a peer. */
+u32 get_relay_feerate_floor(const struct chain_topology *topo);
 
 /* This is the number of blocks which would have to be mined to invalidate
  * the tx */

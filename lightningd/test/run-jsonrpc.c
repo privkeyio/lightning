@@ -26,9 +26,9 @@ void   fatal(const char *fmt UNNEEDED, ...)
 /* Generated stub for feerate_for_deadline */
 u32 feerate_for_deadline(const struct chain_topology *topo UNNEEDED, u32 blockcount UNNEEDED)
 { fprintf(stderr, "feerate_for_deadline called!\n"); abort(); }
-/* Generated stub for get_feerate_floor */
-u32 get_feerate_floor(const struct chain_topology *topo UNNEEDED)
-{ fprintf(stderr, "get_feerate_floor called!\n"); abort(); }
+/* Generated stub for get_relay_feerate_floor */
+u32 get_relay_feerate_floor(const struct chain_topology *topo UNNEEDED)
+{ fprintf(stderr, "get_relay_feerate_floor called!\n"); abort(); }
 /* Generated stub for hsm_secret_arg */
 char *hsm_secret_arg(const tal_t *ctx UNNEEDED,
 		     const char *arg UNNEEDED,

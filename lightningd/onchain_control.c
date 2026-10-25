@@ -1014,8 +1014,8 @@ static struct bitcoin_tx *onchaind_tx_unsigned(const tal_t *ctx,
 		/* Hmm, can't afford with recommended fee.  Try increasing deadline! */
 		block_target++;
 
-		/* If we can't even afford at FEERATE_FLOOR, something is wrong! */
-		if (feerate == FEERATE_FLOOR) {
+		/* If we can't even afford the floor, something is wrong! */
+		if (feerate == get_relay_feerate_floor(ld->topology)) {
 			amt = channel->our_config.dust_limit;
 			/* Not quite true, but Never Happens */
 			*fee = AMOUNT_SAT(0);

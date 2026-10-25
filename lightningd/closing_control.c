@@ -575,8 +575,8 @@ void peer_start_closingd(struct channel *channel, struct peer_fd *peer_fd)
 	feerate = mutual_close_feerate(ld->topology);
 	if (!feerate) {
 		feerate = final_commit_feerate / 2;
-		if (feerate < get_feerate_floor(ld->topology))
-			feerate = get_feerate_floor(ld->topology);
+		if (feerate < get_relay_feerate_floor(ld->topology))
+			feerate = get_relay_feerate_floor(ld->topology);
 	}
 
 	max_feerate = calc_max_close_feerate(ld, channel);

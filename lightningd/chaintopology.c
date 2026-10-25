@@ -435,8 +435,8 @@ u32 feerate_for_deadline(const struct chain_topology *topo, u32 blockcount)
 	u32 rate = interp_feerate(topo->feerates[0], blockcount);
 
 	/* 0 is a special value, meaning "don't know" */
-	if (rate && rate < topo->feerate_floor)
-		rate = topo->feerate_floor;
+	if (rate && rate < topo->relay_feerate_floor)
+		rate = topo->relay_feerate_floor;
 	return rate;
 }
 
@@ -460,12 +460,9 @@ u32 feerate_for_target(const struct chain_topology *topo, u64 deadline)
 
 	blocks = deadline - blockheight;
 
-	/* Over 200 blocks, we *always* use min fee! */
-	if (blocks > 200)
-		return FEERATE_FLOOR;
 	/* Over 100 blocks, use min fee bitcoind will accept */
 	if (blocks > 100)
-		return get_feerate_floor(topo);
+		return get_relay_feerate_floor(topo);
 
 	return feerate_for_deadline(topo, blocks);
 }
@@ -492,8 +489,8 @@ static void smooth_one_feerate(const struct chain_topology *topo,
 	if (abs((int)rate->rate - (int)feerate_smooth) > (0.1 * rate->rate))
 		rate->rate = feerate_smooth;
 
-	if (rate->rate < get_feerate_floor(topo))
-		rate->rate = get_feerate_floor(topo);
+	if (rate->rate < get_relay_feerate_floor(topo))
+		rate->rate = get_relay_feerate_floor(topo);
 
 	if (rate->rate != feerate_smooth)
 		log_debug(topo->log,
@@ -540,6 +537,7 @@ static bool different_blockcounts(struct chain_topology *topo,
 
 static void update_feerates(struct lightningd *ld,
 			    u32 feerate_floor,
+			    u32 relay_feerate_floor,
 			    const struct feerate_est *rates TAKES,
 			    void *arg UNUSED)
 {
@@ -548,6 +546,7 @@ static void update_feerates(struct lightningd *ld,
 	struct chain_topology *topo = ld->topology;
 
 	topo->feerate_floor = feerate_floor;
+	topo->relay_feerate_floor = relay_feerate_floor;
 
 	/* Don't bother updating if we got no feerates; we'd rather have
 	 * historical ones, if any. */
@@ -587,10 +586,11 @@ static void update_feerates(struct lightningd *ld,
 
 static void update_feerates_repeat(struct lightningd *ld,
 				   u32 feerate_floor,
+				   u32 relay_feerate_floor,
 				   const struct feerate_est *rates TAKES,
 				   void *unused)
 {
-	update_feerates(ld, feerate_floor, rates, unused);
+	update_feerates(ld, feerate_floor, relay_feerate_floor, rates, unused);
 	next_updatefee_timer(ld->topology);
 }
 
@@ -699,6 +699,11 @@ u32 penalty_feerate(struct chain_topology *topo)
 u32 get_feerate_floor(const struct chain_topology *topo)
 {
 	return topo->feerate_floor;
+}
+
+u32 get_relay_feerate_floor(const struct chain_topology *topo)
+{
+	return topo->relay_feerate_floor;
 }
 
 static struct command_result *json_feerates(struct command *cmd,
@@ -1407,16 +1412,18 @@ static void get_chaininfo_once(struct bitcoind *bitcoind, const char *chain,
 }
 
 struct feerates_once {
-	u32 feerate_floor;
+	u32 feerate_floor, relay_feerate_floor;
 	struct feerate_est *rates;
 };
 
 static void get_feerates_once(struct lightningd *ld,
 			      u32 feerate_floor,
+			      u32 relay_feerate_floor,
 			      const struct feerate_est *rates TAKES,
 			      struct feerates_once *once)
 {
 	once->feerate_floor = feerate_floor;
+	once->relay_feerate_floor = relay_feerate_floor;
 	once->rates = tal_dup_talarr(once, struct feerate_est, rates);
 	io_break(ld->topology);
 }
@@ -1572,7 +1579,8 @@ void setup_topology(struct chain_topology *topo)
 		   chaininfo->ibd, topo, true);
 
 	/* It's very useful to have feerates early */
-	update_feerates(topo->ld, feerates->feerate_floor, feerates->rates, NULL);
+	update_feerates(topo->ld, feerates->feerate_floor,
+			feerates->relay_feerate_floor, feerates->rates, NULL);
 
 	/* Get the first block, so we can initialize topography. */
 	bitcoind_getrawblockbyheight(topo, topo->bitcoind, blockscan_start,

@@ -1392,10 +1392,10 @@ static struct command_result *json_fundchannel_start(struct command *cmd,
 				    "Cannot estimate fees");
 	}
 
-	if (*feerate_non_anchor < get_feerate_floor(cmd->ld->topology)) {
+	if (*feerate_non_anchor < get_relay_feerate_floor(cmd->ld->topology)) {
 		return command_fail(cmd, LIGHTNINGD,
 				    "Feerate for non-anchor (%u perkw) below feerate floor %u perkw",
-				    *feerate_non_anchor, get_feerate_floor(cmd->ld->topology));
+				    *feerate_non_anchor, get_relay_feerate_floor(cmd->ld->topology));
 	}
 
 	peer = peer_by_id(cmd->ld, id);

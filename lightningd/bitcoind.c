@@ -183,6 +183,7 @@ static void bitcoin_plugin_send(struct bitcoind *bitcoind,
 struct estimatefee_call {
 	struct bitcoind *bitcoind;
 	void (*cb)(struct lightningd *ld, u32 feerate_floor,
+		   u32 relay_feerate_floor,
 		   const struct feerate_est *rates, void *);
 	void *cb_arg;
 };
@@ -254,7 +255,7 @@ static void estimatefees_callback(const char *buf, const jsmntok_t *toks,
 {
 	const jsmntok_t *resulttok, *floortok;
 	struct feerate_est *feerates;
-	u32 floor;
+	u32 floor, relay_floor;
 
 	resulttok = get_bitcoin_result(call->bitcoind, buf, toks, "estimatefees");
 
@@ -274,8 +275,6 @@ static void estimatefees_callback(const char *buf, const jsmntok_t *toks,
 
 	/* Convert to perkw */
 	floor = feerate_from_style(floor, FEERATE_PER_KBYTE);
-	if (floor < FEERATE_FLOOR)
-		floor = FEERATE_FLOOR;
 
 	/* Anything this high is a broken fee source, not a busy mempool:
 	 * clamp it rather than let it loose on the rest of lightningd. */
@@ -286,6 +285,14 @@ static void estimatefees_callback(const char *buf, const jsmntok_t *toks,
 			    floor, (u32)FEERATE_CEILING);
 		floor = FEERATE_CEILING;
 	}
+
+	/* Before raising floor to FEERATE_FLOOR, which would hide whether
+	 * bitcoind's minimum is above 1 sat/vB. */
+	relay_floor = feerate_relay_floor(floor);
+	if (relay_floor > FEERATE_CEILING)
+		relay_floor = FEERATE_CEILING;
+	if (floor < FEERATE_FLOOR)
+		floor = FEERATE_FLOOR;
 
 	/* FIXME: We could let this go below the dynamic floor, but we'd
 	 * need to know if the floor is because of their node's policy
@@ -301,11 +308,12 @@ static void estimatefees_callback(const char *buf, const jsmntok_t *toks,
 				    (u32)FEERATE_CEILING);
 			feerates[i].rate = FEERATE_CEILING;
 		}
-		if (feerates[i].rate < floor)
-			feerates[i].rate = floor;
+		if (feerates[i].rate < relay_floor)
+			feerates[i].rate = relay_floor;
 	}
 
-	call->cb(call->bitcoind->ld, floor, feerates, call->cb_arg);
+	call->cb(call->bitcoind->ld, floor, relay_floor, feerates,
+		 call->cb_arg);
 	tal_free(call);
 }
 
@@ -313,6 +321,7 @@ void bitcoind_estimate_fees_(const tal_t *ctx,
 			     struct bitcoind *bitcoind,
 			     void (*cb)(struct lightningd *ld,
 					u32 feerate_floor,
+					u32 relay_feerate_floor,
 					const struct feerate_est *feerates,
 					void *arg),
 			     void *cb_arg)
