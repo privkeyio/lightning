@@ -38,13 +38,15 @@ git clone https://github.com/privkeyio/lightning.git
 
 ## Releases
 
-Published under [Releases](https://github.com/privkeyio/lightning/releases) with signed checksum files covering every artifact:
+Published under [Releases](https://github.com/privkeyio/lightning/releases) with signed checksum files covering every artifact, one for amd64 (`SHA256SUMS-<version>`) and one for arm64 (`SHA256SUMS-<version>-arm64`). For amd64:
 
 ```bash
 gpg --import privkeyio-signing-key.asc
-gpg --verify SHA256SUMS-*.asc SHA256SUMS-*
-sha256sum -c SHA256SUMS-* --ignore-missing
+gpg --verify SHA256SUMS-<version>.asc SHA256SUMS-<version>
+sha256sum -c SHA256SUMS-<version> --ignore-missing
 ```
+
+For arm64, use `SHA256SUMS-<version>-arm64` and its `.asc` the same way.
 
 The signing key is `A47D 99B6 DB0D 715D 40C5 9A20 23AE 8A8E A7E2 4E38`. From `v26.06.9-blake2b.8` on, releases are signed by its subkey `1004 97C5 8727 107D 9B9D A0FA F160 CC14 F64F 8EF8`.
 
