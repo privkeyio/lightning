@@ -76,6 +76,16 @@ static inline u32 feerate_floor_check(void)
 	return FEERATE_FLOOR;
 }
 
+/* The lowest feerate we should pay ourselves, given bitcoind's floor in
+ * perkw (ie. a minimum of at most 4 * floor_perkw sat/kvB).
+ *
+ * At 1 sat/vB this is FEERATE_FLOOR.  Above it FEERATE_FLOOR's slack no
+ * longer covers the rounding, so we use the worst case: bitcoind needs
+ * ceil(minimum * ceil(weight / 4) / 1000), we pay (feerate * weight) // 1000,
+ * and feerate * weight / 1000 - 1 >= minimum * (weight + 3) / 4000 + 1 is
+ * hardest to satisfy at MINIMUM_TX_WEIGHT. */
+u32 feerate_relay_floor(u32 floor_perkw);
+
 u32 feerate_from_style(u32 feerate, enum feerate_style style);
 u32 feerate_to_style(u32 feerate_perkw, enum feerate_style style);
 const char *feerate_style_name(enum feerate_style style);
