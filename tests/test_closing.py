@@ -640,14 +640,21 @@ def test_penalty_inhtlc(node_factory, bitcoind, executor, chainparams, anchors):
     check_utxos_channel(l2, [channel_id], expected_2, tags)
 
 
+@pytest.mark.parametrize("minrelaytxfee", [None, 1500, 2000, 2500, 3500])
 @pytest.mark.parametrize("anchors", [False, True])
-def test_penalty_htlc_min_feerate(node_factory, bitcoind, executor, chainparams, anchors):
+def test_penalty_htlc_min_feerate(node_factory, bitcoind, executor, chainparams, anchors, minrelaytxfee):
     """As test_penalty_inhtlc, but with every feerate estimate at the floor:
     the penalty for the HTLC must still pay the minimum relay fee, so its
-    weight has to include the revocation pubkey in its witness."""
+    weight has to include the revocation pubkey in its witness, and the
+    fee has to round up as bitcoind's does."""
 
     if chainparams['elements'] and anchors:
         pytest.skip('elementsd anchors unsupported')
+
+    if minrelaytxfee:
+        bitcoind.stop()
+        bitcoind.cmd_line += ['-minrelaytxfee={:.8f}'.format(minrelaytxfee / 10**8)]
+        bitcoind.start()
 
     opts = {'dev-disable-commit-after': 1,
             'feerates': (253, 253, 253, 253)}
