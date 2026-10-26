@@ -923,6 +923,14 @@ def splice_in(l1, l2, amount=100000):
     return result['txid']
 
 
+def closed_on(bitcoind):
+    """The funding transaction whose output the last block's one
+    transaction spends: what a mutual close just mined closed."""
+    block = bitcoind.rpc.getblock(bitcoind.rpc.getbestblockhash(), 2)
+    close = only_one(block['tx'][1:])
+    return only_one(close['vin'])['txid']
+
+
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
 @pytest.mark.parametrize("locked", [False, True])
@@ -1106,7 +1114,8 @@ def test_independent_secrets_cap_refuses_splice(node_factory, bitcoind, executor
     max-independent-secrets has it refused: BOLT 2 doesn't allow the
     shutdown we're about to send while a splice is unlocked.  The close
     then completes on the funding we had.  (commit-time on l1 holds its
-    shutdown back, so the peer's stfu comes first.)"""
+    shutdown back, so the peer's stfu comes first.)  It checks what
+    happens rather than the order of channeld's messages."""
     l1, l2 = node_factory.line_graph(2, fundamount=1000000,
                                      wait_for_announce=True,
                                      opts=[{**ON, 'may_reconnect': True,
@@ -1120,6 +1129,7 @@ def test_independent_secrets_cap_refuses_splice(node_factory, bitcoind, executor
         l1.pay(l2, 10_000_000)
         settle(l1, l2)
     assert reported_stored(l1, l2) == 9
+    funding_txid = only_one(l1.rpc.listpeerchannels(l2.info['id'])['channels'])['funding_txid']
 
     # l2 asks to splice as soon as it has fulfilled this payment, so its
     # stfu follows the revoke_and_ack that reaches the limit.
@@ -1135,7 +1145,6 @@ def test_independent_secrets_cap_refuses_splice(node_factory, bitcoind, executor
     fut.result(TIMEOUT)
 
     l1.daemon.wait_for_logs([r'max-independent-secrets=11: closing the channel',
-                             r'Now dealing with deferred WIRE_CHANNELD_SEND_SHUTDOWN',
                              r'peer_in WIRE_STFU',
                              r'Splice refused: the channel is closing'])
     l2.daemon.wait_for_log(r'Received WARNING .*Splice refused: the channel is closing')
@@ -1143,6 +1152,71 @@ def test_independent_secrets_cap_refuses_splice(node_factory, bitcoind, executor
         n.daemon.wait_for_log(r'to CLOSINGD_COMPLETE')
     bitcoind.generate_block(1, wait_for_mempool=1)
     l1.daemon.wait_for_log(r'to ONCHAIN')
+    # The close spent the funding we had: no splice was agreed.
+    assert closed_on(bitcoind) == funding_txid
+    assert not l1.daemon.is_in_log(r'peer_out WIRE_SPLICE_ACK')
     assert not l1.daemon.is_in_log(r'CHANNELD_SHUTTING_DOWN to CHANNELD_AWAITING_SPLICE')
     assert not l1.daemon.is_in_log(r'unexpected value CHANNELD_SHUTTING_DOWN')
+    assert not l1.daemon.is_in_log('closing it unilaterally')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_cap_refuses_splice_at_lock(node_factory, bitcoind, executor):
+    """The same when the close starts at a splice lock, having waited for
+    it: a peer that starts a new splice as soon as the splice locks has it
+    refused, and the close completes on the funding that locked.  The
+    plugin holds l1's lightningd at the lock, as a slow disk or a backup
+    plugin would, so the peer's new splice reaches channeld before
+    lightningd has handled the lock: channeld waits for it."""
+    stall = str(Path(__file__).parent / 'plugins' / 'dbwrite_stall.py')
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     announce_channels=False,
+                                     opts=[{**ON, 'max-independent-secrets': 20,
+                                            'may_reconnect': True,
+                                            'allow_warning': True,
+                                            'plugin': stall},
+                                           {**SENDER, 'may_reconnect': True,
+                                            'allow_warning': True}])
+    l2.fundwallet(500000)
+    splice_txid = splice_in(l1, l2)
+    while (reported_stored(l1, l2) or 0) < 20:
+        pay_direct(l1, l2, 10_000_000)
+        settle(l1, l2)
+    l1.daemon.wait_for_log('Reached max-independent-secrets=20, but a splice'
+                           ' is pending')
+
+    chan_id = l2.get_channel_id(l1)
+    funds = l2.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
+    l1.rpc.call('dbwrite-stall-arm', {'pattern': 'DELETE FROM channel_funding_inflights',
+                                      'delay': 8})
+    l1.daemon.logs_catchup()
+    start = len(l1.daemon.logs)
+
+    bitcoind.generate_block(6, wait_for_mempool=splice_txid)
+    l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    l1.daemon.wait_for_log(r'dbwrite-stall: stalling')
+    # l2 starts a new splice while l1's lightningd is still handling the
+    # lock.  splice_init doesn't return once the peer disconnects, so we
+    # don't wait for it.
+    executor.submit(l2.rpc.splice_init, chan_id, 100000, funds['psbt'])
+
+    # The close started at the lock, before the stall.
+    l1.daemon.wait_for_log(r'dbwrite-stall: done')
+    assert l1.daemon.is_in_log(r'max-independent-secrets=20: closing the channel',
+                               start=start)
+    # The new splice is refused, not accepted (or, if l2's stfu came after
+    # our shutdown, l2 cancels it) ...
+    wait_for(lambda: l1.daemon.is_in_log(r'Splice refused: the channel is closing'
+                                         r'|peer_out WIRE_SPLICE_ACK', start=start)
+             or l2.daemon.is_in_log(r'Splice cancelled: the channel is closing'))
+    assert not l1.daemon.is_in_log(r'peer_out WIRE_SPLICE_ACK', start=start)
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'to CLOSINGD_COMPLETE')
+    assert not l1.daemon.is_in_log(r'CHANNELD_SHUTTING_DOWN to CHANNELD_AWAITING_SPLICE')
+    assert not l1.daemon.is_in_log(r'unexpected value CHANNELD_SHUTTING_DOWN')
+    # ... and the close spent the funding that locked.
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'to ONCHAIN')
+    assert closed_on(bitcoind) == splice_txid
     assert not l1.daemon.is_in_log('closing it unilaterally')
