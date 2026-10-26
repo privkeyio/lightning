@@ -18,6 +18,7 @@ from utils import (
 )
 
 from pathlib import Path
+import os
 import pytest
 import re
 import time
@@ -124,6 +125,36 @@ def test_independent_secrets_negotiated(node_factory, bitcoind):
     with pytest.raises(RpcError, match=r'Did not support channel_type'):
         l2.rpc.fundchannel(l3.info['id'], 10**6,
                            channel_type=[12, 22, 514, OPT_INDEPENDENT_SECRETS])
+
+
+@pytest.mark.parametrize("bit", [OPT_INDEPENDENT_SECRETS + 1, OPT_INDEPENDENT_SECRETS])
+def test_independent_secrets_plugin_featurebits(node_factory, bit):
+    """A plugin's featurebits can't turn it on behind --independent-secrets'
+    back, or set its even bit, which is never sent in init or
+    node_announcement: the plugin is refused, with or without the option."""
+    plugin = os.path.join(os.path.dirname(__file__), 'plugins/independent_secrets_featurebits.py')
+    l1 = node_factory.get_node(options={'plugin': plugin}, start=False)
+    l2 = node_factory.get_node(options={**ON, 'plugin': plugin}, start=False)
+    l3 = node_factory.get_node(options=ON)
+    for node in (l1, l2):
+        node.daemon.env['IS_FEATUREBIT'] = str(bit)
+        node.start()
+
+    for node, offered in ((l1, False), (l2, True)):
+        # Refused at startup, so before start() returns.
+        assert node.daemon.is_in_log(r"Killing plugin: Custom featurebits can't set "
+                                     r"option_independent_secrets \(bits 266/267\): use --independent-secrets")
+        assert not any(p['name'] == plugin for p in node.rpc.plugin('list')['plugins'])
+        for place in ('init', 'node'):
+            bits = int(node.rpc.getinfo()['our_features'][place], 16)
+            assert (bits >> (OPT_INDEPENDENT_SECRETS + 1)) & 1 == offered
+            assert (bits >> OPT_INDEPENDENT_SECRETS) & 1 == 0
+
+    # So without the option, a channel with a peer which has it doesn't
+    # get it.
+    node_factory.join_nodes([l1, l3])
+    assert not has_independent_secrets(l1, l3)
+    assert not has_independent_secrets(l3, l1)
 
 
 @pytest.mark.openchannel('v1')

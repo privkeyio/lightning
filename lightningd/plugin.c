@@ -1740,6 +1740,21 @@ static const char *plugin_parse_getmanifest_response(const char *buffer,
 			}
 		}
 
+		/* option_independent_secrets is turned on by
+		 * --independent-secrets alone, and its even bit is never
+		 * set in init or node_announcement. */
+		for (int i = 0; i < ARRAY_SIZE(fset->bits); i++) {
+			if (feature_offered(fset->bits[i],
+					    OPT_INDEPENDENT_SECRETS))
+				return tal_fmt(plugin,
+					       "Custom featurebits can't set"
+					       " option_independent_secrets"
+					       " (bits %d/%d): use"
+					       " --independent-secrets",
+					       OPT_INDEPENDENT_SECRETS,
+					       OPTIONAL_FEATURE(OPT_INDEPENDENT_SECRETS));
+		}
+
 		if (plugin->dynamic && have_featurebits) {
 			return tal_fmt(plugin,
 				    "Custom featurebits only allows for non-dynamic "
