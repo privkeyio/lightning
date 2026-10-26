@@ -2844,7 +2844,7 @@ static void independent_secrets_cap(struct channel *channel, bool backstop)
 		}
 	} else if (channel->state == CHANNELD_AWAITING_SPLICE
 		   || !list_empty(&channel->inflights)) {
-		/* BOLT 2 doesn't allow `shutdown` while a splice is pending,
+		/* `shutdown` isn't allowed while a splice is pending (BOLT 2),
 		 * so we start the close once it locks (see
 		 * handle_peer_splice_locked).  Nobody asked us to close, so we
 		 * don't try to cut the splice short for it; the backstop below

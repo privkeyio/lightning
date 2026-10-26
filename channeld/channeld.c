@@ -1095,8 +1095,8 @@ static void maybe_send_shutdown(struct peer *peer)
 	billboard_update(peer);
 }
 
-/* BOLT 2 doesn't allow `splice_init` after `shutdown`, nor `shutdown` while
- * a splice isn't locked.  So a channel stops splicing once either side has
+/* Under BOLT 2, neither `splice_init` after `shutdown`, nor `shutdown` while
+ * a splice isn't locked, is allowed.  So a channel stops splicing once either side has
  * sent `shutdown`, or once lightningd has asked us to send one (which it can
  * do by itself, say at max-independent-secrets): otherwise that shutdown
  * would have to wait for a splice that may never lock.  A shutdown already
