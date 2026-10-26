@@ -476,6 +476,11 @@ static void check_mutual_channel_ready(const struct peer *peer)
 		lock_signer_outpoint(&peer->channel->funding);
 }
 
+static u8 *master_wait_sync_reply(const tal_t *ctx,
+				  struct peer *peer,
+				  const u8 *msg,
+				  int replytype);
+
 /* Call this method when splice_locked status are changed. If both sides have
  * splice_locked'ed than this function consumes the `splice_locked_ready` values
  * and considers the channel funding to be switched to the splice tx. */
@@ -562,7 +567,13 @@ static void check_mutual_splice_locked(struct peer *peer)
 	msg = towire_channeld_got_splice_locked(NULL, inflight->amnt,
 						inflight->splice_amnt,
 						&inflight->outpoint.txid);
-	wire_sync_write(MASTER_FD, take(msg));
+	/* If max-independent-secrets was reached while the splice was
+	 * pending, lightningd starts the close it held back before it
+	 * replies.  So we keep its shutdown request, and handle it before
+	 * anything else the peer sends, such as a new splice, which we then
+	 * refuse. */
+	master_wait_sync_reply(tmpctx, peer, take(msg),
+			       WIRE_CHANNELD_GOT_SPLICE_LOCKED_REPLY);
 
 	peer->splice_state->inflights = tal_free(peer->splice_state->inflights);
 	peer->splice_state->count = 0;
@@ -7547,6 +7558,7 @@ static void req_in(struct peer *peer, const u8 *msg)
 	case WIRE_CHANNELD_GOT_REVOKE_REPLY:
 	case WIRE_CHANNELD_GOT_CHANNEL_READY:
 	case WIRE_CHANNELD_GOT_SPLICE_LOCKED:
+	case WIRE_CHANNELD_GOT_SPLICE_LOCKED_REPLY:
 	case WIRE_CHANNELD_GOT_ANNOUNCEMENT:
 	case WIRE_CHANNELD_GOT_SHUTDOWN:
 	case WIRE_CHANNELD_SHUTDOWN_COMPLETE:

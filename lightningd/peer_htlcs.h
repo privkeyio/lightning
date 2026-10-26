@@ -33,6 +33,9 @@ void independent_secrets_arm_close_timers(struct lightningd *ld);
  * frees it, so a caller must not touch the channel afterwards. */
 void check_independent_secrets_cap(struct channel *channel);
 
+/* The same, without the unilateral close: it never frees the channel. */
+void start_independent_secrets_close(struct channel *channel);
+
 void update_per_commit_point(struct channel *channel,
 			     const struct pubkey *per_commitment_point);
 
