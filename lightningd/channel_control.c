@@ -1360,7 +1360,18 @@ static void handle_peer_splice_locked(struct channel *channel, const u8 *msg)
 		lockin_complete(channel, CHANNELD_AWAITING_SPLICE);
 
 	/* If max-independent-secrets was reached while the splice was
-	 * pending, the mutual close we held back can start now. */
+	 * pending, the mutual close we held back can start now.  Start it
+	 * before we reply: channeld, waiting for the reply, then handles the
+	 * shutdown request before anything else the peer sends, such as a
+	 * new splice, which it refuses.  The backstop, which can free the
+	 * channel, waits until after the reply. */
+	if (channel_type_has(channel->type, OPT_INDEPENDENT_SECRETS))
+		start_independent_secrets_close(channel);
+
+	if (channel->owner)
+		subd_send_msg(channel->owner,
+			      take(towire_channeld_got_splice_locked_reply(NULL)));
+
 	if (channel_type_has(channel->type, OPT_INDEPENDENT_SECRETS))
 		check_independent_secrets_cap(channel);
 }
@@ -1823,6 +1834,7 @@ static unsigned channel_msg(struct subd *sd, const u8 *msg, const int *fds)
 	case WIRE_CHANNELD_FAIL_HTLC:
 	case WIRE_CHANNELD_GOT_COMMITSIG_REPLY:
 	case WIRE_CHANNELD_GOT_REVOKE_REPLY:
+	case WIRE_CHANNELD_GOT_SPLICE_LOCKED_REPLY:
 	case WIRE_CHANNELD_SENDING_COMMITSIG_REPLY:
 	case WIRE_CHANNELD_SEND_SHUTDOWN:
 	case WIRE_CHANNELD_DEV_REENABLE_COMMIT:

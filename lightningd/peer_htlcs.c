@@ -2917,6 +2917,11 @@ void check_independent_secrets_cap(struct channel *channel)
 	independent_secrets_cap(channel, true);
 }
 
+void start_independent_secrets_close(struct channel *channel)
+{
+	independent_secrets_cap(channel, false);
+}
+
 void peer_got_revoke(struct channel *channel, const u8 *msg)
 {
 	u64 revokenum;
