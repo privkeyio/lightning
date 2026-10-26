@@ -282,6 +282,22 @@ struct channel_type *desired_channel_type(const tal_t *ctx,
 	return type;
 }
 
+/* We add it to a type the caller named whenever both of us have it, but
+ * BOLT 2 says the opener SHOULD NOT set a type containing a feature which
+ * was not negotiated. */
+const char *independent_secrets_unnegotiated(const struct lightningd *ld,
+					     const struct peer *peer,
+					     const struct channel_type *ctype)
+{
+	if (ld->dev_any_channel_type
+	    || !channel_type_has(ctype, OPT_INDEPENDENT_SECRETS)
+	    || feature_negotiated(ld->our_features, peer->their_features,
+				  OPT_INDEPENDENT_SECRETS))
+		return NULL;
+	return "channel_type has option_independent_secrets, which the peer"
+		" doesn't offer";
+}
+
 /* The fork's BOLT 3 (lightning-blake2b/bolts#17) says that a node whose
  * per-commitment secrets don't come from the seed MUST include
  * option_independent_secrets in the channel_type it proposes, and MUST NOT

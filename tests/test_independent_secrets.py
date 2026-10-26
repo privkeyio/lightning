@@ -119,12 +119,38 @@ def test_independent_secrets_negotiated(node_factory, bitcoind):
     bitcoind.generate_block(1, wait_for_mempool=1)
     sync_blockheight(bitcoind, [l2])
 
-    # And a node which doesn't offer it refuses it (fundchannel uses
+    # But we don't ask a node which doesn't offer it (fundchannel uses
     # openchannel_init with dual-funding, fundchannel_start without).
     l2.rpc.connect(l3.info['id'], 'localhost', l3.port)
-    with pytest.raises(RpcError, match=r'Did not support channel_type'):
+    with pytest.raises(RpcError, match=r"channel_type has option_independent_secrets, which the peer doesn't offer"):
         l2.rpc.fundchannel(l3.info['id'], 10**6,
                            channel_type=[12, 22, 514, OPT_INDEPENDENT_SECRETS])
+    assert l3.rpc.listpeerchannels(l2.info['id'])['channels'] == []
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+def test_independent_secrets_refused_unless_both_offer(node_factory):
+    """Asked for it anyway (--dev-any-channel-type lets a node ask for any
+    type, and also accept any, so only the askers have it), a node refuses
+    it unless both offer it: without the option because it doesn't know it,
+    and with it because the peer doesn't offer it."""
+    l1, l2, l3, l4 = node_factory.get_nodes(4, opts=[{**ON, 'dev-any-channel-type': None},
+                                                     {},
+                                                     {'dev-any-channel-type': None},
+                                                     ON])
+    ctype = [12, 22, 514, OPT_INDEPENDENT_SECRETS]
+
+    l1.fundwallet(10**7)
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    with pytest.raises(RpcError, match=r'Did not support channel_type'):
+        l1.rpc.fundchannel(l2.info['id'], 10**6, channel_type=ctype)
+
+    l3.fundwallet(10**7)
+    l3.rpc.connect(l4.info['id'], 'localhost', l4.port)
+    with pytest.raises(RpcError, match=r'option_independent_secrets was not negotiated'):
+        l3.rpc.fundchannel(l4.info['id'], 10**6, channel_type=ctype)
+    l4.daemon.wait_for_log(r'option_independent_secrets was not negotiated')
 
 
 @pytest.mark.parametrize("bit", [OPT_INDEPENDENT_SECRETS + 1, OPT_INDEPENDENT_SECRETS])

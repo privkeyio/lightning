@@ -1479,6 +1479,11 @@ static struct command_result *json_fundchannel_start(struct command *cmd,
 				    OPT_INDEPENDENT_SECRETS))
 		channel_type_set_independent_secrets(fc->channel_type);
 
+	err = independent_secrets_unnegotiated(cmd->ld, peer,
+					       fc->channel_type);
+	if (err)
+		return command_fail(cmd, JSONRPC2_INVALID_PARAMS, "%s", err);
+
 	err = dev_independent_secrets_refused(cmd->ld, fc->channel_type);
 	if (err)
 		return command_fail(cmd, JSONRPC2_INVALID_PARAMS, "%s", err);
