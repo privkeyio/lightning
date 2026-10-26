@@ -514,6 +514,39 @@ def test_independent_secrets_penalty(node_factory, bitcoind, executor, restart):
 
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
+def test_independent_secrets_penalty_we_opened(node_factory, bitcoind):
+    """The same with the roles swapped: l1 opens the channel and stores
+    l2's secrets, and l2 cheats.  The commitment number is unmasked with
+    the opener's payment basepoint first, which only a channel we opened
+    tells apart from one we accepted."""
+    l1, l2 = node_factory.line_graph(2, opts=[ON, {**CHEATER_OPTS, **SENDER}])
+    assert only_one(l1.rpc.listpeerchannels()['channels'])['opener'] == 'local'
+    assert has_independent_secrets(l1, l2)
+
+    # Give the cheater a balance, and a revoked state to broadcast.
+    l1.pay(l2, 200_000_000)
+    settle(l1, l2)
+    old_tx = l2.rpc.dev_sign_last_tx(l1.info['id'])['tx']
+    old_num = their_revocations(l1, l2)
+
+    pay_back_and_forth(l1, l2, 4)
+    revocations = their_revocations(l1, l2)
+    assert revocations > old_num + 4
+    assert old_num in stored_secrets(l1)
+
+    bitcoind.rpc.sendrawtransaction(old_tx)
+    bitcoind.generate_block(1)
+    l1.daemon.wait_for_log(' to ONCHAIN')
+    wait_for(lambda: l1.daemon.is_in_log(f'commitnum = {old_num}, revocations_received = {revocations}'))
+    ((_, txid, blocks),) = l1.wait_for_onchaind_txs(
+        ('OUR_PENALTY_TX', 'THEIR_REVOKED_UNILATERAL/DELAYED_CHEAT_OUTPUT_TO_THEM'))
+    assert blocks == 0
+    bitcoind.generate_block(1, wait_for_mempool=txid)
+    l1.daemon.wait_for_log(r'Resolved THEIR_REVOKED_UNILATERAL/DELAYED_CHEAT_OUTPUT_TO_THEM by our proposal OUR_PENALTY_TX')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
 def test_independent_secrets_penalty_from_shachain(node_factory, bitcoind):
     """Once a peer's secrets outgrow the shachain, those before stay in it:
     a revoked commitment whose secret is one of them is punished from the
