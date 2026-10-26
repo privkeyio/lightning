@@ -3416,6 +3416,7 @@ static const u8 *peer_expect_msg_four(const tal_t *ctx,
  * before resuming splice negotiation, so we need a way to process it in this
  * order. */
 static void peer_in(struct peer *peer, const u8 *msg);
+static void req_in(struct peer *peer, const u8 *msg);
 
 /* The question of "who signs splice commitments first" is the same order as the
  * splice `tx_signature`s are. This function handles sending & receiving the
@@ -6862,9 +6863,21 @@ static void peer_reconnect(struct peer *peer,
 	 *       - MUST wait to receive the other node's `channel_reestablish`
 	 *         message before sending any other messages for that channel.
 	 */
-	/* LND doesn't wait. */
-	for (size_t i = 0; i < tal_count(premature_msgs); i++)
+	/* LND doesn't wait.  Between those messages, handle what lightningd
+	 * has asked meanwhile first, as the main loop does: a revocation that
+	 * reaches max-independent-secrets has it ask for a shutdown, which
+	 * must come before a splice the peer sent after that revocation. */
+	for (size_t i = 0; i < tal_count(premature_msgs); i++) {
+		const u8 *req;
+
+		while ((req = msg_dequeue(peer->from_master)) != NULL) {
+			status_debug("Now dealing with deferred %s",
+				     channeld_wire_name(fromwire_peektype(req)));
+			req_in(peer, req);
+			tal_free(req);
+		}
 		peer_in(peer, premature_msgs[i]);
+	}
 	tal_free(premature_msgs);
 }
 
