@@ -88,9 +88,10 @@ then if it can. If the mutual close hasn't finished within 48 hours,
 lightningd closes the channel unilaterally, as `close` does by default. A
 restart resets neither the 10% nor the 48 hours, but after one the peer gets
 at least 10 minutes to finish the close, however long lightningd was down, and
-a clock that has gone back counts as no time having passed. Like `close`'s own
-timeout, that of a close already started stays even if the limit is then set
-to 0. A channel the peer
+a clock that has gone back counts as no time having passed. So a close already
+started keeps its timeout even if the limit is then set to 0 (which takes a
+restart), unlike `close`'s own timeout, which a restart forgets. A channel the
+peer
 leased from us is closed at its first update after the lease expires, or
 unilaterally before then once the peer has made us store 10% more than the
 limit: our funds stay locked until the lease expires either way. A channel
