@@ -1259,6 +1259,8 @@ def test_independent_secrets_cap_refuses_splice(node_factory, bitcoind, executor
     assert not l1.daemon.is_in_log('closing it unilaterally')
 
 
+@pytest.mark.skipif(os.getenv('TEST_DB_PROVIDER', 'sqlite3') != 'sqlite3',
+                    reason="Only sqlite3 implements the db_write_hook currently")
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
 def test_independent_secrets_cap_refuses_splice_at_lock(node_factory, bitcoind, executor):
