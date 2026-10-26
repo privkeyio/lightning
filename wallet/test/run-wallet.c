@@ -107,6 +107,9 @@ u64 channel_mvt_index_created(struct lightningd *ld UNNEEDED,
 			      struct amount_msat credit UNNEEDED,
 			      struct amount_msat debit UNNEEDED)
 { fprintf(stderr, "channel_mvt_index_created called!\n"); abort(); }
+/* Generated stub for channel_start_mutual_close */
+bool channel_start_mutual_close(struct channel *channel UNNEEDED, const char *why UNNEEDED)
+{ fprintf(stderr, "channel_start_mutual_close called!\n"); abort(); }
 /* Generated stub for channel_unsaved_close_conn */
 void channel_unsaved_close_conn(struct channel *channel UNNEEDED, const char *why UNNEEDED)
 { fprintf(stderr, "channel_unsaved_close_conn called!\n"); abort(); }
