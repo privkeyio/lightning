@@ -850,12 +850,16 @@ def test_independent_secrets_cap_close_restart(node_factory, executor):
     assert only_one(l2.db_query('SELECT independent_secrets_close_at FROM channels'))['independent_secrets_close_at'] == 20
 
     time.sleep(10)
+    l2.daemon.logs_catchup()
+    start = len(l2.daemon.logs)
     l2.restart()
     # Logged while starting up, before the log search begins.
     line = l2.daemon.is_in_log(r'The mutual close started at max-independent-secrets'
-                               r' has [0-9]+ seconds left')
+                               r' has [0-9]+ seconds left', start=start)
     assert int(re.search(r'has ([0-9]+) seconds left', line).group(1)) <= 20
-    l2.daemon.wait_for_log(r"hasn't finished in 30 seconds: closing the channel unilaterally")
+    # So can this be, on a slow machine (valgrind).
+    wait_for(lambda: l2.daemon.is_in_log(r"hasn't finished in 30 seconds: closing the"
+                                         r" channel unilaterally", start=start))
     l2.wait_for_channel_onchain(l1.info['id'])
 
 
@@ -880,6 +884,8 @@ def test_independent_secrets_cap_close_restart_late(node_factory, executor, how)
     l2.daemon.wait_for_log(r'Stored 20 of the peer.s per-commitment secrets,'
                            r' max-independent-secrets=20: closing the channel')
 
+    l2.daemon.logs_catchup()
+    start = len(l2.daemon.logs)
     l2.stop()
     if how == "overdue":
         time.sleep(32)
@@ -889,8 +895,11 @@ def test_independent_secrets_cap_close_restart_late(node_factory, executor, how)
         expect = 30
     l2.start()
     assert l2.daemon.is_in_log(r'The mutual close started at max-independent-secrets'
-                               r' has {} seconds left'.format(expect))
-    l2.daemon.wait_for_log(r"hasn't finished in 30 seconds: closing the channel unilaterally")
+                               r' has {} seconds left'.format(expect), start=start)
+    # With 3 seconds left, a slow start (valgrind) can log this before the
+    # log search begins, so look from the restart.
+    wait_for(lambda: l2.daemon.is_in_log(r"hasn't finished in 30 seconds: closing the"
+                                         r" channel unilaterally", start=start))
     l2.wait_for_channel_onchain(l1.info['id'])
 
 
