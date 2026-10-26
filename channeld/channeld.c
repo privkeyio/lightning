@@ -4707,9 +4707,12 @@ static void splice_accepter(struct peer *peer, const u8 *inmsg)
 				 "Can't splice while shutting down");
 
 	/* Nor once we are going to send ours, unless it is waiting for a
-	 * signed splice to lock (see channel_closing()).  We warn and close the
-	 * connection, as for a peer that has sent `shutdown`, and reestablish
-	 * with ours. */
+	 * signed splice to lock (see channel_closing()).  BOLT 2 says to
+	 * refuse with `tx_abort` when the peer hasn't sent `shutdown`, but we
+	 * warn and reconnect here too: after a tx_abort, channeld restarts on
+	 * the same connection, and the new one can't tell whether our
+	 * `shutdown` went out, so it could send it twice or never;
+	 * reestablish retransmits it, as BOLT 2 says. */
 	if (channel_closing(peer))
 		peer_failed_warn(peer->pps, &peer->channel_id,
 				 "Splice refused: the channel is closing");
