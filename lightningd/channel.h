@@ -1043,6 +1043,12 @@ struct channel_type *desired_channel_type(const tal_t *ctx,
 					  const struct feature_set *our_features,
 					  const u8 *their_features);
 
+/* Why we won't ask peer for a channel of this type, or NULL if we will: it
+ * has option_independent_secrets, which peer doesn't offer. */
+const char *independent_secrets_unnegotiated(const struct lightningd *ld,
+					     const struct peer *peer,
+					     const struct channel_type *ctype);
+
 /* Why --dev-independent-secrets-sender won't open or accept a channel of this
  * type, or NULL if it will. */
 const char *dev_independent_secrets_refused(const struct lightningd *ld,

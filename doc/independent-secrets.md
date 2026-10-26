@@ -30,7 +30,10 @@ generates its own: they still come from its shachain.
   channel uses the add-on when both peers signal it, and it is added to a `channel_type` you name to
   `fundchannel` or `openchannel_init` as well, since it changes nothing but
   what the receiver accepts. With a peer that doesn't signal it, the channel
-  opens the normal way.
+  opens the normal way: a `channel_type` you name with the add-on is refused,
+  and so is one with it from such a peer. Outside developer mode, only the
+  option sets either bit: a plugin whose `featurebits` include 266 or 267 is
+  refused.
 - **Storage.** A secret still goes in the channel's shachain if it fits it, as
   it always does from a peer which uses one, so with such a peer nothing
   changes, down to what a static channel backup can do. From the first secret
