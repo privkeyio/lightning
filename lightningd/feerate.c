@@ -88,7 +88,7 @@ static struct command_result *param_feerate_unchecked(struct command *cmd,
 		**feerate = feerate_for_deadline(cmd->ld->topology, 6);
 		return NULL;
 	} else if (json_tok_streq(buffer, tok, "minimum")) {
-		**feerate = get_feerate_floor(cmd->ld->topology);
+		**feerate = get_relay_feerate_floor(cmd->ld->topology);
 		return NULL;
 	}
 

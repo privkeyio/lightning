@@ -2343,9 +2343,9 @@ def test_bitcoind_feerate_floor(node_factory, bitcoind, anchors):
         "perkb": {
             "opening": 30000,
             # This has increased (rounded up)
-            "mutual_close": 20004,
+            "mutual_close": 20176,
             # This has increased (rounded up)
-            "unilateral_anchor_close": 20004,
+            "unilateral_anchor_close": 20176,
             # This has increased (rounded up)
             "unilateral_close": 44000,
             "penalty": 30000,
@@ -2364,14 +2364,14 @@ def test_bitcoind_feerate_floor(node_factory, bitcoind, anchors):
                            "feerate": 30000,
                            "smoothed_feerate": 30000},
                           {"blockcount": 100,
-                           "feerate": 20004,
-                           "smoothed_feerate": 20004}],
+                           "feerate": 20176,
+                           "smoothed_feerate": 20176}],
         },
         "onchain_fee_estimates": {
             "opening_channel_satoshis": 5265,
             # This increases too
-            "mutual_close_satoshis": 3365,
-            "unilateral_close_satoshis": 5561 if anchors else 6578,
+            "mutual_close_satoshis": 3394,
+            "unilateral_close_satoshis": 5608 if anchors else 6578,
             "unilateral_close_nonanchor_satoshis": 6578,
             "htlc_timeout_satoshis": 7293,
             "htlc_success_satoshis": 7733,
@@ -2387,15 +2387,15 @@ def test_bitcoind_feerate_floor(node_factory, bitcoind, anchors):
     assert l1.rpc.feerates('perkb') == {
         "perkb": {
             # This has increased (rounded up!)
-            "opening": 30004,
+            "opening": 30252,
             # This has increased (rounded up!)
-            "mutual_close": 30004,
+            "mutual_close": 30252,
             # This has increased (rounded up!)
-            "unilateral_anchor_close": 30004,
+            "unilateral_anchor_close": 30252,
             "unilateral_close": 44000,
             # This has increased (rounded up!)
-            "penalty": 30004,
-            "splice": 30024,
+            "penalty": 30252,
+            "splice": 30272,
             # This has increased (rounded up)
             "min_acceptable": 30004,
             "max_acceptable": 600000,
@@ -2408,19 +2408,19 @@ def test_bitcoind_feerate_floor(node_factory, bitcoind, anchors):
                            "smoothed_feerate": 44000},
                           # This has increased (rounded up!)
                           {"blockcount": 12,
-                           "feerate": 30004,
-                           "smoothed_feerate": 30004},
+                           "feerate": 30252,
+                           "smoothed_feerate": 30252},
                           # This has increased (rounded up!)
                           {"blockcount": 100,
-                           "feerate": 30004,
-                           "smoothed_feerate": 30004}],
+                           "feerate": 30252,
+                           "smoothed_feerate": 30252}],
         },
         "onchain_fee_estimates": {
-            "opening_channel_satoshis": 5265,
+            "opening_channel_satoshis": 5309,
             # This increases too
-            "mutual_close_satoshis": 5048,
+            "mutual_close_satoshis": 5089,
             # This increases too (anchors uses min(100blocks,5 sat/vB))
-            "unilateral_close_satoshis": 8341 if anchors else 6578,
+            "unilateral_close_satoshis": 8410 if anchors else 6578,
             "unilateral_close_nonanchor_satoshis": 6578,
             "htlc_timeout_satoshis": 7293,
             "htlc_success_satoshis": 7733,

@@ -25,6 +25,21 @@ u32 feerate_from_style(u32 feerate, enum feerate_style style)
 	abort();
 }
 
+u32 feerate_relay_floor(u32 floor_perkw)
+{
+	u64 rate;
+
+	if (floor_perkw <= BITCOIND_MINRELAYTXFEE_PER_KW)
+		return FEERATE_FLOOR;
+
+	rate = ((u64)floor_perkw * (MINIMUM_TX_WEIGHT + 3)
+		+ MINIMUM_TX_WEIGHT - 1) / MINIMUM_TX_WEIGHT
+		+ (2000 + MINIMUM_TX_WEIGHT - 1) / MINIMUM_TX_WEIGHT;
+	if (rate > UINT_MAX)
+		return UINT_MAX;
+	return rate;
+}
+
 u32 feerate_to_style(u32 feerate_perkw, enum feerate_style style)
 {
 	switch (style) {

@@ -3357,7 +3357,7 @@ static struct command_result *openchannel_init(struct command *cmd,
 	/* 0 from this means "unknown" */
 	anchor_feerate = unilateral_feerate(cmd->ld->topology, true);
 	if (anchor_feerate == 0) {
-		anchor_feerate = get_feerate_floor(cmd->ld->topology);
+		anchor_feerate = get_relay_feerate_floor(cmd->ld->topology);
 		assert(anchor_feerate);
 	}
 
@@ -4227,7 +4227,7 @@ static struct command_result *json_queryrates(struct command *cmd,
 	/* 0 from this means "unknown" */
 	anchor_feerate = unilateral_feerate(cmd->ld->topology, true);
 	if (anchor_feerate == 0) {
-		anchor_feerate = get_feerate_floor(cmd->ld->topology);
+		anchor_feerate = get_relay_feerate_floor(cmd->ld->topology);
 		assert(anchor_feerate);
 	}
 
