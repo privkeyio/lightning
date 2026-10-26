@@ -100,7 +100,10 @@ aborted RBF attempt only drops that attempt, so the close then waits for the
 splice it would have replaced. The 10% applies meanwhile, and is all that
 bounds a splice which never confirms. Once the close has started, neither side
 can start a splice: one the peer proposes is refused, and the connection
-closed, before it can delay the `shutdown`. That holds from the moment the
+closed, before it can delay the `shutdown`. (BOLT 2 asks for `tx_abort` there
+if the peer hasn't sent `shutdown`, but after one the subdaemon restarts
+without knowing whether ours went out, while reconnecting resends it.) That
+holds from the moment the
 close starts, including at the lock of a splice it waited for, since the
 subdaemon waits for lightningd before it reads anything else from the peer.
 So the 10% can close a channel unilaterally without a mutual close having been
