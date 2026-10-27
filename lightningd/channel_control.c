@@ -897,6 +897,12 @@ void channel_apply_scid(struct channel *channel,
 	if (channel->scid && short_channel_id_eq(*channel->scid, scid))
 		return;
 
+	/* Gossip already has a closing channel dying under its scid: a
+	 * candidate adopted while closing (a splice mined in place of the
+	 * mutual close) doesn't change that. */
+	if (channel->scid && channel_state_closing(channel->state))
+		return;
+
 	if (!channel->scid) {
 		wallet_annotate_txout(ld->wallet, outpoint,
 				      TX_CHANNEL_FUNDING, channel->dbid);

@@ -2,6 +2,7 @@ from fixtures import *  # noqa: F401,F403
 from pyln.client import LightningRpc, RpcError
 from pyln.testing.utils import EXPERIMENTAL_DUAL_FUND, SLOW_MACHINE, VALGRIND
 import os
+import re
 import pytest
 import threading
 import unittest
@@ -1374,6 +1375,61 @@ def test_splice_restart_watches_funding_spend(node_factory, bitcoind):
     l1.daemon.wait_for_log('Resolved FUNDING_TRANSACTION/FUNDING_OUTPUT by THEIR_REVOKED_UNILATERAL')
     l1.wait_for_onchaind_txs(('OUR_PENALTY_TX',
                               'THEIR_REVOKED_UNILATERAL/DELAYED_CHEAT_OUTPUT_TO_THEM'))
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_confirms_after_mutual_close(node_factory, bitcoind):
+    """A splice mined in place of the mutual close leaves the funds in its
+    output, so we must close that with a commitment."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True)
+    chan_id = l1.get_channel_id(l2)
+
+    funds_result = l1.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
+    result = l1.rpc.splice_init(chan_id, 100000, funds_result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    assert result['commitments_secured'] is True
+    result = l1.rpc.signpsbt(result['psbt'])
+    splice_txid = l1.rpc.splice_signed(chan_id, result['signed_psbt'])['txid']
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'CHANNELD_NORMAL to CHANNELD_AWAITING_SPLICE')
+    wait_for(lambda: bitcoind.rpc.getrawmempool() == [splice_txid])
+
+    # The mutual close spends the old funding, so it loses to the splice.
+    close_txid = only_one(l1.rpc.close(chan_id)['txids'])
+    for n in (l1, l2):
+        wait_for(lambda: only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'CLOSINGD_COMPLETE')
+    assert bitcoind.rpc.getrawmempool() == [splice_txid]
+
+    bitcoind.generate_block(1)
+    for n in (l1, l2):
+        n.daemon.wait_for_log('Inflight tx confirmed after mutual close')
+    line = l1.daemon.wait_for_log(r'Broadcasting txid [0-9a-f]{64}')
+    commit_txid = re.search(r'Broadcasting txid ([0-9a-f]{64})', line).group(1)
+    assert commit_txid != close_txid
+    chan = only_one(l1.rpc.listpeerchannels()['channels'])
+    assert chan['funding_txid'] == splice_txid
+    assert chan['to_us_msat'] == 1100000000
+    splice_out = chan['funding_outnum']
+
+    # Restart within the rescan window, then past it, before any
+    # commitment confirms.
+    l1.restart()
+    assert only_one(l1.rpc.listpeerchannels()['channels'])['funding_txid'] == splice_txid
+    l1.stop()
+    for _ in range(20):
+        bitcoind.rpc.generateblock(bitcoind.rpc.getnewaddress(), [])
+    l1.start()
+    l1.daemon.wait_for_log('Broadcasting txid {}'.format(commit_txid))
+    chan = only_one(l1.rpc.listpeerchannels()['channels'])
+    assert chan['funding_txid'] == splice_txid
+    assert chan['to_us_msat'] == 1100000000
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'Resolved FUNDING_TRANSACTION/FUNDING_OUTPUT by (OUR|THEIR)_UNILATERAL')
+    assert bitcoind.rpc.gettxout(splice_txid, splice_out) is None
 
 
 @pytest.mark.openchannel('v1')
