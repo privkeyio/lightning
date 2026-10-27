@@ -357,6 +357,10 @@ static enum watch_result funding_spent(struct channel *channel,
 				       const struct bitcoin_tx *tx,
 				       size_t inputnum UNUSED,
 				       const struct block *block);
+static void adopt_opening_candidate(struct channel *channel,
+				    const struct channel_inflight *inflight);
+static void adopt_splice_candidate(struct channel *channel,
+				   const struct channel_inflight *inflight);
 
 /* We coop-closed channel: if another inflight confirms, force close */
 static void closed_inflight_splice_found(struct lightningd *ld,
@@ -365,12 +369,27 @@ static void closed_inflight_splice_found(struct lightningd *ld,
 					 const struct txlocator *loc,
 					 struct channel_inflight *inflight)
 {
-	/* This is now the main tx. */
-	update_channel_from_inflight(ld, inflight->channel, inflight, false);
-	channel_fail_saw_onchain(inflight->channel,
-				 REASON_UNKNOWN,
-				 tx,
-				 "Inflight tx confirmed after mutual close");
+	struct channel *channel = inflight->channel;
+	struct bitcoin_txid txid;
+
+	/* Already adopted (a reorg mined it again). */
+	if (bitcoin_outpoint_eq(&channel->funding, &inflight->funding->outpoint))
+		return;
+
+	/* This is now the main tx.  It only moved the funds to a new
+	 * funding output, so unlike a commitment it closed nothing:
+	 * publish ours on it. */
+	if (channel->scid)
+		adopt_splice_candidate(channel, inflight);
+	else
+		adopt_opening_candidate(channel, inflight);
+	wallet_channel_save(ld->wallet, channel);
+	bitcoin_txid(tx, &txid);
+	channel_fail_permanent(channel,
+			       REASON_UNKNOWN,
+			       "Inflight tx confirmed after mutual close:"
+			       " onchain txid %s",
+			       fmt_bitcoin_txid(tmpctx, &txid));
 }
 
 void drop_to_chain(struct lightningd *ld, struct channel *channel,
