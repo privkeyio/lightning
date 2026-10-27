@@ -62,6 +62,12 @@ void channel_type_set_unified_sigs(struct channel_type *type)
 			COMPULSORY_FEATURE(OPT_UNIFIED_SIGS));
 }
 
+void channel_type_set_independent_secrets(struct channel_type *type)
+{
+	set_feature_bit(&type->features,
+			COMPULSORY_FEATURE(OPT_INDEPENDENT_SECRETS));
+}
+
 void channel_type_set_scid_alias(struct channel_type *type)
 {
 	set_feature_bit(&type->features,
@@ -132,6 +138,7 @@ struct channel_type *channel_type_accept(const tal_t *ctx,
 
 	static const size_t feats[] = {
 		OPT_UNIFIED_SIGS,
+		OPT_INDEPENDENT_SECRETS,
 		OPT_ANCHORS_ZERO_FEE_HTLC_TX,
 		OPT_STATIC_REMOTEKEY,
 		OPT_SCID_ALIAS,
@@ -145,6 +152,7 @@ struct channel_type *channel_type_accept(const tal_t *ctx,
 	 */
 	static const size_t variants[] = {
 		OPT_UNIFIED_SIGS,
+		OPT_INDEPENDENT_SECRETS,
 		OPT_SCID_ALIAS,
 		OPT_ZEROCONF,
 	};

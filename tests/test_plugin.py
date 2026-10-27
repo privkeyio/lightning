@@ -3841,6 +3841,8 @@ def test_sql(node_factory, bitcoind):
                          'type': 'string'},
                         {'name': 'scratch_txid',
                          'type': 'txid'},
+                        {'name': 'independent_secrets_stored',
+                         'type': 'u64'},
                         {'name': 'local_htlc_minimum_msat',
                          'type': 'msat'},
                         {'name': 'local_htlc_maximum_msat',

@@ -461,6 +461,11 @@ static void check_mutual_channel_ready(const struct peer *peer)
 		lock_signer_outpoint(&peer->channel->funding);
 }
 
+static u8 *master_wait_sync_reply(const tal_t *ctx,
+				  struct peer *peer,
+				  const u8 *msg,
+				  int replytype);
+
 /* Call this method when splice_locked status are changed. If both sides have
  * splice_locked'ed than this function consumes the `splice_locked_ready` values
  * and considers the channel funding to be switched to the splice tx. */
@@ -547,7 +552,13 @@ static void check_mutual_splice_locked(struct peer *peer)
 	msg = towire_channeld_got_splice_locked(NULL, inflight->amnt,
 						inflight->splice_amnt,
 						&inflight->outpoint.txid);
-	wire_sync_write(MASTER_FD, take(msg));
+	/* If max-independent-secrets was reached while the splice was
+	 * pending, lightningd starts the close it held back before it
+	 * replies.  So we keep its shutdown request, and handle it before
+	 * anything else the peer sends, such as a new splice, which we then
+	 * refuse. */
+	master_wait_sync_reply(tmpctx, peer, take(msg),
+			       WIRE_CHANNELD_GOT_SPLICE_LOCKED_REPLY);
 
 	billboard_update(peer);
 
@@ -998,6 +1009,18 @@ static void maybe_send_shutdown(struct peer *peer)
 	peer->send_shutdown = false;
 	peer->shutdown_sent[LOCAL] = true;
 	billboard_update(peer);
+}
+
+/* Under BOLT 2, neither `splice_init` after `shutdown`, nor `shutdown` while
+ * a splice isn't locked, is allowed.  So a channel stops splicing once either side has
+ * sent `shutdown`, or once lightningd has asked us to send one (which it can
+ * do by itself, say at max-independent-secrets): otherwise that shutdown
+ * would have to wait for a splice that may never lock. */
+static bool channel_closing(const struct peer *peer)
+{
+	return peer->send_shutdown
+		|| peer->shutdown_sent[LOCAL]
+		|| peer->shutdown_sent[REMOTE];
 }
 
 static void send_shutdown_complete(struct peer *peer)
@@ -3256,6 +3279,7 @@ static const u8 *peer_expect_msg_four(const tal_t *ctx,
  * before resuming splice negotiation, so we need a way to process it in this
  * order. */
 static void peer_in(struct peer *peer, const u8 *msg);
+static void req_in(struct peer *peer, const u8 *msg);
 
 /* The question of "who signs splice commitments first" is the same order as the
  * splice `tx_signature`s are. This function handles sending & receiving the
@@ -4529,6 +4553,17 @@ static void splice_accepter(struct peer *peer, const u8 *inmsg)
 				 " a splice while we have one pending. Did you"
 				 " mean to send SPLICE_ACK?");
 
+	/* For the splice_init receiver, BOLT 2 says to warn and close the
+	 * connection if it has received `shutdown`, and to refuse otherwise
+	 * with `tx_abort`.  We warn and reconnect too when only we are
+	 * closing (we have sent `shutdown`, or are about to).  After a
+	 * tx_abort, channeld restarts on the same connection, and the new
+	 * one can't tell whether our `shutdown` went out, so it could send
+	 * it twice or never; reestablish retransmits it, as BOLT 2 says. */
+	if (channel_closing(peer))
+		peer_failed_warn(peer->pps, &peer->channel_id,
+				 "Splice refused: the channel is closing");
+
 	peer->splicing = splicing_new(peer);
 
 	ictx = new_interactivetx_context(tmpctx, our_role,
@@ -5313,6 +5348,12 @@ static void handle_splice_stfu_success(struct peer *peer)
 {
 	u8 *msg;
 	struct tlv_tx_init_rbf_tlvs *init_rbf_tlvs;
+
+	/* We were asked to close while we waited for quiescence.  We can't
+	 * leave it without the peer, so we reestablish, and close then. */
+	if (channel_closing(peer))
+		peer_failed_warn(peer->pps, &peer->channel_id,
+				 "Splice cancelled: the channel is closing");
 	if (!last_inflight(peer)) {
 		msg = towire_splice(tmpctx,
 				    &peer->channel_id,
@@ -5358,6 +5399,14 @@ static void handle_splice_init(struct peer *peer, const u8 *inmsg)
 		msg = towire_channeld_splice_state_error(NULL, "Can't start two"
 							 " splices on the same"
 							 " channel at once.");
+		wire_sync_write(MASTER_FD, take(msg));
+		return;
+	}
+
+	if (channel_closing(peer)) {
+		msg = towire_channeld_splice_state_error(NULL, "Can't splice"
+							 " a channel that is"
+							 " closing.");
 		wire_sync_write(MASTER_FD, take(msg));
 		return;
 	}
@@ -6648,9 +6697,21 @@ static void peer_reconnect(struct peer *peer,
 	 *       - MUST wait to receive the other node's `channel_reestablish`
 	 *         message before sending any other messages for that channel.
 	 */
-	/* LND doesn't wait. */
-	for (size_t i = 0; i < tal_count(premature_msgs); i++)
+	/* LND doesn't wait.  Between those messages, handle what lightningd
+	 * has asked meanwhile first, as the main loop does: a revocation that
+	 * reaches max-independent-secrets has it ask for a shutdown, which
+	 * must come before a splice the peer sent after that revocation. */
+	for (size_t i = 0; i < tal_count(premature_msgs); i++) {
+		const u8 *req;
+
+		while ((req = msg_dequeue(peer->from_master)) != NULL) {
+			status_debug("Now dealing with deferred %s",
+				     channeld_wire_name(fromwire_peektype(req)));
+			req_in(peer, req);
+			tal_free(req);
+		}
 		peer_in(peer, premature_msgs[i]);
+	}
 	tal_free(premature_msgs);
 }
 
@@ -7237,6 +7298,7 @@ static void req_in(struct peer *peer, const u8 *msg)
 	case WIRE_CHANNELD_GOT_REVOKE_REPLY:
 	case WIRE_CHANNELD_GOT_CHANNEL_READY:
 	case WIRE_CHANNELD_GOT_SPLICE_LOCKED:
+	case WIRE_CHANNELD_GOT_SPLICE_LOCKED_REPLY:
 	case WIRE_CHANNELD_GOT_ANNOUNCEMENT:
 	case WIRE_CHANNELD_GOT_SHUTDOWN:
 	case WIRE_CHANNELD_SHUTDOWN_COMPLETE:

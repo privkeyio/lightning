@@ -274,7 +274,85 @@ struct channel_type *desired_channel_type(const tal_t *ctx,
 		type = channel_type_static_remotekey(ctx);
 	if (feature_offered(our_features->bits[INIT_FEATURE], OPT_UNIFIED_SIGS))
 		set_feature_bit(&type->features, OPT_UNIFIED_SIGS);
+	/* Unlike the unified signer, this one is only for peers which have
+	 * it too: everyone else gets the usual shachain channel. */
+	if (feature_negotiated(our_features, their_features,
+			       OPT_INDEPENDENT_SECRETS))
+		channel_type_set_independent_secrets(type);
 	return type;
+}
+
+/* We add it to a type the caller named whenever both of us have it, but
+ * BOLT 2 says the opener SHOULD NOT set a type containing a feature which
+ * was not negotiated. */
+const char *independent_secrets_unnegotiated(const struct lightningd *ld,
+					     const struct peer *peer,
+					     const struct channel_type *ctype)
+{
+	if (ld->dev_any_channel_type
+	    || !channel_type_has(ctype, OPT_INDEPENDENT_SECRETS)
+	    || feature_negotiated(ld->our_features, peer->their_features,
+				  OPT_INDEPENDENT_SECRETS))
+		return NULL;
+	return "channel_type has option_independent_secrets, which the peer"
+		" doesn't offer";
+}
+
+/* The fork's BOLT 3 (lightning-blake2b/bolts#17) says that a node whose
+ * per-commitment secrets don't come from the seed MUST include
+ * option_independent_secrets in the channel_type it proposes, and MUST NOT
+ * accept a channel whose channel_type doesn't include it. */
+const char *dev_independent_secrets_refused(const struct lightningd *ld,
+					    const struct channel_type *ctype)
+{
+	if (!ld->dev_hsmd_independent_secrets_sender
+	    || ld->dev_independent_secrets_any_channel
+	    || feature_offered(ctype->features, OPT_INDEPENDENT_SECRETS))
+		return NULL;
+	return "With --dev-independent-secrets-sender our per-commitment"
+		" secrets don't come from a shachain, so a channel needs"
+		" option_independent_secrets";
+}
+
+u64 channel_their_revocations(const struct channel *channel)
+{
+	if (channel->their_secrets_in_db)
+		return channel->their_secrets_received;
+	return revocations_received(&channel->their_shachain.chain);
+}
+
+u64 channel_their_stored_secrets(const struct channel *channel)
+{
+	if (!channel->their_secrets_in_db)
+		return 0;
+	/* The shachain stopped taking them at the first which didn't fit,
+	 * and the db has every one from there on, without gaps. */
+	return channel->their_secrets_received
+		- revocations_received(&channel->their_shachain.chain);
+}
+
+bool channel_their_last_secret(const struct channel *channel,
+			       struct secret *secret)
+{
+	u64 num = channel_their_revocations(channel);
+
+	/* BOLT #2:
+	 *     - if `next_revocation_number` equals 0:
+	 *       - MUST set `your_last_per_commitment_secret` to all zeroes
+	 *     - otherwise:
+	 *       - MUST set `your_last_per_commitment_secret` to the last
+	 *         `per_commitment_secret` it received
+	 */
+	if (num == 0) {
+		memset(secret, 0, sizeof(*secret));
+		return true;
+	}
+	if (channel->their_secrets_in_db) {
+		*secret = channel->their_last_secret;
+		return true;
+	}
+	return shachain_get_secret(&channel->their_shachain.chain, num - 1,
+				   secret);
 }
 
 static void chanmap_remove(struct lightningd *ld,
@@ -442,6 +520,16 @@ struct channel *new_unsaved_channel(struct peer *peer,
 	/* No shachain yet */
 	channel->their_shachain.id = 0;
 	shachain_init(&channel->their_shachain.chain);
+	channel->their_secrets_in_db = false;
+	channel->their_secrets_received = 0;
+	channel->independent_secrets_warned = false;
+	channel->independent_secrets_lease_logged = false;
+	channel->independent_secrets_splice_logged = false;
+	channel->independent_secrets_close_tried = false;
+	channel->independent_secrets_close_at = 0;
+	channel->independent_secrets_close_timer = NULL;
+	memset(&channel->their_last_secret, 0,
+	       sizeof(channel->their_last_secret));
 
 	msg = towire_hsmd_new_channel(NULL, &peer->id, channel->unsaved_dbid);
 	msg = hsm_sync_req(tmpctx, ld, take(msg));
@@ -604,6 +692,18 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 		channel->their_shachain.id = 0;
 		shachain_init(&channel->their_shachain.chain);
 	}
+	/* The wallet fills these in if the peer's secrets outgrew the
+	 * shachain (option_independent_secrets). */
+	channel->their_secrets_in_db = false;
+	channel->their_secrets_received = 0;
+	channel->independent_secrets_warned = false;
+	channel->independent_secrets_lease_logged = false;
+	channel->independent_secrets_splice_logged = false;
+	channel->independent_secrets_close_tried = false;
+	channel->independent_secrets_close_at = 0;
+	channel->independent_secrets_close_timer = NULL;
+	memset(&channel->their_last_secret, 0,
+	       sizeof(channel->their_last_secret));
 	channel->state = state;
 	channel->opener = opener;
 	channel->owner = NULL;

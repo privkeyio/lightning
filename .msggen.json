@@ -2550,6 +2550,7 @@
             "ListConfigs.configs.htlc-minimum-msat": 43,
             "ListConfigs.configs.ignore-fee-limits": 32,
             "ListConfigs.configs.important-plugin": 9,
+            "ListConfigs.configs.independent-secrets": 76,
             "ListConfigs.configs.large-channels": 20,
             "ListConfigs.configs.lightning-dir": 12,
             "ListConfigs.configs.log-file": 60,
@@ -2559,6 +2560,7 @@
             "ListConfigs.configs.mainnet": 5,
             "ListConfigs.configs.max-concurrent-htlcs": 42,
             "ListConfigs.configs.max-dust-htlc-exposure-msat": 45,
+            "ListConfigs.configs.max-independent-secrets": 77,
             "ListConfigs.configs.max-locktime-blocks": 34,
             "ListConfigs.configs.min-capacity-sat": 46,
             "ListConfigs.configs.network": 13,
@@ -2770,6 +2772,10 @@
             "ListConfigs.configs.important-plugin.sources[]": 2,
             "ListConfigs.configs.important-plugin.values_str[]": 1
         },
+        "ListconfigsConfigsIndependent-secrets": {
+            "ListConfigs.configs.independent-secrets.set": 1,
+            "ListConfigs.configs.independent-secrets.source": 2
+        },
         "ListconfigsConfigsLarge-channels": {
             "ListConfigs.configs.large-channels.set": 1,
             "ListConfigs.configs.large-channels.source": 2
@@ -2805,6 +2811,10 @@
         "ListconfigsConfigsMax-dust-htlc-exposure-msat": {
             "ListConfigs.configs.max-dust-htlc-exposure-msat.source": 2,
             "ListConfigs.configs.max-dust-htlc-exposure-msat.value_msat": 1
+        },
+        "ListconfigsConfigsMax-independent-secrets": {
+            "ListConfigs.configs.max-independent-secrets.source": 1,
+            "ListConfigs.configs.max-independent-secrets.value_int": 2
         },
         "ListconfigsConfigsMax-locktime-blocks": {
             "ListConfigs.configs.max-locktime-blocks.source": 2,
@@ -3242,6 +3252,7 @@
             "ListPeerChannels.channels[].in_offered_msat": 45,
             "ListPeerChannels.channels[].in_payments_fulfilled": 46,
             "ListPeerChannels.channels[].in_payments_offered": 44,
+            "ListPeerChannels.channels[].independent_secrets_stored": 64,
             "ListPeerChannels.channels[].inflight[]": 16,
             "ListPeerChannels.channels[].initial_feerate": 12,
             "ListPeerChannels.channels[].last_feerate": 13,
@@ -10287,6 +10298,18 @@
             "added": "v23.08",
             "deprecated": null
         },
+        "ListConfigs.configs.independent-secrets": {
+            "added": "v26.06.9-blake2b.10",
+            "deprecated": null
+        },
+        "ListConfigs.configs.independent-secrets.set": {
+            "added": "v26.06.9-blake2b.10",
+            "deprecated": null
+        },
+        "ListConfigs.configs.independent-secrets.source": {
+            "added": "v26.06.9-blake2b.10",
+            "deprecated": null
+        },
         "ListConfigs.configs.large-channels": {
             "added": "v23.08",
             "deprecated": null
@@ -10393,6 +10416,18 @@
         },
         "ListConfigs.configs.max-dust-htlc-exposure-msat.value_msat": {
             "added": "v23.08",
+            "deprecated": null
+        },
+        "ListConfigs.configs.max-independent-secrets": {
+            "added": "v26.06.9-blake2b.10",
+            "deprecated": null
+        },
+        "ListConfigs.configs.max-independent-secrets.source": {
+            "added": "v26.06.9-blake2b.10",
+            "deprecated": null
+        },
+        "ListConfigs.configs.max-independent-secrets.value_int": {
+            "added": "v26.06.9-blake2b.10",
             "deprecated": null
         },
         "ListConfigs.configs.max-locktime-blocks": {
@@ -11769,6 +11804,10 @@
         },
         "ListPeerChannels.channels[].in_payments_offered": {
             "added": "v23.02",
+            "deprecated": null
+        },
+        "ListPeerChannels.channels[].independent_secrets_stored": {
+            "added": "v26.06.9-blake2b.10",
             "deprecated": null
         },
         "ListPeerChannels.channels[].inflight[]": {

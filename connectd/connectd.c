@@ -350,6 +350,32 @@ struct io_plan *peer_connected(struct io_conn *conn,
 		return io_write_wire(conn, take(msg), io_close_cb, NULL);
 	}
 
+	/* lightning-blake2b/bolts#17, BOLT 3:
+	 *
+	 * A node receiving `init`:
+	 *   - if bit 266 is set:
+	 *     - MUST close the connection.
+	 *
+	 * We know the bit when we offer the option, so the check above lets
+	 * it through. */
+	if (feature_is_set(their_features, OPT_INDEPENDENT_SECRETS)) {
+		if (taken(their_features))
+			tal_free(their_features);
+
+		/* We were going to send a reconnect message, but not now! */
+		if (oldpeer)
+			send_disconnected(daemon, id, prev_connectd_counter,
+					  prev_connect_start);
+		status_peer_unusual(id, "Feature %u is only valid in"
+				    " channel_type", OPT_INDEPENDENT_SECRETS);
+		msg = towire_warningfmt(NULL, NULL,
+					"Feature %u is only valid in"
+					" channel_type",
+					OPT_INDEPENDENT_SECRETS);
+		msg = cryptomsg_encrypt_msg(NULL, cs, take(msg));
+		return io_write_wire(conn, take(msg), io_close_cb, NULL);
+	}
+
 	if (!feature_check_depends(their_features, &depender, &missing)) {
 		if (taken(their_features))
 			tal_free(their_features);

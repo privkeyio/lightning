@@ -75,6 +75,8 @@ pub enum ChannelTypeName {
     ANCHORS_EVEN = 5,
     #[serde(rename = "unified_sigs/even")]
     UNIFIED_SIGS_EVEN = 6,
+    #[serde(rename = "independent_secrets/even")]
+    INDEPENDENT_SECRETS_EVEN = 7,
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug)]
@@ -502,6 +504,7 @@ impl From<i32> for ChannelTypeName {
             4 => ChannelTypeName::ZEROCONF_EVEN,
             5 => ChannelTypeName::ANCHORS_EVEN,
             6 => ChannelTypeName::UNIFIED_SIGS_EVEN,
+            7 => ChannelTypeName::INDEPENDENT_SECRETS_EVEN,
             o => panic!("Unmapped ChannelTypeName {}", o),
         }
     }
@@ -517,6 +520,7 @@ impl From<ChannelTypeName> for i32 {
             ChannelTypeName::ZEROCONF_EVEN => 4,
             ChannelTypeName::ANCHORS_EVEN => 5,
             ChannelTypeName::UNIFIED_SIGS_EVEN => 6,
+            ChannelTypeName::INDEPENDENT_SECRETS_EVEN => 7,
         }
     }
 }
@@ -533,6 +537,7 @@ impl Display for ChannelTypeName {
             ChannelTypeName::ZEROCONF_EVEN => write!(f, "ZEROCONF_EVEN"),
             ChannelTypeName::ANCHORS_EVEN => write!(f, "ANCHORS_EVEN"),
             ChannelTypeName::UNIFIED_SIGS_EVEN => write!(f, "UNIFIED_SIGS_EVEN"),
+            ChannelTypeName::INDEPENDENT_SECRETS_EVEN => write!(f, "INDEPENDENT_SECRETS_EVEN"),
         }
     }
 }

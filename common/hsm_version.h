@@ -35,6 +35,7 @@
  * v6 with bip86_base in TLV: 6bb6e6ee256f22a6fb41856c90feebde3065a9074e79a46731e453a932be83f0
  * v6 with hsmd_sign_local_htlc_tx removed: 0e28ca3699196cf9d26d38f8f621d1bf68c76cf5e2cdc1f4157a6937b02dc2f6
  * v6 with sign_htlc_tx_mingle_unified: 290bcb0cc0c03319fc0f1a91d6e396ac9e80c77c709da0d2905b98f058714059
+ * v6 with dev_independent_secrets_sender: 287b3bca10c5514c49efa04abaec19ecf09272406c63a06104e4676f525aec16
  */
 #define HSM_MIN_VERSION 5
 #define HSM_MAX_VERSION 6

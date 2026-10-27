@@ -1022,6 +1022,7 @@ def listpeerchannels_channels2py(m):
         "in_offered_msat": amount2msat(m.in_offered_msat),  # PrimitiveField in generate_composite
         "in_payments_fulfilled": m.in_payments_fulfilled,  # PrimitiveField in generate_composite
         "in_payments_offered": m.in_payments_offered,  # PrimitiveField in generate_composite
+        "independent_secrets_stored": m.independent_secrets_stored,  # PrimitiveField in generate_composite
         "initial_feerate": m.initial_feerate,  # PrimitiveField in generate_composite
         "last_feerate": m.last_feerate,  # PrimitiveField in generate_composite
         "last_stable_connection": m.last_stable_connection,  # PrimitiveField in generate_composite
@@ -2505,6 +2506,13 @@ def listconfigs_configs_important_plugin2py(m):
     })
 
 
+def listconfigs_configs_independent_secrets2py(m):
+    return remove_default({
+        "set": m.set,  # PrimitiveField in generate_composite
+        "source": m.source,  # PrimitiveField in generate_composite
+    })
+
+
 def listconfigs_configs_large_channels2py(m):
     return remove_default({
         "set": m.set,  # PrimitiveField in generate_composite
@@ -2565,6 +2573,13 @@ def listconfigs_configs_max_dust_htlc_exposure_msat2py(m):
     return remove_default({
         "source": m.source,  # PrimitiveField in generate_composite
         "value_msat": amount2msat(m.value_msat),  # PrimitiveField in generate_composite
+    })
+
+
+def listconfigs_configs_max_independent_secrets2py(m):
+    return remove_default({
+        "source": m.source,  # PrimitiveField in generate_composite
+        "value_int": m.value_int,  # PrimitiveField in generate_composite
     })
 
 

@@ -912,6 +912,20 @@ static u8 *fundee_channel(struct state *state, const u8 *open_channel_msg)
 							   open_tlvs->channel_type));
 			return NULL;
 		}
+	} else if (channel_type_has(state->channel_type,
+				    OPT_INDEPENDENT_SECRETS)
+		   && !feature_negotiated(state->our_features,
+					  state->their_features,
+					  OPT_INDEPENDENT_SECRETS)
+		   && !state->dev_accept_any_channel_type) {
+		/* The sender shouldn't set a feature we didn't negotiate. */
+		negotiation_failed(state,
+				   "Did not support channel_type [%s]:"
+				   " option_independent_secrets was not"
+				   " negotiated",
+				   fmt_featurebits(tmpctx,
+						   open_tlvs->channel_type));
+		return NULL;
 	}
 
 	/* BOLT #2:

@@ -137,6 +137,9 @@ msgdata,channeld_got_splice_locked,funding_sats,amount_sat,
 msgdata,channeld_got_splice_locked,splice_amnt,s64,
 msgdata,channeld_got_splice_locked,locked_txid,bitcoin_txid,
 
+# lightningd has handled the lock, including starting a close it held back.
+msgtype,channeld_got_splice_locked_reply,1219
+
 #include <common/penalty_base.h>
 
 subtype,local_anchor_info

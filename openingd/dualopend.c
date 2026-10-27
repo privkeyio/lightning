@@ -2616,6 +2616,20 @@ static void accepter_start(struct state *state, const u8 *oc2_msg)
 							   open_tlv->channel_type));
 			return;
 		}
+	} else if (channel_type_has(state->channel_type,
+				    OPT_INDEPENDENT_SECRETS)
+		   && !feature_negotiated(state->our_features,
+					  state->their_features,
+					  OPT_INDEPENDENT_SECRETS)
+		   && !state->dev_accept_any_channel_type) {
+		/* The sender shouldn't set a feature we didn't negotiate. */
+		negotiation_failed(state,
+				   "Did not support channel_type [%s]:"
+				   " option_independent_secrets was not"
+				   " negotiated",
+				   fmt_featurebits(tmpctx,
+						   open_tlv->channel_type));
+		return;
 	}
 
 	/* The commitment feerate is a different matter: too low and the
