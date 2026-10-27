@@ -13,7 +13,6 @@ from utils import (
 
 from typing import List, Optional
 
-import bitcoin
 import os
 import queue
 import pytest
