@@ -1006,7 +1006,7 @@ static void maybe_send_shutdown(struct peer *peer)
 	if (!peer->send_shutdown)
 		return;
 
-	/* BOLT #2:
+	/* BOLT-splice #2:
 	 *
 	 * A sending node:
 	 *...
@@ -4573,7 +4573,7 @@ static void splice_accepter(struct peer *peer, const u8 *inmsg)
 				 " a splice while we have one pending. Did you"
 				 " mean to send SPLICE_ACK?");
 
-	/* BOLT #2:
+	/* BOLT-splice #2:
 	 *
 	 * The sending node:
 	 *...
