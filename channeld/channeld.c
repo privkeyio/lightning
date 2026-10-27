@@ -183,6 +183,9 @@ struct peer {
 	/* Send tx_abort on every splice we accept, once it completes */
 	bool dev_splice_abort_at_tx_complete;
 
+	/* Send shutdown without waiting for a pending splice to lock */
+	bool dev_shutdown_during_splice;
+
 	/* Signing second, send a warning instead of tx_signatures */
 	bool dev_splice_warn_instead_of_sigs;
 
@@ -554,6 +557,10 @@ static void check_mutual_splice_locked(struct peer *peer)
 	peer->splice_state->inflights = tal_free(peer->splice_state->inflights);
 	peer->splice_state->count = 0;
 	peer->splice_state->remote_locked_txid = tal_free(peer->splice_state->remote_locked_txid);
+
+	/* A shutdown waiting for this splice can go now. */
+	if (peer->send_shutdown)
+		start_commit_timer(peer);
 }
 
 static void implied_peer_splice_locked(struct peer *peer,
@@ -972,6 +979,25 @@ static bool shutdown_complete(const struct peer *peer)
  *     - MUST NOT send a `shutdown`.
  */
 /* So we only call this after reestablish or immediately after sending commit */
+static bool shared_input_finalized(const struct peer *peer,
+				   const struct inflight *inflight);
+static bool have_they_signed_inflight(const struct peer *peer,
+				      const struct inflight *inflight);
+
+/* A splice tx both sides have signed, so it can be (or has been) broadcast. */
+static bool have_signed_splice(const struct peer *peer)
+{
+	for (size_t i = 0; i < tal_count(peer->splice_state->inflights); i++) {
+		const struct inflight *inflight = peer->splice_state->inflights[i];
+		if ((inflight->i_sent_sigs
+		     && (inflight->remote_tx_sigs
+			 || have_they_signed_inflight(peer, inflight)))
+		    || shared_input_finalized(peer, inflight))
+			return true;
+	}
+	return false;
+}
+
 static void maybe_send_shutdown(struct peer *peer)
 {
 	u8 *msg;
@@ -980,8 +1006,26 @@ static void maybe_send_shutdown(struct peer *peer)
 	if (!peer->send_shutdown)
 		return;
 
-	/* DTODO: Ensure 'shutdown' rules around splice are followed once those
-	 * rules get settled on spec */
+	/* BOLT #2:
+	 *
+	 * A sending node:
+	 *...
+	 *   - MUST NOT send `shutdown` if there is a splice transaction that
+	 *     isn't locked yet.
+	 *
+	 * We only wait for one both sides have signed: any other may never
+	 * confirm, and waiting on it would let them stall the close (should
+	 * it confirm anyway, the mutual close loses and lightningd closes the
+	 * splice output instead).  Once they have sent `shutdown` we reply
+	 * anyway: a peer that has may never lock the splice, so waiting would
+	 * hang. */
+	if (have_signed_splice(peer)
+	    && !peer->shutdown_sent[REMOTE]
+	    && !peer->dev_shutdown_during_splice) {
+		peer_billboard(false, "Waiting for the splice to lock before"
+			       " sending shutdown");
+		return;
+	}
 
 	if (peer->shutdown_wrong_funding) {
 		tlvs = tlv_shutdown_tlvs_new(tmpctx);
@@ -4529,6 +4573,18 @@ static void splice_accepter(struct peer *peer, const u8 *inmsg)
 				 " a splice while we have one pending. Did you"
 				 " mean to send SPLICE_ACK?");
 
+	/* BOLT #2:
+	 *
+	 * The sending node:
+	 *...
+	 *   - MUST NOT send `splice_init` if it has previously sent `shutdown`.
+	 *
+	 * Nor will we take one (or an RBF) after sending ours.  While ours waits
+	 * for a splice to lock, an RBF of it is fine. */
+	if (peer->shutdown_sent[LOCAL] || peer->shutdown_sent[REMOTE])
+		peer_failed_warn(peer->pps, &peer->channel_id,
+				 "Can't splice while shutting down");
+
 	peer->splicing = splicing_new(peer);
 
 	ictx = new_interactivetx_context(tmpctx, our_role,
@@ -7348,7 +7404,8 @@ static void init_channel(struct peer *peer)
 				    &peer->local_alias,
 				    &peer->dev_splice_abort_at_tx_complete,
 				    &peer->dev_splice_warn_instead_of_sigs,
-				    &peer->dev_delay_confirmed_stfu)) {
+				    &peer->dev_delay_confirmed_stfu,
+				    &peer->dev_shutdown_during_splice)) {
 		master_badmsg(WIRE_CHANNELD_INIT, msg);
 	}
 

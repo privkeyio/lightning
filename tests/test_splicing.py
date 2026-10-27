@@ -1383,7 +1383,10 @@ def test_splice_restart_watches_funding_spend(node_factory, bitcoind):
 def test_splice_confirms_after_mutual_close(node_factory, bitcoind):
     """A splice mined in place of the mutual close leaves the funds in its
     output, so we must close that with a commitment."""
-    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True)
+    # l2 sends shutdown with the splice unlocked, as peers without that
+    # rule do, and l1 replies.
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
+                                     opts=[{}, {'dev-shutdown-during-splice': None}])
     chan_id = l1.get_channel_id(l2)
 
     funds_result = l1.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
@@ -1398,7 +1401,7 @@ def test_splice_confirms_after_mutual_close(node_factory, bitcoind):
     wait_for(lambda: bitcoind.rpc.getrawmempool() == [splice_txid])
 
     # The mutual close spends the old funding, so it loses to the splice.
-    close_txid = only_one(l1.rpc.close(chan_id)['txids'])
+    close_txid = only_one(l2.rpc.close(chan_id)['txids'])
     for n in (l1, l2):
         wait_for(lambda: only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'CLOSINGD_COMPLETE')
     assert bitcoind.rpc.getrawmempool() == [splice_txid]
@@ -1430,6 +1433,78 @@ def test_splice_confirms_after_mutual_close(node_factory, bitcoind):
     for n in (l1, l2):
         n.daemon.wait_for_log(r'Resolved FUNDING_TRANSACTION/FUNDING_OUTPUT by (OUR|THEIR)_UNILATERAL')
     assert bitcoind.rpc.gettxout(splice_txid, splice_out) is None
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_holds_shutdown_until_locked(node_factory, bitcoind, executor):
+    """We don't send shutdown while a signed splice is unlocked: the close
+    waits for it, takes an RBF meanwhile, survives a restart, and then spends
+    the splice output."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
+                                     opts={'may_reconnect': True})
+    chan_id = l1.get_channel_id(l2)
+    # Deep enough that the blocks a restart steps back keep it announced.
+    bitcoind.generate_block(5)
+    sync_blockheight(bitcoind, [l1, l2])
+
+    def splice_out(amount):
+        result = l1.rpc.splice_init(chan_id, amount, l1.rpc.addpsbtoutput(100000)['psbt'])
+        result = l1.rpc.splice_update(chan_id, result['psbt'])
+        result = l1.rpc.splice_update(chan_id, result['psbt'])
+        assert result['commitments_secured'] is True
+        return l1.rpc.splice_signed(chan_id, result['psbt'])['txid']
+
+    splice_txid = splice_out(-105801)
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'CHANNELD_NORMAL to CHANNELD_AWAITING_SPLICE')
+    wait_for(lambda: bitcoind.rpc.getrawmempool() == [splice_txid])
+
+    def held(n):
+        return any('Waiting for the splice to lock before sending shutdown' in s
+                   for s in only_one(n.rpc.listpeerchannels()['channels'])['status'])
+
+    fut = executor.submit(l2.rpc.close, chan_id)
+    l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_SHUTTING_DOWN')
+    wait_for(lambda: held(l2))
+    assert only_one(l1.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_AWAITING_SPLICE'
+
+    # l1 can still bump the splice, and l2 stays shutting down.
+    rbf_txid = splice_out(-111722)
+    l2.daemon.wait_for_log('Watching splice inflight {}'.format(rbf_txid))
+    wait_for(lambda: bitcoind.rpc.getrawmempool() == [rbf_txid])
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_SHUTTING_DOWN'
+    wait_for(lambda: held(l2))
+
+    # Still waiting after a restart.
+    l2.restart()
+    fut.exception(TIMEOUT)
+    l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
+    wait_for(lambda: held(l2))
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_SHUTTING_DOWN'
+    assert not l2.daemon.is_in_log('peer_out WIRE_SHUTDOWN')
+    assert not l1.daemon.is_in_log('peer_in WIRE_SHUTDOWN')
+
+    # Once it locks, the shutdown goes and the close spends the splice.
+    bitcoind.generate_block(6, wait_for_mempool=rbf_txid)
+    l2.daemon.wait_for_log('peer_out WIRE_SHUTDOWN')
+    for n in (l1, l2):
+        wait_for(lambda: only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'CLOSINGD_COMPLETE')
+    chan = only_one(l1.rpc.listpeerchannels()['channels'])
+    assert chan['funding_txid'] == rbf_txid
+    assert chan['to_us_msat'] == 1000000000 - 111722000
+    close_txid = only_one(bitcoind.rpc.getrawmempool())
+    close_tx = bitcoind.rpc.getrawtransaction(close_txid, True)
+    assert only_one(close_tx['vin'])['txid'] == rbf_txid
+
+    bitcoind.generate_block(1, wait_for_mempool=close_txid)
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'Resolved FUNDING_TRANSACTION/FUNDING_OUTPUT by MUTUAL_CLOSE')
+        moves = n.rpc.listchainmoves()['chainmoves']
+        assert [m for m in moves
+                if m['primary_tag'] == 'channel_open'
+                and m['utxo'].startswith(rbf_txid)]
 
 
 @pytest.mark.openchannel('v1')

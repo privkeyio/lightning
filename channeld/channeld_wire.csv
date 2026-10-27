@@ -86,6 +86,7 @@ msgdata,channeld_init,scid_alias,short_channel_id,
 msgdata,channeld_init,dev_splice_abort_at_tx_complete,bool,
 msgdata,channeld_init,dev_splice_warn_instead_of_sigs,bool,
 msgdata,channeld_init,dev_delay_confirmed_stfu,u32,
+msgdata,channeld_init,dev_shutdown_during_splice,bool,
 
 # channeld->lightningd: successfully negotated reestablishment.
 msgtype,channeld_reestablished,1101

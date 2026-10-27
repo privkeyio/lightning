@@ -375,6 +375,10 @@ struct lightningd {
 	 * completes, so the initiator's handling of it can be tested. */
 	bool dev_splice_abort_at_tx_complete;
 
+	/* Send shutdown without waiting for a pending splice to lock, as
+	 * peers without that rule do. */
+	bool dev_shutdown_during_splice;
+
 	/* Let splice_init propose an RBF below 25/24 of the last feerate, so
 	 * the peer's refusal can be tested. */
 	bool dev_splice_rbf_any_feerate;

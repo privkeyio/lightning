@@ -3177,9 +3177,18 @@ static void setup_peer(struct peer *peer)
 			continue;
 
 		/* Normal cases where we watch funding */
+		/* channeld holds a shutdown until a pending splice locks,
+		 * so keep watching it (not dual-open candidates, which are
+		 * not splices). */
+		case CHANNELD_SHUTTING_DOWN:
+			channel_watch_funding(ld, channel);
+			list_for_each(&channel->inflights, inflight, list)
+				if (inflight->funding->splice_remote_funding)
+					watch_splice_inflight(ld, inflight);
+			break;
+
 		case CHANNELD_AWAITING_LOCKIN:
 		case CHANNELD_NORMAL:
-		case CHANNELD_SHUTTING_DOWN:
 		case CLOSINGD_SIGEXCHANGE:
 		/* We still want to watch spend, to tell onchaind: */
 		case CLOSINGD_COMPLETE:

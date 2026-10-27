@@ -704,7 +704,8 @@ static void handle_splice_confirmed_signed(struct lightningd *ld,
 	inflight->remote_tx_sigs = true;
 	wallet_inflight_save(ld->wallet, inflight);
 
-	if (channel->state != CHANNELD_AWAITING_SPLICE) {
+	if (channel->state != CHANNELD_AWAITING_SPLICE
+	    && channel->state != CHANNELD_SHUTTING_DOWN) {
 		log_debug(channel->log,
 			  "Would broadcast splice, but state %s"
 			  " isn't CHANNELD_AWAITING_SPLICE",
@@ -726,8 +727,10 @@ static enum watch_result splice_depth_cb(struct lightningd *ld,
 {
 	/* Usually, we're here because we're awaiting a splice, but
 	 * we could also mutual shutdown, or that weird splice_locked_memonly
-	 * hack... */
-	if (inflight->channel->state != CHANNELD_AWAITING_SPLICE) {
+	 * hack...  channeld holds a shutdown until the splice locks, so
+	 * keep telling it the depth. */
+	if (inflight->channel->state != CHANNELD_AWAITING_SPLICE
+	    && inflight->channel->state != CHANNELD_SHUTTING_DOWN) {
 		log_debug(inflight->channel->log, "Splice inflight event but not"
 			  " in AWAITING_SPLICE, ending watch of txid %s",
 			 fmt_bitcoin_txid(tmpctx, &inflight->funding->outpoint.txid));
@@ -832,22 +835,26 @@ static void handle_splice_sending_sigs(struct lightningd *ld,
 
 	/* We can get here because of a splice RBF or because re-signing during
 	 * or because of a splice RBF. In the latter case, we will be adding
-	 * adding a harmless second txid watch on the inflight. */
-	if (channel->state != CHANNELD_NORMAL
-		&& channel->state != CHANNELD_AWAITING_SPLICE) {
-		log_unusual(channel->log, "Setting state to"
-			    " CHANNELD_AWAITING_SPLICE but existing channel"
-			    " state is unexpected value %s",
-			    channel_state_str(channel->state));
-	}
+	 * adding a harmless second txid watch on the inflight.  A close
+	 * requested meanwhile stays: channeld holds the shutdown until the
+	 * splice locks. */
+	if (channel->state != CHANNELD_SHUTTING_DOWN) {
+		if (channel->state != CHANNELD_NORMAL
+			&& channel->state != CHANNELD_AWAITING_SPLICE) {
+			log_unusual(channel->log, "Setting state to"
+				    " CHANNELD_AWAITING_SPLICE but existing channel"
+				    " state is unexpected value %s",
+				    channel_state_str(channel->state));
+		}
 
-	cc = splice_command_for_chan(ld, channel);
-	/* If matching user command found, this was a user intiated splice */
-	channel_set_state(channel,
-			  channel->state,
-			  CHANNELD_AWAITING_SPLICE,
-			  cc ? REASON_USER : REASON_REMOTE,
-			  "Splice signatures sent");
+		cc = splice_command_for_chan(ld, channel);
+		/* If matching user command found, this was a user intiated splice */
+		channel_set_state(channel,
+				  channel->state,
+				  CHANNELD_AWAITING_SPLICE,
+				  cc ? REASON_USER : REASON_REMOTE,
+				  "Splice signatures sent");
+	}
 
 	watch_splice_inflight(ld, inflight);
 
@@ -1266,6 +1273,7 @@ static void handle_peer_splice_locked(struct channel *channel, const u8 *msg)
 	s64 splice_amnt;
 	struct channel_inflight *inflight;
 	struct bitcoin_txid locked_txid;
+	u32 locked_blockheight;
 
 	if (!fromwire_channeld_got_splice_locked(msg, &funding_sats,
 						 &splice_amnt,
@@ -1299,8 +1307,14 @@ static void handle_peer_splice_locked(struct channel *channel, const u8 *msg)
 	/* Remember that we got the lockin */
 	wallet_channel_save(channel->peer->ld->wallet, channel);
 
-	/* Update the scid and tell everyone */
-	change_scid(channel, *inflight->locked_scid);
+	/* inflight is freed below, along with the rest. */
+	locked_blockheight = short_channel_id_blocknum(*inflight->locked_scid);
+
+	/* Update the scid and tell everyone, unless we're shutting down:
+	 * gossip already has the channel dying under its scid (see
+	 * channel_apply_scid). */
+	if (!channel_state_closing(channel->state))
+		change_scid(channel, *inflight->locked_scid);
 
 	/* Now watch the new funding tx */
 	channel_watch_funding(channel->peer->ld, channel);
@@ -1310,8 +1324,7 @@ static void handle_peer_splice_locked(struct channel *channel, const u8 *msg)
 			      prev_our_msats,
 			      prev_funding_sats,
 			      &prev_funding_out,
-			      channel->scid ?
-			      short_channel_id_blocknum(*channel->scid) : 0,
+			      locked_blockheight,
 			      &locked_txid,
 			      inflight);
 
@@ -1329,7 +1342,12 @@ static void handle_peer_splice_locked(struct channel *channel, const u8 *msg)
 	 * funding_spend_watch. */
 	channel_watch_inflight_outs(channel->peer->ld, channel);
 
-	lockin_complete(channel, CHANNELD_AWAITING_SPLICE);
+	/* A shutdown was waiting for this: stay in CHANNELD_SHUTTING_DOWN,
+	 * but record the new funding like lockin_complete would. */
+	if (channel->state == CHANNELD_SHUTTING_DOWN)
+		channel_record_open(channel, locked_blockheight, true);
+	else
+		lockin_complete(channel, CHANNELD_AWAITING_SPLICE);
 }
 
 /* We were informed by channeld that channel is ready (reached mindepth) */
@@ -2102,7 +2120,8 @@ bool peer_start_channeld(struct channel *channel,
 				       *channel->alias[LOCAL],
 				       ld->dev_splice_abort_at_tx_complete,
 				       ld->dev_splice_warn_instead_of_sigs,
-				       ld->dev_delay_confirmed_stfu);
+				       ld->dev_delay_confirmed_stfu,
+				       ld->dev_shutdown_during_splice);
 
 	/* We don't expect a response: we are triggered by funding_depth_cb. */
 	subd_send_msg(channel->owner, take(initmsg));
