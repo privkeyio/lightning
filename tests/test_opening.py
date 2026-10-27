@@ -4536,3 +4536,46 @@ def test_rbf_mutual_close_before_lockin(node_factory, bitcoind):
     # Startup resends the close, which takes the same path.
     l2.restart()
     assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CLOSINGD_COMPLETE'
+
+
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+@pytest.mark.openchannel('v2')
+def test_rbf_candidate_confirms_after_mutual_close(node_factory, bitcoind):
+    """An earlier dual-funding attempt mined in place of the mutual close
+    leaves the funds in its output, so we must close that with a
+    commitment."""
+    l1, l2 = node_factory.get_nodes(2)
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    chan_amount = 100000
+    l1.fundwallet(2**24)
+
+    res = l1.rpc.fundchannel(l2.info['id'], chan_amount)
+    chan_id = res['channel_id']
+    first_txid = res['txid']
+    vin = only_one(bitcoind.rpc.decoderawtransaction(res['tx'])['vin'])
+    l1.daemon.wait_for_log(' to DUALOPEND_AWAITING_LOCKIN')
+
+    initpsbt = l1.rpc.utxopsbt(chan_amount, find_next_feerate(l1, l2), 42 + 172,
+                               ["{}:{}".format(vin['txid'], vin['vout'])],
+                               reservedok=True, excess_as_change=True)['psbt']
+    bump = l1.rpc.openchannel_bump(chan_id, chan_amount, initpsbt)
+    update = l1.rpc.openchannel_update(chan_id, bump['psbt'])
+    assert update['commitments_secured']
+    l1.rpc.openchannel_signed(chan_id, l1.rpc.signpsbt(update['psbt'])['signed_psbt'])
+    wait_for(lambda: len(only_one(l1.rpc.listpeerchannels()['channels'])['inflight']) == 2)
+
+    l1.rpc.close(chan_id)
+    for n in (l1, l2):
+        wait_for(lambda: only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'CLOSINGD_COMPLETE')
+
+    # The first attempt is mined, not the bump the close spends.
+    bitcoind.rpc.generateblock(bitcoind.rpc.getnewaddress(), [res['tx']])
+    for n in (l1, l2):
+        n.daemon.wait_for_log('Inflight tx confirmed after mutual close')
+    chan = only_one(l1.rpc.listpeerchannels()['channels'])
+    assert chan['funding_txid'] == first_txid
+    assert chan['to_us_msat'] == chan_amount * 1000
+
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'Resolved FUNDING_TRANSACTION/FUNDING_OUTPUT by (OUR|THEIR)_UNILATERAL')
