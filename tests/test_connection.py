@@ -5216,6 +5216,7 @@ def test_connect_proxy_maxlen_hostname(node_factory):
 OPT_STATIC_REMOTEKEY = 12
 OPT_LARGE_CHANNELS = 18
 OPT_ANCHORS_ZERO_FEE_HTLC_TX = 22
+OPT_UNIFIED_SIGS = 514
 
 WIRE_WARNING = 1
 WIRE_INIT = 16
@@ -5280,7 +5281,8 @@ def raw_peer_connect(node):
     assert feature_offered(theirs, OPT_LARGE_CHANNELS), "peer does not offer wumbo"
 
     ctype = featurebits(*[b for b in (OPT_STATIC_REMOTEKEY,
-                                      OPT_ANCHORS_ZERO_FEE_HTLC_TX)
+                                      OPT_ANCHORS_ZERO_FEE_HTLC_TX,
+                                      OPT_UNIFIED_SIGS)
                           if feature_offered(theirs, b)])
     return lconn, ctype
 
