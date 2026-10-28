@@ -60,6 +60,29 @@ static const char block[] =
 	"ac0eb82500000000001976a914e05655a7d90b01ba874d81beff57ee09610ca"
 	"3ce88ac00000000";
 
+/* Elements header whose challenge varint promises 80 bytes with none
+ * left in the block. */
+static const char elements_short_challenge[] =
+	"0000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000afdc6a5c6400000050";
+
+/* Dynafed header whose scriptPubKey varint promises 80 bytes with none
+ * left in the block. */
+static const char elements_short_dynafed[] =
+	"000000a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000afdc6a5c640000000150";
+
+/* Block whose only transaction does not parse. */
+static const char bad_tx[] =
+	"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff";
+
+/* Block claiming far more transactions than it has bytes. */
+static const char huge_tx_count[] =
+	"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffff7f";
+
+/* Dynafed header whose extension space claims far more entries than it
+ * has bytes. */
+static const char elements_huge_extension[] =
+	"000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000ffffffffffffffff7f";
+
 STRUCTEQ_DEF(sha256_double, 0, sha);
 
 int main(int argc, const char *argv[])
@@ -68,9 +91,26 @@ int main(int argc, const char *argv[])
 	struct sha256_double merkle;
 	struct bitcoin_txid txid, expected_txid;
 	struct bitcoin_block *b;
+	size_t blocklen;
 
 	common_setup(argv[0]);
+	chainparams = chainparams_for_network("liquid-regtest");
+	assert(!bitcoin_block_from_hex(NULL, chainparams,
+				       elements_short_challenge,
+				       strlen(elements_short_challenge)));
+	assert(!bitcoin_block_from_hex(NULL, chainparams,
+				       elements_short_dynafed,
+				       strlen(elements_short_dynafed)));
+	assert(!bitcoin_block_from_hex(NULL, chainparams,
+				       elements_huge_extension,
+				       strlen(elements_huge_extension)));
+
 	chainparams = chainparams_for_network("bitcoin");
+	assert(!bitcoin_block_from_hex(NULL, chainparams,
+				       bad_tx, strlen(bad_tx)));
+	assert(!bitcoin_block_from_hex(NULL, chainparams,
+				       huge_tx_count, strlen(huge_tx_count)));
+
 	b = bitcoin_block_from_hex(NULL, chainparams,
 				   block, strlen(block));
 
@@ -103,6 +143,12 @@ int main(int argc, const char *argv[])
 	assert(bitcoin_txid_eq(&txid, &expected_txid));
 
 	tal_free(b);
+
+	/* Every truncation of a valid block must be refused, not crash. */
+	blocklen = strlen(block);
+	for (size_t i = 1; i < blocklen; i++)
+		assert(!bitcoin_block_from_hex(NULL, chainparams, block, i));
+
 	common_shutdown();
 	return 0;
 }
