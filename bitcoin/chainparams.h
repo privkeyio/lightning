@@ -61,6 +61,10 @@ struct chainparams {
 	 * is all of us, only ever wants the relay answer. It is
 	 * COINBASE_MATURITY on any chain without such a rule. */
 	const u32 relay_coinbase_maturity;
+	/* A coinbase mined at or after long_coinbase_maturity_height needs
+	 * long_coinbase_maturity instead. Zero height means no such rule. */
+	const u32 long_coinbase_maturity_height;
+	const u32 long_coinbase_maturity;
 	const u8 p2pkh_version;
 	const u8 p2sh_version;
 
