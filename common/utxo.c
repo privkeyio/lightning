@@ -35,8 +35,13 @@ u32 utxo_is_immature(const struct utxo *utxo, u32 blockheight)
 		 * would make of it: we would build it, sign it, and have it
 		 * refused at broadcast. The two are the same number on every
 		 * chain without such a rule. */
-		mature_at = *utxo->blockheight
-			+ chainparams->relay_coinbase_maturity;
+		if (chainparams->long_coinbase_maturity_height
+		    && *utxo->blockheight >= chainparams->long_coinbase_maturity_height)
+			mature_at = *utxo->blockheight
+				+ chainparams->long_coinbase_maturity;
+		else
+			mature_at = *utxo->blockheight
+				+ chainparams->relay_coinbase_maturity;
 
 		if (blockheight < mature_at)
 			return mature_at - 1 - blockheight;

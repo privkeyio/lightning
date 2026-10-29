@@ -31,14 +31,14 @@ if [ "$TEST_NETWORK" = "liquid-regtest" ]; then
     rm -rf "${EFILENAME}" "${EDIRNAME}"
 elif [ "${BLAKE2B_CI:-0}" = "1" ]; then
     # Exercise unified signatures on a backend that enforces Blake2b consensus.
-    KNOTS_VERSION=29.4.1.knots20260508
+    KNOTS_VERSION=29.4.3.knots20260508
     KNOTS_FILE="bitcoin-${KNOTS_VERSION}-x86_64-linux-gnu.tar.gz"
     if [ -f "$1/${KNOTS_FILE}" ]; then
         cp "$1/${KNOTS_FILE}" .
     else
         wget "https://github.com/bitcoinknots/bitcoin/releases/download/v${KNOTS_VERSION}/${KNOTS_FILE}"
     fi
-    echo "0d0b435ae67dd38d150c048a388be821ad0ca8b46d6dcace5c34d4ba2977801b  ${KNOTS_FILE}" | sha256sum -c -
+    echo "4c67f1139b668fc3b98e339dd16112c636b2c0f42c2294b98fb92d1d27943e24  ${KNOTS_FILE}" | sha256sum -c -
     tar -xf "${KNOTS_FILE}"
     [ "$1" = "" ] || cp "${KNOTS_FILE}" "$1"/
     sudo install -D -m 755 "bitcoin-${KNOTS_VERSION}/bin/bitcoind" /usr/local/libexec/paperclip-bitcoind

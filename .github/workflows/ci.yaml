@@ -894,7 +894,7 @@ jobs:
           bash -x .github/scripts/setup.sh
 
       - name: Verify Blake2b backend
-        run: bitcoind --version | grep '29.4.1.knots20260508'
+        run: bitcoind --version | grep '29.4.3.knots20260508'
 
       - name: Download build
         uses: actions/download-artifact@v8

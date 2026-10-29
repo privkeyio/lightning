@@ -52,7 +52,8 @@ struct chainparams {
 	const struct amount_sat max_supply;
 	const u32 when_lightning_became_cool;
 	/* The depth a coinbase output must reach before this network will
-	 * relay a transaction spending it.
+	 * relay a transaction spending it, unless long_coinbase_maturity
+	 * below applies.
 	 *
 	 * This is a relay rule, not a consensus one, and on a chain that
 	 * deploys a longer coinbase maturity the two do not agree: a spend
@@ -61,6 +62,10 @@ struct chainparams {
 	 * is all of us, only ever wants the relay answer. It is
 	 * COINBASE_MATURITY on any chain without such a rule. */
 	const u32 relay_coinbase_maturity;
+	/* A coinbase mined at or after long_coinbase_maturity_height needs
+	 * long_coinbase_maturity instead. Zero height means no such rule. */
+	const u32 long_coinbase_maturity_height;
+	const u32 long_coinbase_maturity;
 	const u8 p2pkh_version;
 	const u8 p2sh_version;
 

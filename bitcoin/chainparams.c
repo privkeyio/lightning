@@ -53,17 +53,24 @@ const struct chainparams networks[] = {
      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      /* "Lightning Charge Powers Developers & Blockstream Store" */
      .when_lightning_became_cool = 504500,
-     /* Bitcoin Knots deploys a temporary longer coinbase maturity on this
-      * chain: an upgraded node requires this depth of every coinbase spend
-      * it will accept into its mempool, whatever height the coinbase was
-      * mined at, and keeps requiring it after the consensus window closes.
+     /* Bitcoin Knots deploys a longer coinbase maturity on this chain: an
+      * upgraded node requires this depth of every coinbase spend it will
+      * accept into its mempool for a coinbase mined before
+      * long_coinbase_maturity_height, and keeps requiring it after the
+      * consensus window closes.
       *
-      * Read off v29.4.2.knots20260508, where CoinbaseMaturityLong is
-      * CoinbaseMaturityLongReleaseHeight (979920) minus
-      * CoinbaseMaturityLongStartHeight (973440). Temporary in their words
-      * rather than ours, and a full year is under discussion, so re-check it
-      * against the release you run. */
+      * Read off v29.4.3.knots20260508, where CoinbaseMaturityBeforeRolling
+      * is CoinbaseMaturityHistoricalReleaseHeight (979920) minus
+      * CoinbaseMaturityHistoricalStartHeight (973440). Re-check it against
+      * the release you run. */
      .relay_coinbase_maturity = 6480,
+     /* v29.4.3.knots20260508: CoinbaseMaturityLongStartHeight and
+      * CoinbaseMaturityLong (180 * 144). Knots drops a coinbase mined once
+      * its parent's median time passes RDTS expiry (2027-09-01) back to
+      * COINBASE_MATURITY; we keep the long depth for those, which only
+      * reports them immature for longer, until that is handled here. */
+     .long_coinbase_maturity_height = 979919,
+     .long_coinbase_maturity = 25920,
      .p2pkh_version = 0,
      .p2sh_version = 5,
      .testnet = false,
@@ -171,8 +178,9 @@ const struct chainparams networks[] = {
      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
-     /* As bitcoin above: 158111 minus 151406. Doubly provisional, since
-      * this chain's heights were rewritten at every release candidate. */
+     /* v29.4.3.knots20260508: CoinbaseMaturityLongReleaseHeight (158111)
+      * minus CoinbaseMaturityLongStartHeight (151406). Doubly provisional,
+      * since this chain's heights were rewritten at every release candidate. */
      .relay_coinbase_maturity = 6705,
      .p2pkh_version = 111,
      .p2sh_version = 196,
