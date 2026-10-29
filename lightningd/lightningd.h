@@ -379,6 +379,9 @@ struct lightningd {
 	 * peers without that rule do. */
 	bool dev_shutdown_during_splice;
 
+	/* Contribute this many sats in every splice_ack, without funding it */
+	u64 dev_splice_ack_contribution;
+
 	/* Let splice_init propose an RBF below 25/24 of the last feerate, so
 	 * the peer's refusal can be tested. */
 	bool dev_splice_rbf_any_feerate;
