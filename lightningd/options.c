@@ -917,6 +917,10 @@ static void dev_register_opts(struct lightningd *ld)
 		     opt_set_bool,
 		     &ld->dev_splice_abort_at_tx_complete,
 		     "Send tx_abort on every splice we accept, once it completes");
+	clnopt_noarg("--dev-shutdown-during-splice", OPT_DEV,
+		     opt_set_bool,
+		     &ld->dev_shutdown_during_splice,
+		     "Send shutdown without waiting for a pending splice to lock");
 	clnopt_noarg("--dev-splice-rbf-any-feerate", OPT_DEV,
 		     opt_set_bool,
 		     &ld->dev_splice_rbf_any_feerate,

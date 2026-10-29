@@ -148,6 +148,7 @@ static struct lightningd *new_lightningd(const tal_t *ctx)
 	ld->dev_splice_without_unified_sigs = false;
 	ld->dev_splice_coinbase_input = false;
 	ld->dev_splice_abort_at_tx_complete = false;
+	ld->dev_shutdown_during_splice = false;
 	ld->dev_splice_rbf_any_feerate = false;
 	ld->dev_splice_warn_instead_of_sigs = false;
 	ld->dev_splice_abort_after_sigs = false;
