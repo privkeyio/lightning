@@ -469,6 +469,45 @@ def test_v2_fail_second(node_factory, bitcoind):
 
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
 @pytest.mark.openchannel('v2')
+def test_v2_open_rpc_psbt_above_max_supply(node_factory, bitcoind):
+    """A PSBT whose outputs sum above max supply is refused, not crash us."""
+    l1, l2 = node_factory.get_nodes(2)
+
+    l1.fundwallet(10**6)
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+
+    amount = 100000
+    psbt = l1.rpc.fundpsbt(amount, '253perkw', 250, reserve=0)['psbt']
+    start = l1.rpc.openchannel_init(l2.info['id'], amount, psbt)
+    update = l1.rpc.openchannel_update(start['channel_id'], start['psbt'])
+    assert update['commitments_secured']
+
+    # Each fits under max supply, so libwally accepts them; 10M + 11M BTC + 1 sat does not.
+    bad = l1.rpc.addpsbtoutput(1000000000000000, update['psbt'])['psbt']
+    bad = l1.rpc.addpsbtoutput(1100000000000001, bad)['psbt']
+    for method in ('openchannel_update', 'openchannel_signed'):
+        with pytest.raises(RpcError, match='exceed max supply'):
+            l1.rpc.call(method, [start['channel_id'], bad])
+
+
+@pytest.mark.openchannel('v1')
+def test_fundchannel_complete_psbt_above_max_supply(node_factory, bitcoind):
+    """A PSBT whose outputs sum above max supply is refused, not crash us."""
+    l1, l2 = node_factory.get_nodes(2)
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+
+    amount = 100000
+    start = l1.rpc.fundchannel_start(l2.info['id'], amount)
+    psbt = l1.rpc.call('addpsbtoutput', {'satoshi': amount,
+                                         'destination': start['funding_address']})['psbt']
+    psbt = l1.rpc.addpsbtoutput(1000000000000000, psbt)['psbt']
+    psbt = l1.rpc.addpsbtoutput(1100000000000001, psbt)['psbt']
+    with pytest.raises(RpcError, match='exceed max supply'):
+        l1.rpc.fundchannel_complete(l2.info['id'], psbt)
+
+
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+@pytest.mark.openchannel('v2')
 def test_v2_abort_after_accepter_tx_sigs(node_factory, bitcoind):
     """Opener aborts after the accepter has sent tx_signatures.
 
