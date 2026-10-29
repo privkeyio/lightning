@@ -52,7 +52,8 @@ struct chainparams {
 	const struct amount_sat max_supply;
 	const u32 when_lightning_became_cool;
 	/* The depth a coinbase output must reach before this network will
-	 * relay a transaction spending it.
+	 * relay a transaction spending it, unless long_coinbase_maturity
+	 * below applies.
 	 *
 	 * This is a relay rule, not a consensus one, and on a chain that
 	 * deploys a longer coinbase maturity the two do not agree: a spend

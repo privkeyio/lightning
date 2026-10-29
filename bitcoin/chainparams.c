@@ -178,8 +178,9 @@ const struct chainparams networks[] = {
      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
-     /* As bitcoin above: 158111 minus 151406. Doubly provisional, since
-      * this chain's heights were rewritten at every release candidate. */
+     /* v29.4.3.knots20260508: CoinbaseMaturityLongReleaseHeight (158111)
+      * minus CoinbaseMaturityLongStartHeight (151406). Doubly provisional,
+      * since this chain's heights were rewritten at every release candidate. */
      .relay_coinbase_maturity = 6705,
      .p2pkh_version = 111,
      .p2sh_version = 196,

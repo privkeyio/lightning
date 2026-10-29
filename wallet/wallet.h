@@ -814,7 +814,7 @@ u32 wallet_blocks_contig_minheight(struct wallet *w);
  * wallet_extract_owned_outputs - given a tx, extract all of our outputs
  * @w: wallet
  * @is_coinbase: true if this is output 0 (can't spend until the chain's
- *               relay_coinbase_maturity; see utxo_is_immature)
+ *               relay depth; see utxo_is_immature)
  * @blockheight: non-NULL blockheight if known.
  * @outputs: if non-NULL, output numbers of owned outputs are appended to it.
  *
