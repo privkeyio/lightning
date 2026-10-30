@@ -1087,6 +1087,7 @@ static struct channel *handle_init(struct info *info, const u8 *init_msg)
 	bool dev_splice_warn_instead_of_sigs;
 	u32 dev_delay_confirmed_stfu;
 	bool dev_shutdown_during_splice;
+	u64 dev_splice_ack_contribution;
 	struct channel *channel;
 	const u8 *wscript;
 	char *err_reason;
@@ -1156,7 +1157,8 @@ static struct channel *handle_init(struct info *info, const u8 *init_msg)
 				    &dev_splice_abort_at_tx_complete,
 				    &dev_splice_warn_instead_of_sigs,
 				    &dev_delay_confirmed_stfu,
-				    &dev_shutdown_during_splice))
+				    &dev_shutdown_during_splice,
+				    &dev_splice_ack_contribution))
 		abort();
 
 	status_debug("Parsed init...");

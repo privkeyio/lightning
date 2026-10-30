@@ -2121,7 +2121,8 @@ bool peer_start_channeld(struct channel *channel,
 				       ld->dev_splice_abort_at_tx_complete,
 				       ld->dev_splice_warn_instead_of_sigs,
 				       ld->dev_delay_confirmed_stfu,
-				       ld->dev_shutdown_during_splice);
+				       ld->dev_shutdown_during_splice,
+				       ld->dev_splice_ack_contribution);
 
 	/* We don't expect a response: we are triggered by funding_depth_cb. */
 	subd_send_msg(channel->owner, take(initmsg));
