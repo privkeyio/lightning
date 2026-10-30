@@ -1194,6 +1194,54 @@ def test_xpay_blockheight_mismatch(node_factory, bitcoind, executor):
     fut.result(TIMEOUT)
 
 
+def test_xpay_before_init_replies(node_factory, executor):
+    """Payments wait until xpay knows our node id and blockheight."""
+    plugin = os.path.join(os.path.dirname(__file__), 'plugins/command-hold.py')
+    l1, l2 = node_factory.line_graph(2, opts=[{'plugin': plugin,
+                                               'allow-deprecated-apis': True},
+                                              {}])
+
+    l1.rpc.holdcommand('getinfo')
+    l1.rpc.plugin_stop('cln-xpay')
+    l1.rpc.plugin_start(os.path.join(os.getcwd(), 'plugins/cln-xpay'))
+    l1.daemon.wait_for_log('plugin-command-hold.py: holding getinfo')
+
+    inv1 = l2.rpc.invoice(1000, 'inv1', 'inv1')['bolt11']
+    inv2 = l2.rpc.invoice(1000, 'inv2', 'inv2')['bolt11']
+    futs = [executor.submit(l1.rpc.xpay, inv1),
+            executor.submit(l1.rpc.xkeysend, l2.info['id'], 1000),
+            executor.submit(l1.rpc.pay, inv2)]
+    l1.daemon.wait_for_logs(['Holding xpay until init completes',
+                             'Holding xkeysend until init completes',
+                             'Holding rpc_command until init completes'])
+    assert not any(f.done() for f in futs)
+
+    l1.rpc.releasecommand()
+    for f in futs:
+        f.result(TIMEOUT)
+    l1.daemon.wait_for_log('Redirecting pay->xpay')
+
+
+def test_xpay_before_layer_created(node_factory, executor):
+    """Payments wait until xpay has created its askrene layer."""
+    plugin = os.path.join(os.path.dirname(__file__), 'plugins/command-hold.py')
+    l1, l2 = node_factory.line_graph(2, opts=[{'plugin': plugin}, {}])
+
+    l1.rpc.call('askrene-remove-layer', {'layer': 'xpay'})
+    l1.rpc.holdcommand('askrene-create-layer')
+    l1.rpc.plugin_stop('cln-xpay')
+    l1.rpc.plugin_start(os.path.join(os.getcwd(), 'plugins/cln-xpay'))
+    l1.daemon.wait_for_log('plugin-command-hold.py: holding askrene-create-layer')
+
+    inv = l2.rpc.invoice(1000, 'inv', 'inv')['bolt11']
+    fut = executor.submit(l1.rpc.xpay, inv)
+    l1.daemon.wait_for_log('Holding xpay until init completes')
+    assert not fut.done()
+
+    l1.rpc.releasecommand()
+    fut.result(TIMEOUT)
+
+
 def test_xpay_user_layers(node_factory):
     l1, l2, l3, l4 = node_factory.get_nodes(
         4, opts={"may_reconnect": True, "xpay-handle-pay": True}
