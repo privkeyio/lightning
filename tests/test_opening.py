@@ -490,6 +490,28 @@ def test_v2_open_rpc_psbt_above_max_supply(node_factory, bitcoind):
             l1.rpc.call(method, [start['channel_id'], bad])
 
 
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+@pytest.mark.openchannel('v2')
+def test_v2_open_changed_hook_psbt_above_max_supply(node_factory, bitcoind):
+    """openchannel2_changed returning a PSBT whose outputs sum above max
+    supply fails the open, not crash the accepter's dualopend."""
+    plugin = os.path.join(os.getcwd(), 'tests/plugins/df_accept_psbt_above_max_supply.py')
+    l1, l2 = node_factory.get_nodes(2, opts=[{'may_reconnect': True},
+                                             {'plugin': plugin,
+                                              'disable-plugin': 'funder',
+                                              'may_reconnect': True}])
+    l1.fundwallet(2000000)
+    l2.fundwallet(2000000)
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+
+    with pytest.raises(RpcError):
+        l1.rpc.fundchannel(l2.info['id'], 500000)
+    l2.daemon.wait_for_log(r'would exceed max supply')
+    for n in (l1, l2):
+        assert not n.daemon.is_in_log('FATAL SIGNAL')
+    assert bitcoind.rpc.getrawmempool() == []
+
+
 @pytest.mark.openchannel('v1')
 def test_fundchannel_complete_psbt_above_max_supply(node_factory, bitcoind):
     """A PSBT whose outputs sum above max supply is refused, not crash us."""

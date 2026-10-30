@@ -3,6 +3,7 @@
 #include <bitcoin/psbt.h>
 #include <bitcoin/script.h>
 #include <ccan/cast/cast.h>
+#include <ccan/tal/str/str.h>
 #include <common/json_command.h>
 #include <common/psbt_open.h>
 #include <lightningd/chaintopology.h>
@@ -659,7 +660,8 @@ static struct command_result *json_addpsbtoutput(struct command *cmd,
 	const u8 *b32script;
 	bool *add_initiator_serial_ids;
 	struct wally_psbt_output *output;
-	u64 serial_id;
+	u64 serial_id, out_total;
+	char *err;
 
 	if (!param_check(cmd, buffer, params,
 			 p_req("satoshi", param_sat, &amount),
@@ -693,6 +695,21 @@ static struct command_result *json_addpsbtoutput(struct command *cmd,
 				    "Receive amount is below dust limit (%s)",
 				    fmt_amount_sat(tmpctx,
 						   chainparams->dust_limit));
+
+	/* libwally refuses an output above max supply and, in a version 0
+	 * PSBT, outputs totalling above it. */
+	if (amount_sat_greater(*amount, chainparams->max_supply))
+		err = tal_fmt(tmpctx, "Output amount of %s exceeds max supply",
+			      fmt_amount_sat(tmpctx, *amount));
+	else if (psbt->version == 0
+		 && (wally_tx_get_total_output_satoshi(psbt->tx, &out_total) != WALLY_OK
+		     || out_total > chainparams->max_supply.satoshis - amount->satoshis)) /* Raw: libwally total */
+		err = tal_fmt(tmpctx, "Adding output amount %s would exceed max"
+			      " supply", fmt_amount_sat(tmpctx, *amount));
+	else
+		err = NULL;
+	if (err)
+		return command_fail(cmd, FUNDING_PSBT_INVALID, "%s", err);
 
 	if (command_check_only(cmd))
 		return command_check_done(cmd);

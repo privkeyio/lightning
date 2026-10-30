@@ -129,6 +129,20 @@ def test_coinbase_funding_psbt_refused_not_fatal(node_factory, bitcoind):
 
 
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'coinbase maturity is a bitcoin rule')
+def test_addpsbtoutput_coinbase_psbt(node_factory, bitcoind):
+    """addpsbtoutput checks a version 0 PSBT's total without converting it,
+    which a coinbase input would refuse."""
+    l1 = node_factory.get_node()
+    _, coinbase, _ = unpublished_coinbase_block(bitcoind, l1.rpc.newaddr('bech32')['bech32'])
+    psbt = coinbase_psbt(coinbase)
+    total = sum(int(round(float(o['value']) * 10**8)) for o in coinbase['vout'])
+
+    l1.rpc.addpsbtoutput(100000, psbt)
+    with pytest.raises(RpcError, match='would exceed max supply'):
+        l1.rpc.addpsbtoutput(2100000000000000 - total + 1, psbt)
+
+
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'coinbase maturity is a bitcoin rule')
 def test_ordinary_channel_still_opens_at_minimum_depth(node_factory, bitcoind):
     """The refusal must not catch a channel merely funded FROM a coinbase.
 

@@ -5833,7 +5833,7 @@ def test_multifundchannel_peer_outputs_sum_above_max_supply(node_factory, bitcoi
     replies = [executor.submit(raw_interactive_tx, lconn, cid, 1100000000000000, serial)
                for (lconn, _), cid, serial in zip(peers, channel_ids, (1, 3))]
 
-    with pytest.raises(RpcError, match="exceed"):
+    with pytest.raises(RpcError, match="would exceed max supply"):
         fut.result(TIMEOUT)
     for r in replies:
         r.result(TIMEOUT)
