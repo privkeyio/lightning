@@ -1558,8 +1558,8 @@ fetch_psbt_changes(struct state *state,
 	if (fromwire_dualopend_fail(msg, msg, &err)) {
 		open_abort(state, "%s", err);
 	} else if (fromwire_dualopend_psbt_updated(state, msg, updated_psbt)) {
-		/* It can carry other opens' outputs (multifundchannel), which
-		 * no check here has seen. */
+		/* A plugin's openchannel2_changed reply can set any output
+		 * amounts, which no check here has seen. */
 		err = interactive_tx_add_output_check_max_money(tmpctx,
 								*updated_psbt,
 								AMOUNT_SAT(0));

@@ -2609,7 +2609,7 @@ def test_splice_broadcast_skips_cmd_awaiting_sigs(node_factory, bitcoind, execut
     TEST_NETWORK != "regtest", "elementsd doesnt yet support PSBT features we need"
 )
 def test_splice_tx_add_output_sum_above_max_supply(node_factory, bitcoind):
-    """Splice outputs that sum above MAX_MONEY must be rejected, not crash the accepter."""
+    """Splice outputs that sum above MAX_MONEY are refused by the initiator, not sent to crash the accepter."""
     l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True)
     chan_id = l1.get_channel_id(l2)
 
