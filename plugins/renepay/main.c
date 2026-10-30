@@ -35,6 +35,17 @@ static void memleak_mark(struct plugin *p, struct htable *memtable)
 			    &pay_plugin->uncertainty->chan_extra_map->raw);
 	memleak_scan_htable(memtable, &pay_plugin->payment_map->raw);
 	memleak_scan_htable(memtable, &pay_plugin->pending_routes->raw);
+
+	struct payment_map_iter it;
+	for (struct payment *payment =
+		 payment_map_first(pay_plugin->payment_map, &it);
+	     payment;
+	     payment = payment_map_next(pay_plugin->payment_map, &it)) {
+		memleak_scan_htable(memtable,
+				    &payment->disabledmap->disabled_map->raw);
+		memleak_scan_htable(memtable,
+				    &payment->disabledmap->warned_map->raw);
+	}
 }
 
 static const char *init(struct command *init_cmd,
