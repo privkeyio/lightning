@@ -45,6 +45,10 @@ struct xpay {
 	struct pubkey fakenode;
 	/* We need to know current block height */
 	u32 blockheight;
+	/* Replies to init's requests we are still waiting for */
+	size_t init_pending;
+	/* Commands which arrived before those replies */
+	struct deferred_cmd *deferred;
 	/* Do we take over "pay" commands? */
 	bool take_over_pay;
 	/* Are we to wait for all parts to complete before returning? */
@@ -57,6 +61,53 @@ struct xpay {
 static struct xpay *xpay_of(struct plugin *plugin)
 {
 	return plugin_get_data(plugin, struct xpay);
+}
+
+struct deferred_cmd {
+	struct command *cmd;
+	const char *buf;
+	const jsmntok_t *params;
+	struct command_result *(*handler)(struct command *cmd,
+					  const char *buf,
+					  const jsmntok_t *params);
+};
+
+/* Commands can arrive before init's replies have set local_id and
+ * blockheight, and created our layer: hold them until then. */
+static struct command_result *
+defer_until_init(struct command *cmd,
+		 const char *buf,
+		 const jsmntok_t *params,
+		 struct command_result *(*handler)(struct command *cmd,
+						   const char *buf,
+						   const jsmntok_t *params))
+{
+	struct xpay *xpay = xpay_of(cmd->plugin);
+	struct deferred_cmd d;
+
+	plugin_log(cmd->plugin, LOG_INFORM, "Holding %s until init completes",
+		   cmd->methodname);
+	d.cmd = cmd;
+	d.buf = tal_dup_arr(cmd, char, buf, params->end, 0);
+	d.params = json_tok_copy(cmd, params);
+	d.handler = handler;
+	tal_arr_expand(&xpay->deferred, d);
+	return command_still_pending(cmd);
+}
+
+static void init_reply_done(struct xpay *xpay)
+{
+	struct deferred_cmd *deferred;
+
+	assert(xpay->init_pending);
+	if (--xpay->init_pending)
+		return;
+
+	deferred = tal_steal(tmpctx, xpay->deferred);
+	xpay->deferred = tal_arr(xpay, struct deferred_cmd, 0);
+	for (size_t i = 0; i < tal_count(deferred); i++)
+		deferred[i].handler(deferred[i].cmd,
+				    deferred[i].buf, deferred[i].params);
 }
 
 /* This refreshes the gossmap. */
@@ -2894,6 +2945,8 @@ static struct command_result *json_xpay(struct command *cmd,
 					const char *buffer,
 					const jsmntok_t *params)
 {
+	if (xpay_of(cmd->plugin)->init_pending)
+		return defer_until_init(cmd, buffer, params, json_xpay);
 	return json_xpay_params(cmd, buffer, params, false);
 }
 
@@ -2901,6 +2954,8 @@ static struct command_result *json_xpay_as_pay(struct command *cmd,
 					       const char *buffer,
 					       const jsmntok_t *params)
 {
+	if (xpay_of(cmd->plugin)->init_pending)
+		return defer_until_init(cmd, buffer, params, json_xpay_as_pay);
 	return json_xpay_params(cmd, buffer, params, true);
 }
 
@@ -2922,6 +2977,9 @@ static struct command_result *json_sendamount(struct command *cmd,
 	struct json_escape *label;
 	struct xpay_params *xparams;
 	struct out_req *req;
+
+	if (xpay_of(cmd->plugin)->init_pending)
+		return defer_until_init(cmd, buffer, params, json_sendamount);
 
 	if (!param_check(cmd, buffer, params,
 			 p_req("invstring", param_invstring, &invstring),
@@ -3017,6 +3075,7 @@ static struct command_result *getchaininfo_done(struct command *aux_cmd,
 			   json_tok_full_len(result),
 			   json_tok_full(buf, result));
 	}
+	init_reply_done(xpay);
 	return aux_command_done(aux_cmd);
 }
 
@@ -3037,6 +3096,7 @@ static struct command_result *getinfo_done(struct command *aux_cmd,
 			   json_tok_full(buf, result),
 			   err);
 	}
+	init_reply_done(xpay);
 	return aux_command_done(aux_cmd);
 }
 
@@ -3075,6 +3135,7 @@ static struct command_result *xpay_layer_created(struct command *aux_cmd,
 						 const jsmntok_t *result,
 						 void *unused)
 {
+	init_reply_done(xpay_of(aux_cmd->plugin));
 	return aux_command_done(aux_cmd);
 }
 
@@ -3096,6 +3157,9 @@ static struct command_result *json_xkeysend(struct command *cmd,
 	struct tlv_field *extra_fields;
 	u8 *tlvs;
 	struct out_req *req;
+
+	if (xpay->init_pending)
+		return defer_until_init(cmd, buf, params, json_xkeysend);
 
 	if (!param_check(cmd, buf, params,
 			 p_req("destination", param_pubkey, &dst),
@@ -3193,7 +3257,9 @@ static const char *init(struct command *init_cmd,
 	if (!pubkey_from_hexstr("02" "0000000000000000000000000000000000000000000000000000000000000001", 66, &xpay->fakenode))
 		abort();
 
-	/* Cannot use rpc_scan, as we intercept rpc_command: would block. */
+	/* Cannot use rpc_scan, as we intercept rpc_command: would block.
+	 * Instead, payments wait for these three replies. */
+	xpay->init_pending = 3;
 	req = jsonrpc_request_start(aux_command(init_cmd), "getchaininfo",
 				    getchaininfo_done,
 				    plugin_broken_cb,
@@ -3378,6 +3444,9 @@ static struct command_result *handle_rpc_command(struct command *cmd,
 	if (!json_tok_streq(buf, method_tok, "pay"))
 		goto dont_redirect;
 
+	if (xpay->init_pending)
+		return defer_until_init(cmd, buf, params, handle_rpc_command);
+
 	plugin_log(cmd->plugin, LOG_DBG, "Got command %s",
 		   json_strdup(tmpctx, buf, method_tok));
 
@@ -3507,6 +3576,9 @@ int main(int argc, char *argv[])
 	xpay = tal(NULL, struct xpay);
 	/* block_added can arrive before getchaininfo_done sets it */
 	xpay->blockheight = 0;
+	/* Commands are called for their usage before init */
+	xpay->init_pending = 0;
+	xpay->deferred = tal_arr(xpay, struct deferred_cmd, 0);
 	xpay->take_over_pay = true;
 	xpay->slow_mode = false;
 	xpay->dev_no_age = false;
