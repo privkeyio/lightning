@@ -2818,6 +2818,73 @@ def _mallory_update(node, bitcoind, scid, direction, fee_base):
 
 
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'activation height is a bitcoin rule')
+def test_gossip_store_drops_channel_from_before_activation(node_factory, bitcoind):
+    """A gossip store written before the activation floor drops what is below it.
+
+    l1 learns both channels without knowing the rule, then restarts with the
+    activation between them. The channel below must leave its store, and the
+    one above must stay.
+    """
+    l1, l2, l3 = node_factory.get_nodes(3, opts={'allow_bad_gossip': True})
+    node_factory.join_nodes([l1, l2], wait_for_announce=True)
+    bitcoind.generate_block(10)
+    node_factory.join_nodes([l2, l3], wait_for_announce=True)
+
+    below = only_one(l1.rpc.listpeerchannels()['channels'])['short_channel_id']
+    above = only_one(l3.rpc.listpeerchannels()['channels'])['short_channel_id']
+    activation = int(above.split('x')[0])
+    assert int(below.split('x')[0]) < activation
+
+    def scids():
+        return set(c['short_channel_id'] for c in l1.rpc.listchannels()['channels'])
+
+    wait_for(lambda: scids() == {below, above})
+
+    l1.stop()
+    l1.daemon.opts['dev-blake2b-activation-height'] = activation
+    l1.start()
+    assert scids() == {above}
+    assert l1.daemon.is_in_log(r'Removing channel {} from gossip_store: funded before'
+                               .format(below))
+
+    # Gone from the store itself, so a second start has nothing to remove.
+    l1.restart()
+    assert scids() == {above}
+    assert len([line for line in l1.daemon.logs
+                if 'from gossip_store: funded before' in line]) == 1
+
+
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'activation height is a bitcoin rule')
+def test_gossip_store_keeps_dying_channel_from_before_activation(node_factory, bitcoind):
+    """A dying channel below the activation is left to its 72 block deadline.
+
+    Removing it at startup as well would leave the dying record pointing at a
+    channel already gone when the deadline arrives.
+    """
+    l1, l2, l3 = node_factory.line_graph(3, wait_for_announce=True,
+                                         opts={'allow_bad_gossip': True})
+    scid12 = only_one(l1.rpc.listpeerchannels()['channels'])['short_channel_id']
+    scid23 = only_one(l3.rpc.listpeerchannels()['channels'])['short_channel_id']
+    wait_for(lambda: len(l1.rpc.listchannels()['channels']) == 4)
+
+    l2.rpc.close(l3.info['id'])
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'channel {} closing soon'.format(scid23))
+
+    l1.stop()
+    l1.daemon.opts['dev-blake2b-activation-height'] = bitcoind.rpc.getblockcount() + 1
+    l1.start()
+    assert l1.daemon.is_in_log(r'Removing channel {} from gossip_store'.format(scid12))
+    assert not l1.daemon.is_in_log(r'Removing channel {} from gossip_store'.format(scid23))
+
+    bitcoind.generate_block(73)
+    sync_blockheight(bitcoind, [l1])
+    l1.daemon.wait_for_log(r'Deleting channel {} due to the funding outpoint being spent'
+                           .format(scid23))
+    assert l1.rpc.listchannels()['channels'] == []
+
+
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'activation height is a bitcoin rule')
 def test_gossip_prefork_channel_update_only_from_peer(node_factory, bitcoind):
     """A channel funded before the activation takes updates from its peer only.
 

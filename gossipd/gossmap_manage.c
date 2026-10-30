@@ -470,6 +470,36 @@ static void prune_network(struct gossmap_manage *gm)
 	start_prune_timer(gm);
 }
 
+/* A store written before the BLAKE2b activation rule can still hold
+ * channels funded below it, and nothing would refresh them: they are
+ * unannounced now, so remove them. */
+static void remove_prefork_channels(struct gossmap_manage *gm)
+{
+	struct gossmap *gossmap = gossmap_manage_get_gossmap(gm);
+
+	for (size_t i = 0; i < gossmap_max_chan_idx(gossmap); i++) {
+		struct gossmap_chan *chan = gossmap_chan_byidx(gossmap, i);
+		struct short_channel_id scid;
+
+		if (!chan)
+			continue;
+
+		scid = gossmap_chan_scid(gossmap, chan);
+		if (!scid_predates_blake2b(gm->daemon, scid))
+			continue;
+
+		/* It goes when its deadline passes. */
+		if (channel_already_dying(gm->dying_channels, scid))
+			continue;
+
+		status_debug("Removing channel %s from gossip_store: funded"
+			     " before the BLAKE2b activation",
+			     fmt_short_channel_id(tmpctx, scid));
+		remove_channel(gm, gossmap, chan, scid);
+		gossmap = gossmap_manage_get_gossmap(gm);
+	}
+}
+
 static void start_prune_timer(struct gossmap_manage *gm)
 {
 	/* Schedule next run now */
@@ -569,6 +599,7 @@ struct gossmap_manage *gossmap_manage_new(const tal_t *ctx,
 	gm->pending_nannounces = tal_arr(gm, struct pending_nannounce *, 0);
 	gm->txf = txout_failures_new(gm, daemon);
 
+	remove_prefork_channels(gm);
 	start_prune_timer(gm);
 	return gm;
 }
