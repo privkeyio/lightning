@@ -901,3 +901,22 @@ def test_cltv_value(node_factory, bitcoind):
     line = l1.daemon.wait_for_log(pattern)
     cltv = int(re.search(pattern, line).group(1))
     assert cltv == (blockheight + 1) + cltv_delta + final_cltv
+
+
+def test_pending_route_onion(node_factory, executor):
+    """A route waiting for its result must not hold an orphaned onion."""
+    plugin = os.path.join(os.path.dirname(__file__), 'plugins/hold_htlcs.py')
+    l1, l2, l3 = node_factory.line_graph(
+        3,
+        wait_for_announce=True,
+        opts=[{'allow-deprecated-apis': True},
+              {'plugin': plugin, 'hold-time': 120},
+              {}],
+    )
+    inv = l3.rpc.invoice(1000, "test_pending_route_onion", "description")
+    fut = executor.submit(l1.rpc.call, "renepay", {"invstring": inv["bolt11"]})
+    l2.daemon.wait_for_log("Holding onto an incoming htlc")
+
+    l1.stop()
+    assert not l1.daemon.is_in_log("MEMLEAK")
+    assert fut.exception(10) is not None
