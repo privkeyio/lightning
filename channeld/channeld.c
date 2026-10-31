@@ -230,14 +230,20 @@ struct peer {
 };
 
 static void start_commit_timer(struct peer *peer);
+static bool shutdown_held(const struct peer *peer);
 
 static void billboard_update(const struct peer *peer)
 {
-	const char *update = billboard_message(tmpctx, peer->channel_ready,
-					       NULL,
-					       peer->shutdown_sent,
-					       peer->depth_togo,
-					       num_channel_htlcs(peer->channel));
+	const char *update;
+
+	if (shutdown_held(peer))
+		update = "Waiting for the splice to lock before sending shutdown";
+	else
+		update = billboard_message(tmpctx, peer->channel_ready,
+					   NULL,
+					   peer->shutdown_sent,
+					   peer->depth_togo,
+					   num_channel_htlcs(peer->channel));
 
 	peer_billboard(false, "%s", update);
 }
@@ -555,11 +561,11 @@ static void check_mutual_splice_locked(struct peer *peer)
 						&inflight->outpoint.txid);
 	wire_sync_write(MASTER_FD, take(msg));
 
-	billboard_update(peer);
-
 	peer->splice_state->inflights = tal_free(peer->splice_state->inflights);
 	peer->splice_state->count = 0;
 	peer->splice_state->remote_locked_txid = tal_free(peer->splice_state->remote_locked_txid);
+
+	billboard_update(peer);
 
 	/* A shutdown waiting for this splice can go now. */
 	if (peer->send_shutdown)
@@ -1001,14 +1007,8 @@ static bool have_signed_splice(const struct peer *peer)
 	return false;
 }
 
-static void maybe_send_shutdown(struct peer *peer)
+static bool shutdown_held(const struct peer *peer)
 {
-	u8 *msg;
-	struct tlv_shutdown_tlvs *tlvs;
-
-	if (!peer->send_shutdown)
-		return;
-
 	/* BOLT-splice #2:
 	 *
 	 * A sending node:
@@ -1022,11 +1022,22 @@ static void maybe_send_shutdown(struct peer *peer)
 	 * splice output instead).  Once they have sent `shutdown` we reply
 	 * anyway: a peer that has may never lock the splice, so waiting would
 	 * hang. */
-	if (have_signed_splice(peer)
-	    && !peer->shutdown_sent[REMOTE]
-	    && !peer->dev_shutdown_during_splice) {
-		peer_billboard(false, "Waiting for the splice to lock before"
-			       " sending shutdown");
+	return peer->send_shutdown
+		&& !peer->shutdown_sent[REMOTE]
+		&& !peer->dev_shutdown_during_splice
+		&& have_signed_splice(peer);
+}
+
+static void maybe_send_shutdown(struct peer *peer)
+{
+	u8 *msg;
+	struct tlv_shutdown_tlvs *tlvs;
+
+	if (!peer->send_shutdown)
+		return;
+
+	if (shutdown_held(peer)) {
+		billboard_update(peer);
 		return;
 	}
 

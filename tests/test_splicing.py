@@ -1438,7 +1438,8 @@ def test_splice_confirms_after_mutual_close(node_factory, bitcoind):
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
-def test_splice_holds_shutdown_until_locked(node_factory, bitcoind, executor):
+@pytest.mark.parametrize("restart", [True, False])
+def test_splice_holds_shutdown_until_locked(node_factory, bitcoind, executor, restart):
     """We don't send shutdown while a signed splice is unlocked: the close
     waits for it, takes an RBF meanwhile, survives a restart, and then spends
     the splice output."""
@@ -1477,11 +1478,16 @@ def test_splice_holds_shutdown_until_locked(node_factory, bitcoind, executor):
     assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_SHUTTING_DOWN'
     wait_for(lambda: held(l2))
 
-    # Still waiting after a restart.
-    l2.restart()
-    fut.exception(TIMEOUT)
-    l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
-    wait_for(lambda: held(l2))
+    if restart:
+        # Still waiting after a restart, and no status update hides it.
+        restart_line = len(l2.daemon.logs)
+        l2.restart()
+        fut.exception(TIMEOUT)
+        l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
+        l2.daemon.wait_for_logs(['peer_in WIRE_CHANNEL_READY',
+                                 'billboard perm: Reconnected, and reestablished'])
+        assert held(l2)
+        assert not l2.daemon.is_in_log('billboard: Channel ready for use', start=restart_line)
     assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_SHUTTING_DOWN'
     assert not l2.daemon.is_in_log('peer_out WIRE_SHUTDOWN')
     assert not l1.daemon.is_in_log('peer_in WIRE_SHUTDOWN')
