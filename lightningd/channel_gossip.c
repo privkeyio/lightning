@@ -88,6 +88,18 @@ static struct state_transition allowed_transitions[] = {
 	{ CGOSSIP_PRIVATE, CGOSSIP_CHANNEL_DEAD,
 	  "Unannounced channel closed" },
 
+	/* Funded before the BLAKE2b activation */
+	{ CGOSSIP_WAITING_FOR_USABLE, CGOSSIP_PRIVATE,
+	  "Channel live, but funded before the BLAKE2b activation" },
+	{ CGOSSIP_WAITING_FOR_SCID, CGOSSIP_PRIVATE,
+	  "Channel mined (zeroconf), but before the BLAKE2b activation" },
+	{ CGOSSIP_PRIVATE, CGOSSIP_WAITING_FOR_MATCHING_PEER_SIGS,
+	  "Spliced above the BLAKE2b activation" },
+	{ CGOSSIP_CHANNEL_UNANNOUNCED_DYING, CGOSSIP_PRIVATE,
+	  "Closing channel mined (zeroconf), but before the BLAKE2b activation" },
+	{ CGOSSIP_PRIVATE, CGOSSIP_WAITING_FOR_SCID,
+	  "Funding reorganized out (zeroconf), was before the BLAKE2b activation" },
+
 	/* Public channels, startup */
 	{ CGOSSIP_WAITING_FOR_USABLE, CGOSSIP_CHANNEL_DEAD,
 	  "Channel closed before it had scid or alias" },
@@ -199,11 +211,6 @@ struct channel_gossip {
 
 static bool starting_up = true, gossipd_init_done = false;
 
-static bool is_private(const struct channel *channel)
-{
-	return !(channel->channel_flags & CHANNEL_FLAGS_ANNOUNCE_CHANNEL);
-}
-
 /* Funded before the BLAKE2b activation: BOLT-blake2b #7 keeps it out of the
  * graph, ours and everyone's, whatever its announce flag says. */
 static bool predates_blake2b(const struct lightningd *ld,
@@ -222,6 +229,16 @@ static bool is_usable(const struct channel *channel)
 		return false;
 	/* Can't send if we can't talk about it. */
 	return channel->scid != NULL || channel->alias[REMOTE] != NULL;
+}
+
+/* A usable channel funded before the activation can never be announced, so
+ * it is handled like a private one until a splice moves it above. */
+static bool is_private(const struct channel *channel)
+{
+	return !(channel->channel_flags & CHANNEL_FLAGS_ANNOUNCE_CHANNEL)
+		|| (is_usable(channel)
+		    && channel->scid
+		    && predates_blake2b(channel->peer->ld, *channel->scid));
 }
 
 static bool has_scid(const struct channel *channel)
@@ -851,8 +868,13 @@ static void set_gossip_state(struct channel *channel,
 	case CGOSSIP_WAITING_FOR_USABLE:
 		abort();
 
-	/* We don't do anything when we first enter these states */
+	/* Sigs from before we knew it was funded before the BLAKE2b
+	 * activation can never be used. */
 	case CGOSSIP_PRIVATE:
+		cg->remote_sigs = tal_free(cg->remote_sigs);
+		return;
+
+	/* We don't do anything when we first enter these states */
 	case CGOSSIP_WAITING_FOR_SCID:
 		return;
 
@@ -964,7 +986,6 @@ void channel_gossip_init(struct channel *channel,
 {
 	struct lightningd *ld = channel->peer->ld;
 	struct channel_gossip *cg;
-	bool public = (channel->channel_flags & CHANNEL_FLAGS_ANNOUNCE_CHANNEL);
 
 	cg = channel->channel_gossip = tal(channel, struct channel_gossip);
 	cg->cupdate = NULL;
@@ -975,7 +996,7 @@ void channel_gossip_init(struct channel *channel,
 
 	/* If we have an scid, we might have announcement signatures
 	 * saved in the db already. */
-	if (channel->scid && public) {
+	if (channel->scid && !is_private(channel)) {
 		cg->remote_sigs = tal(cg, struct remote_announce_sigs);
 		cg->remote_sigs->scid = *channel->scid;
 		if (!wallet_remote_ann_sigs_load(ld->wallet,
@@ -1025,6 +1046,11 @@ void channel_gossip_got_announcement_sigs(struct channel *channel,
 		return;
 	case CGOSSIP_PRIVATE_WAITING_FOR_USABLE:
 	case CGOSSIP_PRIVATE:
+		/* They may not know the activation height. */
+		if (channel->channel_flags & CHANNEL_FLAGS_ANNOUNCE_CHANNEL) {
+			log_debug(channel->log, "Ignoring announcement_signatures: funded before the BLAKE2b activation");
+			return;
+		}
 		log_unusual(channel->log, "They sent an announcement_signatures message for a private channel?  Ignoring.");
 		u8 *warning = towire_warningfmt(NULL,
 						&channel->cid,
@@ -1132,6 +1158,15 @@ void channel_gossip_update_from_gossipd(struct channel *channel,
 		log_broken(channel->log,
 			   "gossipd gave channel_update for unsaved channel? update=%s",
 			   tal_hex(tmpctx, channel_update));
+		return;
+	}
+
+	/* gossipd keeps a closed channel funded before the BLAKE2b activation
+	 * for a while, and still hands us its update on start. */
+	if ((cg->state == CGOSSIP_PRIVATE || cg->state == CGOSSIP_CHANNEL_DEAD)
+	    && channel->scid
+	    && predates_blake2b(channel->peer->ld, *channel->scid)) {
+		tal_free_if_taken(channel_update);
 		return;
 	}
 
