@@ -510,7 +510,8 @@ struct command_result *notification_sendpay_failure(struct command *cmd,
 	struct route *route =
 	    route_map_get(pay_plugin->pending_routes, key);
 	if (!route) {
-		route = tal_route_from_json(tmpctx, buf,
+		/* Not on tmpctx: routefail holds it across addgossip. */
+		route = tal_route_from_json(routetracker, buf,
 					    json_get_member(buf, sub, "data"));
 		if (!route)
 			plugin_err(pay_plugin->plugin,

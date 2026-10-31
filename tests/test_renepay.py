@@ -920,3 +920,26 @@ def test_pending_route_onion(node_factory, executor):
     l1.stop()
     assert not l1.daemon.is_in_log("MEMLEAK")
     assert fut.exception(10) is not None
+
+
+def test_foreign_sendpay_failure(node_factory):
+    """A failed sendpay renepay did not send, for one of its payments, is
+    handled once its channel_update is added."""
+    l1, l2, l3 = node_factory.line_graph(
+        3, wait_for_announce=True, opts={'allow-deprecated-apis': True})
+    inv = l3.rpc.invoice(100000, "test_foreign_sendpay_failure", "description")
+    with pytest.raises(RpcError):
+        l1.rpc.call("renepay", {"invstring": inv["bolt11"], "maxfee": 0})
+
+    # Pay l2 no fee, so it fails with a channel_update.
+    route = l1.rpc.getroute(l3.info['id'], 100000, 1)['route']
+    route[0]['amount_msat'] = route[1]['amount_msat']
+    l1.rpc.sendpay(route, inv["payment_hash"],
+                   payment_secret=inv["payment_secret"], groupid=5)
+    with pytest.raises(RpcError, match=r'WIRE_FEE_INSUFFICIENT'):
+        l1.rpc.waitsendpay(inv["payment_hash"], groupid=5)
+    l1.daemon.wait_for_log('recieved a sendpay result with groupid=5')
+    l1.rpc.call("renepaystatus", {"invstring": inv["bolt11"]})
+    assert not l1.daemon.is_in_log('plugin-cln-renepay: Killing plugin')
+    l1.stop()
+    assert not l1.daemon.is_in_log('MEMLEAK')
