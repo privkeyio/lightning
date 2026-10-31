@@ -350,7 +350,7 @@ static const u8 *create_onion(
 	    create_onionpacket(this_ctx, sp, ROUTING_INFO_SIZE, shared_secrets);
 	*shared_secrets = tal_steal(ctx, *shared_secrets);
 
-	const u8 *onion = serialize_onionpacket(ctx, packet);
+	const u8 *onion = serialize_onionpacket(tmpctx, packet);
 	tal_free(this_ctx);
 	return onion;
 }
