@@ -2783,7 +2783,8 @@ def test_gossip_does_not_announce_channel_from_before_activation(node_factory, b
     time.sleep(20)
     assert below not in [c['short_channel_id']
                          for c in l3.rpc.listchannels()['channels']]
-    l1.daemon.wait_for_log('Not announcing .*: funded before the BLAKE2b')
+    l1.daemon.wait_for_log(r'->CGOSSIP_PRIVATE \(Channel live, but funded before the BLAKE2b')
+    assert not l1.daemon.is_in_log('Not announcing')
 
     # Not public is not unusable: l1 still learns l2's fees on the channel
     # they share, the way it would for a private one.
@@ -2925,6 +2926,8 @@ def test_gossip_prefork_channel_update_only_from_peer(node_factory, bitcoind):
     # but its old one still names the channel.
     bitcoind.generate_block(activation - bitcoind.rpc.getblockcount())
     sync_blockheight(bitcoind, [l1, l2])
+    l1.daemon.logs_catchup()
+    spliced = len(l1.daemon.logs)
     chan_id = l1.get_channel_id(l2)
     funds = l1.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
     result = l1.rpc.splice_init(chan_id, 100000, funds['psbt'])
@@ -2937,6 +2940,10 @@ def test_gossip_prefork_channel_update_only_from_peer(node_factory, bitcoind):
     l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
     new_scid = only_one(l1.rpc.listpeerchannels()['channels'])['short_channel_id']
     assert int(new_scid.split('x')[0]) >= activation
+    wait_for(lambda: l1.daemon.is_in_log(r'CGOSSIP_PRIVATE->CGOSSIP_WAITING_FOR_[A-Z_]+ \(Spliced above the BLAKE2b activation',
+                                         start=spliced))
+    wait_for(lambda: l1.daemon.is_in_log(r'->CGOSSIP_ANNOUNCED', start=spliced))
+    assert not l1.daemon.is_in_log('Illegal gossip state transition')
 
     lconn, mallory = _mallory_update(l1, bitcoind, scid, direction, 88888)
     l1.daemon.wait_for_log(r'{} sent us a channel update for a channel owned by {} \({}\)'
@@ -2996,3 +3003,106 @@ def test_announcement_sigs_request_announced(node_factory):
     start = _request_sigs_on_reconnect(l1, l2)
     wait_for(lambda: l1.daemon.is_in_log('peer_in WIRE_ANNOUNCEMENT_SIGNATURES', start=start))
     assert not l2.daemon.is_in_log('Ignoring announcement_signatures request')
+
+
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'activation height is a bitcoin rule')
+def test_gossip_prefork_channel_not_reannounced(node_factory, bitcoind):
+    """A channel funded before the activation is not re-announced on start.
+
+    l1 announced its channel before it knew the rule. Once it does, the
+    channel is handled like a private one: nothing is re-announced at each
+    start, and invoices still carry a route hint for it, which l3 needs since
+    it keeps the channel out of its graph.
+    """
+    l1, l2 = node_factory.line_graph(2, wait_for_announce=True,
+                                     opts={'allow_bad_gossip': True,
+                                           'may_reconnect': True})
+    scid = only_one(l1.rpc.listpeerchannels()['channels'])['short_channel_id']
+    activation = int(scid.split('x')[0]) + 1
+    bitcoind.generate_block(activation - bitcoind.rpc.getblockcount())
+    l1.pay(l2, 100000000)
+
+    l3 = node_factory.get_node(options={'dev-blake2b-activation-height': activation},
+                               allow_bad_gossip=True)
+    node_factory.join_nodes([l3, l2], wait_for_announce=True)
+
+    l1.stop()
+    l1.daemon.opts['dev-blake2b-activation-height'] = activation
+    l1.daemon.logs_catchup()
+    restarted = len(l1.daemon.logs)
+    for _ in range(2):
+        l1.daemon.logs_catchup()
+        start = len(l1.daemon.logs)
+        l1.start()
+        assert l1.daemon.is_in_log('Initial channel state CGOSSIP_PRIVATE', start=start)
+        l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+        wait_for(lambda: only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
+        l1.stop()
+    assert not l1.daemon.is_in_log('gossipd lost track of announced channel', start=restarted)
+    assert not l1.daemon.is_in_log('Not announcing', start=restarted)
+    assert not l1.daemon.is_in_log(r'gossip state: .*->CGOSSIP_ANNOUNCED', start=restarted)
+
+    # With no announced channel left, a new alias is never announced.
+    l1.daemon.opts['alias'] = 'PREFORKRENAMED'
+    l1.start()
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    wait_for(lambda: only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
+    assert scid not in [c['short_channel_id'] for c in l3.rpc.listchannels()['channels']]
+    time.sleep(10)
+    assert [n.get('alias') for n in l1.rpc.listnodes(l1.info['id'])['nodes']] != ['PREFORKRENAMED']
+
+    inv = l1.rpc.invoice(10000, 'prefork', 'prefork')['bolt11']
+    assert len(only_one(l1.rpc.decode(inv)['routes'])) == 1
+    l3.rpc.pay(inv)
+
+
+def test_gossip_prefork_channel_closed_restart(node_factory, bitcoind):
+    """A closed channel funded before the activation is quiet across a restart.
+
+    gossipd keeps a dying channel for a while and still hands lightningd its
+    channel_update on start, which used to land in a state that expected none.
+    """
+    l1, l2 = node_factory.line_graph(2, wait_for_announce=True,
+                                     opts={'allow_bad_gossip': True,
+                                           'may_reconnect': True})
+    scid = only_one(l1.rpc.listpeerchannels()['channels'])['short_channel_id']
+    activation = int(scid.split('x')[0]) + 1
+    bitcoind.generate_block(activation - bitcoind.rpc.getblockcount())
+
+    l1.rpc.close(l2.info['id'])
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    sync_blockheight(bitcoind, [l1, l2])
+
+    l1.stop()
+    l1.daemon.opts['dev-blake2b-activation-height'] = activation
+    l1.daemon.logs_catchup()
+    start = len(l1.daemon.logs)
+    l1.start()
+    assert l1.daemon.is_in_log(r'Initial channel state CGOSSIP_CHANNEL_DEAD', start=start)
+    time.sleep(5)
+    assert not l1.daemon.is_in_log('gossipd gave channel_update', start=start)
+
+
+def test_gossip_prefork_zeroconf_closing_mined(node_factory, bitcoind):
+    """A zeroconf channel closing before its funding is mined, then mined
+    below the activation, goes from dying to private."""
+    plugin = os.path.join(os.path.dirname(__file__), 'plugins', 'zeroconf-selective.py')
+    activation = bitcoind.rpc.getblockcount() + 100
+    l1, l2 = node_factory.get_nodes(2, opts=[{'dev-blake2b-activation-height': activation},
+                                             {'dev-blake2b-activation-height': activation,
+                                              'plugin': plugin,
+                                              'zeroconf_allow': 'any'}])
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    l1.fundwallet(10**6)
+    txid = l1.rpc.fundchannel(l2.info['id'], 100000, mindepth=0)['txid']
+    wait_for(lambda: only_one(l1.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL')
+
+    l1.rpc.close(l2.info['id'])
+    l1.daemon.wait_for_log(r'->CGOSSIP_CHANNEL_UNANNOUNCED_DYING')
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == 2)
+    bitcoind.rpc.generateblock(bitcoind.rpc.getnewaddress(), [txid])
+    sync_blockheight(bitcoind, [l1, l2])
+
+    l1.daemon.wait_for_log(r'CGOSSIP_CHANNEL_UNANNOUNCED_DYING->CGOSSIP_PRIVATE')
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'CGOSSIP_PRIVATE->CGOSSIP_CHANNEL_DEAD')
