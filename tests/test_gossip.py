@@ -2943,3 +2943,56 @@ def test_gossip_prefork_channel_update_only_from_peer(node_factory, bitcoind):
                            .format(mallory, l2.info['id'], scid))
     assert remote_fee() == 4321
     lconn.connection.close()
+
+
+def _request_sigs_on_reconnect(l1, l2):
+    """Restart l1 so it asks l2 to retransmit announcement_signatures."""
+    l1.stop()
+    l1.daemon.env['CLN_DEV_REQUEST_ANNOUNCEMENT_SIGS'] = '1'
+    l1.daemon.logs_catchup()
+    start = len(l1.daemon.logs)
+    l1.start()
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    return start
+
+
+@pytest.mark.parametrize("kind", ["unconfirmed", "zeroconf", "private"])
+def test_announcement_sigs_request_unannounceable(node_factory, bitcoind, kind):
+    """A peer asking for announcement_signatures gets none for a channel
+    which is private or has no scid yet."""
+    plugin = os.path.join(os.path.dirname(__file__), 'plugins', 'zeroconf-selective.py')
+    l1, l2 = node_factory.get_nodes(2, opts=[{'may_reconnect': True},
+                                             {'may_reconnect': True,
+                                              'plugin': plugin,
+                                              'zeroconf_allow': 'any'}])
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    l1.fundwallet(10**6)
+    if kind == 'zeroconf':
+        l1.rpc.fundchannel(l2.info['id'], 100000, mindepth=0)
+        state = 'CHANNELD_NORMAL'
+    elif kind == 'private':
+        l1.rpc.fundchannel(l2.info['id'], 100000, announce=False)
+        bitcoind.generate_block(6, wait_for_mempool=1)
+        state = 'CHANNELD_NORMAL'
+    else:
+        l1.rpc.fundchannel(l2.info['id'], 100000)
+        state = 'CHANNELD_AWAITING_LOCKIN'
+    wait_for(lambda: only_one(l2.rpc.listpeerchannels()['channels'])['state'] == state)
+    if kind != 'private':
+        assert 'short_channel_id' not in only_one(l2.rpc.listpeerchannels()['channels'])
+
+    start = _request_sigs_on_reconnect(l1, l2)
+    l2.daemon.wait_for_log('Ignoring announcement_signatures request in CGOSSIP_')
+    l1.rpc.ping(l2.info['id'])
+    assert not l1.daemon.is_in_log('peer_in WIRE_ANNOUNCEMENT_SIGNATURES', start=start)
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == state
+
+
+def test_announcement_sigs_request_announced(node_factory):
+    """A peer asking for announcement_signatures of an announced channel
+    gets them again."""
+    l1, l2 = node_factory.line_graph(2, wait_for_announce=True,
+                                     opts={'may_reconnect': True})
+    start = _request_sigs_on_reconnect(l1, l2)
+    wait_for(lambda: l1.daemon.is_in_log('peer_in WIRE_ANNOUNCEMENT_SIGNATURES', start=start))
+    assert not l2.daemon.is_in_log('Ignoring announcement_signatures request')
