@@ -6312,6 +6312,17 @@ static void peer_reconnect(struct peer *peer,
 				     		      &peer->channel->funding.txid));
 			assert(!send_tlvs->my_current_funding_locked);
 		}
+
+		/* Lets tests ask for announcement_signatures, as other
+		 * implementations do. */
+		if (peer->developer
+		    && getenv("CLN_DEV_REQUEST_ANNOUNCEMENT_SIGS")) {
+			if (!send_tlvs->my_current_funding_locked) {
+				send_tlvs->my_current_funding_locked = talz(send_tlvs, struct tlv_channel_reestablish_tlvs_my_current_funding_locked);
+				send_tlvs->my_current_funding_locked->my_current_funding_locked_txid = peer->channel->funding.txid;
+			}
+			send_tlvs->my_current_funding_locked->retransmit_flags |= 1;
+		}
 	}
 
 	status_debug("Sending channel_reestablish with"

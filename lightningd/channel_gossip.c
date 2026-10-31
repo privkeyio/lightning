@@ -1262,8 +1262,31 @@ void channel_gossip_channel_reestablished(struct channel *channel,
 	/* We can re-xmit sigs once per reconnect */
 	channel->channel_gossip->sent_sigs = false;
 
-	if (announcement_sigs_requested)
-		send_channel_announce_sigs(channel);
+	/* A private or unconfirmed channel has nothing to sign, and may have
+	 * no scid at all. */
+	if (announcement_sigs_requested) {
+		switch (channel->channel_gossip->state) {
+		case CGOSSIP_WAITING_FOR_MATCHING_PEER_SIGS:
+		case CGOSSIP_WAITING_FOR_ANNOUNCE_DEPTH:
+		case CGOSSIP_ANNOUNCED:
+			if (channel->scid) {
+				send_channel_announce_sigs(channel);
+				break;
+			}
+			/* fall thru */
+		case CGOSSIP_PRIVATE_WAITING_FOR_USABLE:
+		case CGOSSIP_PRIVATE:
+		case CGOSSIP_WAITING_FOR_USABLE:
+		case CGOSSIP_WAITING_FOR_SCID:
+		case CGOSSIP_CHANNEL_DEAD:
+		case CGOSSIP_CHANNEL_UNANNOUNCED_DYING:
+		case CGOSSIP_CHANNEL_ANNOUNCED_DYING:
+		case CGOSSIP_CHANNEL_ANNOUNCED_DEAD:
+			log_debug(channel->log,
+				  "Ignoring announcement_signatures request in %s",
+				  channel_gossip_state_str(channel->channel_gossip->state));
+		}
+	}
 
 	/* BOLT #7:
 	 * - Upon reconnection (once the above timing requirements have
