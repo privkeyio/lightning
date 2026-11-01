@@ -1483,7 +1483,6 @@ def test_splice_holds_shutdown_until_locked(node_factory, bitcoind, executor, re
         restart_line = len(l2.daemon.logs)
         l2.restart()
         fut.exception(TIMEOUT)
-        l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
         l2.daemon.wait_for_logs(['peer_in WIRE_CHANNEL_READY',
                                  'billboard perm: Reconnected, and reestablished'])
         assert held(l2)
