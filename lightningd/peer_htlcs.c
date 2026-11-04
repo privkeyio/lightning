@@ -1540,7 +1540,7 @@ static bool peer_accepted_htlc(const tal_t *ctx,
 	 *
 	 *   - SHOULD fail to route any HTLC added after it has sent `shutdown`.
 	 */
-	if (!channel_state_can_add_htlc(channel->state)) {
+	if (!replay && !channel_state_can_add_htlc(channel->state)) {
 		*failmsg = towire_permanent_channel_failure(ctx);
 		log_debug(channel->log,
 			  "Rejecting their htlc %"PRIu64
@@ -2540,6 +2540,16 @@ void peer_got_commitsig(struct channel *channel, const u8 *msg)
 		  tal_count(failed), tal_count(changed),
 		  tal_count(inflight_commit_sigs));
 
+	/* We may still forget a channel awaiting lockin, and forgetting
+	 * one with HTLCs is fatal: channeld shouldn't let this happen. */
+	if (tal_count(added) != 0
+	    && channel->state == CHANNELD_AWAITING_LOCKIN) {
+		channel_internal_error(channel,
+				       "Got commitsig adding HTLCs in state %s",
+				       channel_state_name(channel));
+		return;
+	}
+
 	i = 0;
 	list_for_each(&channel->inflights, inflight, list) {
 		if (!inflight->splice_locked_memonly)
@@ -2696,9 +2706,8 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 	struct lightningd *ld = channel->peer->ld;
 	struct fee_states *fee_states;
 	struct height_states *blockheight_states;
-	struct penalty_base *pbase;
-	struct commitment_revocation_payload *payload;
-	struct bitcoin_tx *penalty_tx;
+	struct penalty_base *pbases;
+	struct bitcoin_tx **penalty_txs;
 
 	if (!fromwire_channeld_got_revoke(msg, msg,
 					 &revokenum, &per_commitment_secret,
@@ -2706,8 +2715,8 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 					 &fee_states,
 					 &blockheight_states,
 					 &changed,
-					 &pbase,
-					 &penalty_tx)
+					 &pbases,
+					 &penalty_txs)
 	    || !fee_states_valid(fee_states, channel->opener)
 	    || !height_states_valid(blockheight_states, channel->opener)) {
 		channel_internal_error(channel, "bad fromwire_channeld_got_revoke %s",
@@ -2718,30 +2727,6 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 	log_debug(channel->log,
 		  "got revoke %"PRIu64": %zu changed",
 		  revokenum, tal_count(changed));
-
-	/* Save any immediate failures for after we reply. */
-	badonions = tal_arrz(msg, enum onion_wire, tal_count(changed));
-	failmsgs = tal_arrz(msg, u8 *, tal_count(changed));
-	for (i = 0; i < tal_count(changed); i++) {
-		/* BOLT #2:
-		 * A node:
-		 *   - until an incoming HTLC has been irrevocably committed:
-		 *     - MUST NOT offer the corresponding outgoing HTLC
-		 *       (`update_add_htlc`) in response to that incoming HTLC.
-		 */
-		/* If we're doing final accept, we need to forward */
-		if (changed[i].newstate == RCVD_ADD_ACK_REVOCATION) {
-			peer_accepted_htlc(failmsgs,
-					   channel, changed[i].id, false,
-					   &badonions[i], &failmsgs[i]);
-		} else {
-			if (!changed_htlc(channel, &changed[i])) {
-				channel_internal_error(channel,
-						    "got_revoke: update failed");
-				return;
-			}
-		}
-	}
 
 	if (revokenum >= (1ULL << 48)) {
 		channel_internal_error(channel, "got_revoke: too many txs %"PRIu64,
@@ -2773,6 +2758,31 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 				       fmt_secret(msg, &per_commitment_secret),
 				       revokenum);
 		return;
+	}
+
+	/* Store the revocation secret before acting on the HTLCs it
+	 * locks in. */
+	badonions = tal_arrz(msg, enum onion_wire, tal_count(changed));
+	failmsgs = tal_arrz(msg, u8 *, tal_count(changed));
+	for (i = 0; i < tal_count(changed); i++) {
+		/* BOLT #2:
+		 * A node:
+		 *   - until an incoming HTLC has been irrevocably committed:
+		 *     - MUST NOT offer the corresponding outgoing HTLC
+		 *       (`update_add_htlc`) in response to that incoming HTLC.
+		 */
+		/* If we're doing final accept, we need to forward */
+		if (changed[i].newstate == RCVD_ADD_ACK_REVOCATION) {
+			peer_accepted_htlc(failmsgs,
+					   channel, changed[i].id, false,
+					   &badonions[i], &failmsgs[i]);
+		} else {
+			if (!changed_htlc(channel, &changed[i])) {
+				channel_internal_error(channel,
+						    "got_revoke: update failed");
+				return;
+			}
+		}
 	}
 
 	tal_free(channel->fee_states);
@@ -2818,17 +2828,20 @@ void peer_got_revoke(struct channel *channel, const u8 *msg)
 	/* Maybe graceful wants to know? */
 	check_graceful_shutdown(ld);
 
-	if (penalty_tx == NULL)
-		return;
+	/* During a splice there is one per splice candidate, as well as the
+	 * one for the current funding: the peer could broadcast any of them. */
+	for (i = 0; i < tal_count(penalty_txs); i++) {
+		struct commitment_revocation_payload *payload;
 
-	payload = tal(tmpctx, struct commitment_revocation_payload);
-	payload->commitment_txid = pbase->txid;
-	payload->penalty_tx = tal_steal(payload, penalty_tx);
-	payload->wallet = ld->wallet;
-	payload->channel_dbid = channel->dbid;
-	payload->commitnum = pbase->commitment_num;
-	payload->channel_id = channel->cid;
-	plugin_hook_call_commitment_revocation(ld, NULL, payload);
+		payload = tal(tmpctx, struct commitment_revocation_payload);
+		payload->commitment_txid = pbases[i].txid;
+		payload->penalty_tx = tal_steal(payload, penalty_txs[i]);
+		payload->wallet = ld->wallet;
+		payload->channel_dbid = channel->dbid;
+		payload->commitnum = pbases[i].commitment_num;
+		payload->channel_id = channel->cid;
+		plugin_hook_call_commitment_revocation(ld, NULL, payload);
+	}
 }
 
 

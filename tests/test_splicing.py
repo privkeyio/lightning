@@ -66,7 +66,8 @@ def _splice_to_inflight(l1, chan_id, amount=100000):
 
 @pytest.mark.openchannel('v1')
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
-@unittest.skipIf(os.getenv('TEST_DB_PROVIDER', 'sqlite3') != 'sqlite3', "modifies database, which is assumed sqlite3")
+@unittest.skipIf(os.getenv('TEST_DB_PROVIDER', 'sqlite3') != 'sqlite3',
+                 "modifies database, which is assumed sqlite3")
 # -1 is how lightningd itself stored a u32 above INT_MAX (db_bind_int); the
 # positive form is what you get writing the same value by hand.
 @pytest.mark.parametrize("poison,repaired", [(4294967295, 1000000),
@@ -348,7 +349,8 @@ def test_splice_rbf_htlc_sigs(node_factory, bitcoind, executor):
     l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
 
     # Only the confirmed candidate's signature survives, now active.  The
-    # state change is logged before the transaction that promotes it commits.
+    # state change is logged before the lock-in's database transaction
+    # commits, so wait for the rows instead of reading them at once.
     for node in (l1, l2):
         wait_for(lambda: len(htlc_sig_rows(node)) == 1)
         assert htlc_sig_rows(node)[0]['inflight_tx_id'] is None
@@ -2276,9 +2278,17 @@ def test_splice_init_refused_leaves_no_splice(node_factory, bitcoind):
     chan_id = l1.get_channel_id(l2)
 
     funds = l1.rpc.fundpsbt("109000sat", 0, 0, excess_as_change=True)
-    with pytest.raises(RpcError, match='Feerate 120000 is too high'):
+    # lightningd refuses this one before channeld sees it.
+    with pytest.raises(RpcError, match="Feerate 120000 is above the most we'll pay"):
         # A bare number is perkb.
         l1.rpc.splice_init(chan_id, 100000, funds['psbt'], feerate_per_kw=120000 * 4)
+
+    # channeld refuses this one.  (skip_stfu isn't in the schema, so don't
+    # validate against it.)
+    with pytest.raises(RpcError, match='skip_stfu if not already in STFU'):
+        LightningRpc.call(l1.rpc, 'splice_init',
+                          {'channel_id': chan_id, 'relative_amount': 100000,
+                           'initialpsbt': funds['psbt'], 'skip_stfu': True})
 
     l1.rpc.abort_channels([chan_id])
     l1.daemon.wait_for_log(r'Abort requested with no splice in progress'

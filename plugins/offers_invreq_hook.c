@@ -487,11 +487,17 @@ static struct command_result *check_period(struct command *cmd,
 				   period_idx);
 	}
 
-	offer_period_paywindow(invreq_recurrence(ir->invreq),
-			       ir->invreq->offer_recurrence_paywindow,
-			       ir->invreq->offer_recurrence_base,
-			       basetime, period_idx,
-			       &paywindow_start, &paywindow_end);
+	if (!offer_period_paywindow(invreq_recurrence(ir->invreq),
+				    ir->invreq->offer_recurrence_paywindow,
+				    ir->invreq->offer_recurrence_base, basetime,
+				    period_idx, &paywindow_start,
+				    &paywindow_end)) {
+		return fail_invreq(cmd, ir,
+				   "pay window computation overflows, some "
+				   "values may be too big: basetime=%" PRIu64
+				   ", period_idx=%" PRIu64 "",
+				   basetime, period_idx);
+	}
 	if (*ir->inv->invoice_created_at < paywindow_start) {
 		return fail_invreq(cmd, ir,
 				   "period_index %"PRIu64
@@ -519,11 +525,18 @@ static struct command_result *check_period(struct command *cmd,
 	 */
 	if (ir->invreq->offer_recurrence_base
 	    && ir->invreq->offer_recurrence_base->proportional_amount == 1) {
-		u64 start = offer_period_start(basetime, period_idx,
-					       invreq_recurrence(ir->invreq));
-		u64 end = offer_period_start(basetime, period_idx + 1,
-					     invreq_recurrence(ir->invreq));
-
+		u64 start, end;
+		if (!offer_period_start(&start, basetime, period_idx,
+					invreq_recurrence(ir->invreq)) ||
+		    !offer_period_start(&end, basetime, period_idx + 1,
+					invreq_recurrence(ir->invreq))) {
+			return fail_invreq(cmd, ir,
+					   "basetime %" PRIu64
+					   " and period_index %" PRIu64
+					   " are too great, the period start "
+					   "computation overflows",
+					   basetime, period_idx);
+		}
 		if (end <= start) {
 			return fail_invreq(cmd, ir,
 					   "period_index %"PRIu64" bad period",
@@ -1121,6 +1134,7 @@ struct command_result *handle_invoice_request(struct command *cmd,
 	size_t len = tal_count(invreqbin);
 	const u8 *cursor = invreqbin;
 	struct invreq *ir = tal(cmd, struct invreq);
+	char *err;
 
 	ir->reply_path = tal_steal(ir, reply_path);
 	ir->secret = tal_dup_or_null(ir, struct secret, secret);
@@ -1223,6 +1237,15 @@ struct command_result *handle_invoice_request(struct command *cmd,
 	/* FIXME-OFFERS: handle this! */
 	if (!ir->invreq->offer_issuer_id && !ir->invreq->offer_paths) {
 		return fail_invreq(cmd, ir, "Not based on an offer");
+	}
+
+	/* CLN policy: reject absurd recurrence values from remote peers early.
+	 */
+	err = invreq_check_recurrence_policy(tmpctx, ir->invreq);
+	if (err) {
+		return fail_invreq(
+		    cmd, ir,
+		    "invreq doesn't satisfy CLN's recurrence policy: %s", err);
 	}
 
 	/* BOLT #12:

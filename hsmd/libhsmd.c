@@ -637,8 +637,9 @@ static bool sign_unified_wallet_input(struct wally_psbt *psbt, size_t i,
 }
 
 /* Find our inputs by the pubkey associated with the inputs, and
- * add a partial sig for each */
-static bool sign_our_inputs(struct hsm_utxo **utxos, struct wally_psbt *psbt)
+ * add a partial sig for each.  Returns NULL, or why libwally refused. */
+static const char *sign_our_inputs(struct hsm_utxo **utxos,
+				   struct wally_psbt *psbt)
 {
 	bool is_cache_enabled = false;
 	/* Built on first use and shared across inputs; see
@@ -694,18 +695,19 @@ static bool sign_our_inputs(struct hsm_utxo **utxos, struct wally_psbt *psbt)
 				if (wally_psbt_input_set_sighash(&psbt->inputs[j],
 					SIGHASH_ALL | SIGHASH_UNIFIED) != WALLY_OK) {
 					sodium_memzero(&privkey, sizeof(privkey));
-					return false;
+					return tal_fmt(tmpctx, "Cannot set sighash on input %zu", j);
 				}
 			if (!is_elements(chainparams) && psbt->inputs[j].sighash != (SIGHASH_ALL | SIGHASH_UNIFIED)) {
 				sodium_memzero(&privkey, sizeof(privkey));
-				return false;
+				return tal_fmt(tmpctx, "Input %zu has sighash 0x%02x, not SIGHASH_ALL|SIGHASH_UNIFIED",
+					       j, psbt->inputs[j].sighash);
 			}
 			if (psbt->inputs[j].sighash & SIGHASH_UNIFIED) {
 				bool ok = sign_unified_wallet_input(psbt, j, utxo, &privkey, &pubkey,
 								    &unified_tx);
 				sodium_memzero(&privkey, sizeof(privkey));
 				if (!ok)
-					return false;
+					return tal_fmt(tmpctx, "Cannot sign input %zu under the unified digest", j);
 				continue;
 			}
 			tal_wally_start();
@@ -724,11 +726,11 @@ static bool sign_our_inputs(struct hsm_utxo **utxos, struct wally_psbt *psbt)
 				tal_wally_end(psbt);
 				/* Converting to v0 for log consumption */
 				psbt_set_version(psbt, 0);
-				hsmd_status_failed(STATUS_FAIL_INTERNAL_ERROR,
-				    "Received wally_err attempting to "
-				    "sign input %zu with key %s. PSBT: %s",
-				    j, fmt_pubkey(tmpctx, &pubkey),
-				    fmt_wally_psbt(tmpctx, psbt));
+				return tal_fmt(tmpctx,
+					       "Received wally_err attempting to "
+					       "sign input %zu with key %s. PSBT: %s",
+					       j, fmt_pubkey(tmpctx, &pubkey),
+					       fmt_wally_psbt(tmpctx, psbt));
 			}
 			if (dev_warn_on_overgrind
 			    && needed_sig
@@ -741,7 +743,7 @@ static bool sign_our_inputs(struct hsm_utxo **utxos, struct wally_psbt *psbt)
 			tal_wally_end(psbt);
 		}
 	}
-	return true;
+	return NULL;
 }
 
 static void check_overgrind(const struct bitcoin_signature *sig)
@@ -1514,15 +1516,20 @@ static u8 *handle_get_per_commitment_point(struct hsmd_client *c, const u8 *msg_
 static u8 *handle_sign_withdrawal_tx(struct hsmd_client *c, const u8 *msg_in)
 {
 	struct hsm_utxo **utxos;
-	struct wally_psbt *psbt;
+	struct wally_psbt *psbt, *unsigned_psbt;
+	const char *err;
 
 	if (!fromwire_hsmd_sign_withdrawal(tmpctx, msg_in,
 					   &utxos, &psbt))
 		return hsmd_status_malformed_request(c, msg_in);
 
-	if (!sign_our_inputs(utxos, psbt))
-		return hsmd_status_bad_request(c, msg_in,
-					       "Cannot sign wallet inputs");
+	/* From signpsbt, so not our bug: return it unsigned rather than die. */
+	unsigned_psbt = clone_psbt(tmpctx, psbt);
+	err = sign_our_inputs(utxos, psbt);
+	if (err) {
+		hsmd_status_fmt(LOG_UNUSUAL, NULL, "Not signing PSBT: %s", err);
+		psbt = unsigned_psbt;
+	}
 
 	return towire_hsmd_sign_withdrawal_reply(NULL, psbt);
 }
@@ -1662,7 +1669,6 @@ static u8 *do_sign_local_htlc_tx(struct hsmd_client *c,
 	struct bitcoin_signature sig;
 	struct privkey htlc_privkey;
 	struct pubkey htlc_pubkey;
-	enum sighash_type sighash_type;
 	u8 *err;
 
 	if (input_num >= tx->wtx->num_inputs)
@@ -1676,35 +1682,21 @@ static u8 *do_sign_local_htlc_tx(struct hsmd_client *c,
 	if (err)
 		return err;
 
-	if (tx->wtx->num_inputs != 1)
+	/* With anchors, lightningd adds our wallet inputs to pay the fee */
+	if (!option_anchor_outputs && tx->wtx->num_inputs != 1)
 		return hsmd_status_bad_request_fmt(c, msg_in,
 						   "bad txinput count");
 
 	/* FIXME: Check that output script is correct! */
 
-	/* BOLT #3:
-	 * ## HTLC-Timeout and HTLC-Success Transactions
-	 *...
-	 * * if `option_anchors` applies to this commitment transaction,
-	 *   `SIGHASH_SINGLE|SIGHASH_ANYONECANPAY` is used as described in [BOLT #5]
-	 */
-	sighash_type = option_anchor_outputs
-		? (SIGHASH_SINGLE|SIGHASH_ANYONECANPAY)
-		: SIGHASH_ALL;
-
 	/* BOLT #5:
 	 * Otherwise, `SIGHASH_SINGLE|SIGHASH_ANYONECANPAY` MUST be used on the
 	 * HTLC signatures received from the peer, as this allows HTLC transactions to be combined with
 	 * other transactions.  The local signature MUST use `SIGHASH_ALL`, otherwise
-	 * anyone can attach additional inputs and outputs to the tx.
+	 * anyone can attach additional inputs and outputs to the tx
 	 */
-	/* A unified channel follows this: lightningd signs again, through
-	 * hsmd_sign_htlc_tx_mingle_unified, whenever it adds fee inputs. */
-	if (tx->psbt->inputs[input_num].sighash & SIGHASH_UNIFIED)
-		sighash_type = SIGHASH_ALL;
-
 	sign_tx_input(tx, input_num, NULL, wscript, &htlc_privkey, &htlc_pubkey,
-		      sighash_type, &sig);
+		      SIGHASH_ALL, &sig);
 	check_overgrind(&sig);
 
 	return towire_hsmd_sign_tx_reply(NULL, &sig);
@@ -1931,6 +1923,7 @@ static u8 *handle_sign_anchorspend(struct hsmd_client *c, const u8 *msg_in)
 	struct secret seed;
 	struct pubkey local_funding_pubkey;
 	struct secrets secrets;
+	const char *err;
 	int ret;
 
 	/* FIXME: Check output goes to us. */
@@ -1939,9 +1932,9 @@ static u8 *handle_sign_anchorspend(struct hsmd_client *c, const u8 *msg_in)
 		return hsmd_status_malformed_request(c, msg_in);
 
 	/* Sign all the UTXOs */
-	if (!sign_our_inputs(utxos, psbt))
-		return hsmd_status_bad_request(c, msg_in,
-					       "Cannot sign wallet inputs");
+	err = sign_our_inputs(utxos, psbt);
+	if (err)
+		hsmd_status_failed(STATUS_FAIL_INTERNAL_ERROR, "%s", err);
 
 	get_channel_seed(&peer_id, dbid, &seed);
 	derive_basepoints(&seed, &local_funding_pubkey, NULL, &secrets, NULL);
@@ -2006,17 +1999,18 @@ static u8 *handle_sign_htlc_tx_mingle(struct hsmd_client *c, const u8 *msg_in)
 	u64 dbid;
 	struct hsm_utxo **utxos;
 	struct wally_psbt *psbt;
+	const char *err;
 
 	/* FIXME: Check output goes to us. */
 	if (!fromwire_hsmd_sign_htlc_tx_mingle(tmpctx, msg_in,
 					       &peer_id, &dbid, &utxos, &psbt))
 		return hsmd_status_malformed_request(c, msg_in);
 
-	/* Sign all the UTXOs (htlc_inout input is already signed with
-	 * SIGHASH_SINGLE|SIGHASH_ANYONECANPAY) */
-	if (!sign_our_inputs(utxos, psbt))
-		return hsmd_status_bad_request(c, msg_in,
-					       "Cannot sign wallet inputs");
+	/* Sign all the UTXOs (lightningd gets the htlc input signed
+	 * separately, using hsmd_sign_any_local_htlc_tx) */
+	err = sign_our_inputs(utxos, psbt);
+	if (err)
+		hsmd_status_failed(STATUS_FAIL_INTERNAL_ERROR, "%s", err);
 
 	return towire_hsmd_sign_htlc_tx_mingle_reply(NULL, psbt);
 }
@@ -2033,6 +2027,7 @@ static u8 *handle_sign_htlc_tx_mingle_unified(struct hsmd_client *c,
 	struct wally_psbt *psbt;
 	u32 htlc_input;
 	u8 *wscript, *err;
+	const char *err_str;
 	const u8 *spk;
 	const struct wally_tx_output *htlc_utxo;
 	struct bitcoin_tx *tx;
@@ -2093,9 +2088,9 @@ static u8 *handle_sign_htlc_tx_mingle_unified(struct hsmd_client *c,
 
 	/* Sign the wallet inputs first: that can rewrite their prevout
 	 * scripts and amounts, which our signature below commits to. */
-	if (!sign_our_inputs(utxos, psbt))
-		return hsmd_status_bad_request(c, msg_in,
-					       "Cannot sign wallet inputs");
+	err_str = sign_our_inputs(utxos, psbt);
+	if (err_str)
+		return hsmd_status_bad_request(c, msg_in, err_str);
 
 	/* BOLT #5:
 	 * Otherwise, `SIGHASH_SINGLE|SIGHASH_ANYONECANPAY` MUST be used on the
@@ -2293,13 +2288,11 @@ static u8 *do_sign_remote_htlc_to_us(struct hsmd_client *c,
 				     u64 channel_dbid,
 				     const struct pubkey *remote_per_commitment_point,
 				     struct bitcoin_tx *tx,
-				     const u8 *wscript,
-				     bool option_anchor_outputs)
+				     const u8 *wscript)
 {
 	struct secret channel_seed, htlc_basepoint_secret;
 	struct pubkey htlc_basepoint;
 	struct privkey privkey;
-	enum sighash_type sighash_type;
 
 	tx->chainparams = c->chainparams;
 	get_channel_seed(peerid, channel_dbid, &channel_seed);
@@ -2316,24 +2309,10 @@ static u8 *do_sign_remote_htlc_to_us(struct hsmd_client *c,
 		return hsmd_status_bad_request(c, msg_in,
 					       "Failed deriving htlc privkey");
 
-	/* BOLT #3:
-	 * ## HTLC-Timeout and HTLC-Success Transactions
-	 *...
-	 * * if `option_anchors` applies to this commitment transaction,
-	 *   `SIGHASH_SINGLE|SIGHASH_ANYONECANPAY` is used as described in [BOLT #5]
-	 */
-	sighash_type = option_anchor_outputs
-		? (SIGHASH_SINGLE | SIGHASH_ANYONECANPAY)
-		: SIGHASH_ALL;
-
-	/* Nobody else signs this one, and lightningd signs it again for every
-	 * fee change, so a unified channel commits to the whole tx. */
-	if (input_num < tx->psbt->num_inputs
-	    && (tx->psbt->inputs[input_num].sighash & SIGHASH_UNIFIED))
-		sighash_type = SIGHASH_ALL;
-
-	return handle_sign_to_us_tx(c, msg_in, input_num, tx, &privkey,
-				    wscript, sighash_type);
+	/* This is a direct sweep, not an HTLC tx, and we're the only
+	 * signer, so we use SIGHASH_ALL */
+	return handle_sign_to_us_tx(c, msg_in, input_num, tx, &privkey, wscript,
+				    SIGHASH_ALL);
 }
 
 /*~ When called by onchaind */
@@ -2352,8 +2331,7 @@ static u8 *handle_sign_remote_htlc_to_us(struct hsmd_client *c,
 
 	return do_sign_remote_htlc_to_us(c, msg_in, 0, &c->id, c->dbid,
 					 &remote_per_commitment_point,
-					 tx, wscript,
-					 option_anchor_outputs);
+					 tx, wscript);
 }
 
 /*~ When called by lightningd */
@@ -2375,8 +2353,7 @@ static u8 *handle_sign_any_remote_htlc_to_us(struct hsmd_client *c,
 
 	return do_sign_remote_htlc_to_us(c, msg_in, input_num, &peer_id, dbid,
 					 &remote_per_commitment_point,
-					 tx, wscript,
-					 option_anchor_outputs);
+					 tx, wscript);
 }
 
 /*~ When we send a commitment transaction onchain (unilateral close), there's

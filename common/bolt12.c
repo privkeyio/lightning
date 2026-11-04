@@ -7,7 +7,218 @@
 #include <common/overflows.h>
 #include <common/utils.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <time.h>
+
+static char *check_recurrence_policy_fields(const tal_t *ctx,
+					    const struct recurrence *recurr,
+					    const struct recurrence_base *base,
+					    const struct recurrence_paywindow *paywindow,
+					    const u32 *limit)
+{
+	u64 max_period;
+
+	/* No recurrence -> nothing to check (BOLT already rejects stray
+	 * recurrence_* fields without a recurrence descriptor). */
+	if (!recurr)
+		return NULL;
+
+	/* time_unit / period==0 are BOLT MUST checks; still reject here so
+	 * create-path gets the same errors without going through decode. */
+	if (recurr->time_unit != 0 && recurr->time_unit != 1 &&
+	    recurr->time_unit != 2)
+		return tal_fmt(ctx, "invalid recurrence time_unit %u",
+			       recurr->time_unit);
+
+	if (recurr->period == 0)
+		return tal_fmt(ctx, "invalid recurrence period %u",
+			       recurr->period);
+
+	switch (recurr->time_unit) {
+	case 0:
+		max_period = OFFER_RECURRENCE_MAX_PERIOD_SECONDS;
+		break;
+	case 1:
+		max_period = OFFER_RECURRENCE_MAX_PERIOD_DAYS;
+		break;
+	case 2:
+		max_period = OFFER_RECURRENCE_MAX_PERIOD_MONTHS;
+		break;
+	default:
+		/* Unreachable given the check above. */
+		max_period = 0;
+		break;
+	}
+	if (recurr->period > max_period)
+		return tal_fmt(
+		    ctx,
+		    "recurrence period %u exceeds CLN maximum %" PRIu64
+		    " for time_unit %u",
+		    recurr->period, max_period, recurr->time_unit);
+
+	if (base && base->basetime > OFFER_RECURRENCE_MAX_BASETIME)
+		return tal_fmt(ctx,
+			       "recurrence_base basetime %" PRIu64
+			       " exceeds CLN maximum %" PRIu64,
+			       base->basetime,
+			       (u64)OFFER_RECURRENCE_MAX_BASETIME);
+
+	if (limit) {
+		if (*limit == 0)
+			return tal_fmt(ctx, "invalid recurrence limit %u",
+				       *limit);
+		if (*limit > OFFER_RECURRENCE_MAX_LIMIT)
+			return tal_fmt(
+			    ctx,
+			    "recurrence_limit %u exceeds CLN maximum %" PRIu64,
+			    *limit, (u64)OFFER_RECURRENCE_MAX_LIMIT);
+	}
+
+	if (paywindow) {
+		if (paywindow->seconds_before >
+		    OFFER_RECURRENCE_MAX_PAYWINDOW_SECONDS)
+			return tal_fmt(
+			    ctx,
+			    "recurrence_paywindow seconds_before %u exceeds "
+			    "CLN maximum %" PRIu64,
+			    paywindow->seconds_before,
+			    (u64)OFFER_RECURRENCE_MAX_PAYWINDOW_SECONDS);
+		if (paywindow->seconds_after >
+		    OFFER_RECURRENCE_MAX_PAYWINDOW_SECONDS)
+			return tal_fmt(
+			    ctx,
+			    "recurrence_paywindow seconds_after %u exceeds CLN "
+			    "maximum %" PRIu64,
+			    paywindow->seconds_after,
+			    (u64)OFFER_RECURRENCE_MAX_PAYWINDOW_SECONDS);
+	}
+
+	return NULL;
+}
+
+char *offer_check_recurrence_policy(const tal_t *ctx,
+				    const struct tlv_offer *offer)
+{
+	return check_recurrence_policy_fields(
+	    ctx, offer_recurrence(offer), offer->offer_recurrence_base,
+	    offer->offer_recurrence_paywindow, offer->offer_recurrence_limit);
+}
+
+char *invreq_check_recurrence_policy(const tal_t *ctx,
+				     const struct tlv_invoice_request *invreq)
+{
+	char *err;
+	u64 period_idx;
+
+	err = check_recurrence_policy_fields(
+	    ctx, invreq_recurrence(invreq), invreq->offer_recurrence_base,
+	    invreq->offer_recurrence_paywindow, invreq->offer_recurrence_limit);
+	if (err)
+		return err;
+
+	if (!invreq_recurrence(invreq))
+		return NULL;
+
+	/* Peer-controlled period index: counter [+ start]. */
+	period_idx = 0;
+	if (invreq->invreq_recurrence_counter) {
+		if (*invreq->invreq_recurrence_counter >
+		    OFFER_RECURRENCE_MAX_PERIOD_IDX)
+			return tal_fmt(ctx,
+				       "invreq_recurrence_counter %u exceeds "
+				       "CLN maximum %" PRIu64,
+				       *invreq->invreq_recurrence_counter,
+				       (u64)OFFER_RECURRENCE_MAX_PERIOD_IDX);
+		period_idx = *invreq->invreq_recurrence_counter;
+	}
+	if (invreq->invreq_recurrence_start) {
+		if (*invreq->invreq_recurrence_start >
+		    OFFER_RECURRENCE_MAX_PERIOD_IDX)
+			return tal_fmt(ctx,
+				       "invreq_recurrence_start %u exceeds CLN "
+				       "maximum %" PRIu64,
+				       *invreq->invreq_recurrence_start,
+				       (u64)OFFER_RECURRENCE_MAX_PERIOD_IDX);
+		if (add_overflows_u64(period_idx,
+				      *invreq->invreq_recurrence_start))
+			return tal_fmt(
+			    ctx,
+			    "invreq_recurrence_start (%u) + counter (%" PRIu64
+			    ") overflows",
+			    *invreq->invreq_recurrence_start, period_idx);
+		period_idx += *invreq->invreq_recurrence_start;
+	}
+	if (period_idx > OFFER_RECURRENCE_MAX_PERIOD_IDX)
+		return tal_fmt(
+		    ctx,
+		    "period index %" PRIu64 " exceeds CLN maximum %" PRIu64,
+		    period_idx, (u64)OFFER_RECURRENCE_MAX_PERIOD_IDX);
+
+	return NULL;
+}
+
+
+char *invoice_check_recurrence_policy(const tal_t *ctx,
+				      const struct tlv_invoice *invoice)
+{
+	char *err;
+	u64 period_idx;
+
+	err = check_recurrence_policy_fields(
+	    ctx, invoice_recurrence(invoice), invoice->offer_recurrence_base,
+	    invoice->offer_recurrence_paywindow, invoice->offer_recurrence_limit);
+	if (err)
+		return err;
+
+	if (!invoice_recurrence(invoice))
+		return NULL;
+
+	/* Copied from invreq (and matched on reply): counter [+ start]. */
+	period_idx = 0;
+	if (invoice->invreq_recurrence_counter) {
+		if (*invoice->invreq_recurrence_counter >
+		    OFFER_RECURRENCE_MAX_PERIOD_IDX)
+			return tal_fmt(ctx,
+				       "invreq_recurrence_counter %u exceeds "
+				       "CLN maximum %" PRIu64,
+				       *invoice->invreq_recurrence_counter,
+				       (u64)OFFER_RECURRENCE_MAX_PERIOD_IDX);
+		period_idx = *invoice->invreq_recurrence_counter;
+	}
+	if (invoice->invreq_recurrence_start) {
+		if (*invoice->invreq_recurrence_start >
+		    OFFER_RECURRENCE_MAX_PERIOD_IDX)
+			return tal_fmt(ctx,
+				       "invreq_recurrence_start %u exceeds CLN "
+				       "maximum %" PRIu64,
+				       *invoice->invreq_recurrence_start,
+				       (u64)OFFER_RECURRENCE_MAX_PERIOD_IDX);
+		if (add_overflows_u64(period_idx,
+				      *invoice->invreq_recurrence_start))
+			return tal_fmt(
+			    ctx,
+			    "invreq_recurrence_start (%u) + counter (%" PRIu64
+			    ") overflows",
+			    *invoice->invreq_recurrence_start, period_idx);
+		period_idx += *invoice->invreq_recurrence_start;
+	}
+	if (period_idx > OFFER_RECURRENCE_MAX_PERIOD_IDX)
+		return tal_fmt(
+		    ctx,
+		    "period index %" PRIu64 " exceeds CLN maximum %" PRIu64,
+		    period_idx, (u64)OFFER_RECURRENCE_MAX_PERIOD_IDX);
+
+	/* Issuer-chosen; outside invoice_matches_request ranges. */
+	if (invoice->invoice_recurrence_basetime &&
+	    *invoice->invoice_recurrence_basetime > OFFER_RECURRENCE_MAX_BASETIME)
+		return tal_fmt(ctx,
+			       "invoice_recurrence_basetime %" PRIu64
+			       " exceeds CLN maximum %" PRIu64,
+			       *invoice->invoice_recurrence_basetime,
+			       (u64)OFFER_RECURRENCE_MAX_BASETIME);
+
+	return NULL;
+}
 
 /* If chains is NULL, max_num_chains is ignored */
 bool bolt12_chains_match(const struct bitcoin_blkid *chains,
@@ -280,6 +491,13 @@ struct tlv_offer *offer_decode(const tal_t *ctx,
 		return tal_free(offer);
 	}
 
+	/* An empty offer_paths has no path to use, but fetchinvoice assumes a
+	 * non-NULL offer_paths has one.  Reject it, as we do empty offer_chains. */
+	if (offer->offer_paths && tal_count(offer->offer_paths) == 0) {
+		*fail = tal_strdup(ctx, "Offer contains an empty offer_paths");
+		return tal_free(offer);
+	}
+
 	/* BOLT #12:
 	 *...
 	 *   - if `num_hops` is 0 in any `blinded_path` in `offer_paths`:
@@ -391,6 +609,12 @@ struct tlv_invoice_request *invrequest_decode(const tal_t *ctx,
 		return tal_free(invrequest);
 	}
 
+	/* Likewise, sendinvoice assumes a non-NULL invreq_paths has a path. */
+	if (invrequest->invreq_paths && tal_count(invrequest->invreq_paths) == 0) {
+		*fail = tal_strdup(ctx, "Invoice request contains an empty invreq_paths");
+		return tal_free(invrequest);
+	}
+
 	/* BOLT #12:
 	 *   - if `num_hops` is 0 in any `blinded_path` in `invreq_paths`:
 	 *     - MUST reject the invoice request.
@@ -458,32 +682,49 @@ struct tlv_invoice *invoice_decode_minimal(const tal_t *ctx,
 	return invoice;
 }
 
-static void add_days(struct tm *tm, u32 number)
+static bool add_days(struct tm *tm, u32 number)
 {
-	tm->tm_mday += number;
+	s64 x = number + (s64)tm->tm_mday;
+	if (x > INT_MAX)
+		return false;
+	tm->tm_mday = (int)x;
+	return true;
 }
 
-static void add_months(struct tm *tm, u32 number)
+static bool add_months(struct tm *tm, u32 number)
 {
-	tm->tm_mon += number;
+	s64 x = number + (s64)tm->tm_mon;
+	if (x > INT_MAX)
+		return false;
+	tm->tm_mon = (int)x;
+	return true;
 }
 
-static u64 time_change(u64 prevstart, u32 number,
-		       void (*add_time)(struct tm *tm, u32 number),
-		       bool day_const)
+static bool time_change(u64 *new_start, u64 prevstart, u32 number,
+			bool (*add_time)(struct tm *tm, u32 number),
+			bool day_const)
 {
+	struct tm *tm_ptr;
 	struct tm tm;
 	time_t prev = prevstart, ret;
 
-	tm = *gmtime(&prev);
+	tm_ptr = gmtime(&prev);
+	/* Early exit, prev cannot be represented by struct tm. */
+	if (!tm_ptr)
+		return false;
+	tm = *tm_ptr;
 
 	for (;;) {
 		struct tm new_tm = tm;
-		add_time(&new_tm, number);
+
+		/* The individual time components are int and can overflow. */
+		if (!add_time(&new_tm, number))
+			return false;
+
 		ret = mktime(&new_tm);
 
 		if (ret == (time_t)-1)
-			return 0;
+			return false;
 
 		/* If we overflowed that month, try one less. */
 		if (!day_const || new_tm.tm_mday == tm.tm_mday)
@@ -491,40 +732,62 @@ static u64 time_change(u64 prevstart, u32 number,
 		tm.tm_mday--;
 	}
 
-	return ret;
+	*new_start = ret;
+	return true;
 }
 
-u64 offer_period_start(u64 basetime, size_t n,
-		       const struct recurrence *recur)
+bool offer_period_start(u64 *start, u64 basetime, size_t n,
+			const struct recurrence *recur)
 {
 	/* BOLT-recurrence #12:
 	 * 1. A `time_unit` defining 0 (seconds), 1 (days), 2 (months).
 	 */
+	u64 n_periods;
+	u32 n_periods_u32;
+	if (mul_overflows_u64(recur->period, n))
+		return false;
+	n_periods = recur->period * (u64)n;
+
 	switch (recur->time_unit) {
 	case 0:
-		return basetime + recur->period * n;
+		if (add_overflows_u64(basetime, n_periods))
+			return false;
+		*start = basetime + n_periods;
+		break;
 	case 1:
-		return time_change(basetime, recur->period * n, add_days, false);
+		if (!assign_overflow_u32(&n_periods_u32, n_periods) ||
+		    !time_change(start, basetime, n_periods_u32, add_days,
+				 false))
+			return false;
+		break;
 	case 2:
-		return time_change(basetime, recur->period * n, add_months, true);
+		if (!assign_overflow_u32(&n_periods_u32, n_periods) ||
+		    !time_change(start, basetime, n_periods_u32, add_months,
+				 true))
+			return false;
+		break;
 	default:
 		/* This is our offer, how did we get here? */
-		return 0;
+		return false;
 	}
+	return true;
 }
 
-void offer_period_paywindow(const struct recurrence *recurrence,
+bool offer_period_paywindow(const struct recurrence *recurrence,
 			    const struct recurrence_paywindow *recurrence_paywindow,
 			    const struct recurrence_base *recurrence_base,
 			    u64 basetime, u64 period_idx,
 			    u64 *start, u64 *end)
 {
+	u64 pstart;
 	/* BOLT-recurrence #12:
 	 * - if `offer_recurrence_paywindow` is present:
 	 */
 	if (recurrence_paywindow) {
-		u64 pstart = offer_period_start(basetime, period_idx,
-						recurrence);
+		if (!offer_period_start(&pstart, basetime, period_idx,
+					recurrence))
+			return false;
+
 		/* BOLT-recurrence #12:
 		 * - if `recurrence_basetime` is present or
 		 *    `recurrence_counter` is non-zero:
@@ -533,15 +796,24 @@ void offer_period_paywindow(const struct recurrence *recurrence,
 		 *   - SHOULD NOT send an `invoice_request` for a period later
 		 *     than `seconds_after` seconds past that period start.
 		 */
+		if (pstart < recurrence_paywindow->seconds_before)
+			return false;
 		*start = pstart - recurrence_paywindow->seconds_before;
+
+		if (add_overflows_u64(pstart,
+				      recurrence_paywindow->seconds_after))
+			return false;
 		*end = pstart + recurrence_paywindow->seconds_after;
 
 		/* First payment without recurrence_base, we give
 		 * ourselves 60 seconds, since period will start
 		 * now */
-		if (!recurrence_base && period_idx == 0
-		    && recurrence_paywindow->seconds_after < 60)
+		if (!recurrence_base && period_idx == 0 &&
+		    recurrence_paywindow->seconds_after < 60) {
+			if (add_overflows_u64(pstart, 60))
+				return false;
 			*end = pstart + 60;
+		}
 	} else {
 		/* BOLT-recurrence #12:
 		 * - otherwise:
@@ -551,17 +823,28 @@ void offer_period_paywindow(const struct recurrence *recurrence,
 		 */
 		if (period_idx == 0)
 			*start = 0;
-		else
-			*start = offer_period_start(basetime, period_idx-1,
-						    recurrence);
+		else {
+
+			/* we use the return value 0 to indicate an error */
+			if (!offer_period_start(start, basetime, period_idx - 1,
+						recurrence))
+				return false;
+		}
 
 		/* BOLT-recurrence #12:
 		 *     - SHOULD NOT send an `invoice_request` for a period which
 		 *       has already passed.
 		 */
-		*end = offer_period_start(basetime, period_idx+1,
-					  recurrence) - 1;
+
+		/* we use the return value 0 to indicate an error */
+		if (!offer_period_start(end, basetime, period_idx + 1,
+					recurrence))
+			return false;
+
+		/* the end of the current is the start of the next minus 1 */
+		*end -= 1;
 	}
+	return true;
 }
 
 struct tlv_invoice *invoice_decode(const tal_t *ctx,

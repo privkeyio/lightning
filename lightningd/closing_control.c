@@ -684,6 +684,12 @@ static struct command_result *param_feerate_range(struct command *cmd,
 	if (ret)
 		return ret;
 	(*feerate_range)[1] = *rate;
+
+	/* closingd would silently lower min to max, but we check the
+	 * peer's closing tx against min: don't let them disagree. */
+	if ((*feerate_range)[0] > (*feerate_range)[1])
+		return command_fail_badparam(cmd, name, buffer, tok,
+					     "minimum feerate must not exceed maximum");
 	return NULL;
 }
 
@@ -701,12 +707,14 @@ static bool channel_state_can_close(enum channel_state state)
 	case CHANNELD_AWAITING_SPLICE:
 	case CHANNELD_AWAITING_LOCKIN:
 	case DUALOPEND_AWAITING_LOCKIN:
-	case DUALOPEND_OPEN_INIT:
 	case DUALOPEND_OPEN_COMMIT_READY:
 	case DUALOPEND_OPEN_COMMITTED:
 	case CLOSINGD_SIGEXCHANGE:
 	case CHANNELD_SHUTTING_DOWN:
 		return true;
+	/* Not in the db yet, so not a real channel: param_channel_or_peer
+	 * hands it back as unsaved_channel instead. */
+	case DUALOPEND_OPEN_INIT:
 	case CLOSINGD_COMPLETE:
 	case AWAITING_UNILATERAL:
 	case FUNDING_SPEND_SEEN:

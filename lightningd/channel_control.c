@@ -1882,12 +1882,10 @@ bool peer_start_channeld(struct channel *channel,
 
 	hsmfd = hsm_get_client_fd(ld, &channel->peer->id,
 				  channel->dbid,
-				  HSM_PERM_SIGN_GOSSIP
-				  | HSM_PERM_ECDH
+				  HSM_PERM_ECDH
 				  | HSM_PERM_COMMITMENT_POINT
 				  | HSM_PERM_SIGN_REMOTE_TX
 				  | HSM_PERM_SIGN_ONCHAIN_TX
-				  | HSM_PERM_SIGN_CLOSING_TX
 				  | HSM_PERM_SIGN_SPLICE_TX
 				  | HSM_PERM_LOCK_OUTPOINT);
 	if (hsmfd < 0) {
@@ -2207,6 +2205,12 @@ is_fundee_should_forget(struct lightningd *ld,
 
 	/* If we ever had a stake in the channel, don't forget it. */
 	if (!amount_msat_is_zero(channel->msat_to_us_max))
+		return false;
+
+	/* A channel with committed HTLCs is not safe to forget, even if a
+	 * buggy peer managed to add them before the funding transaction was
+	 * confirmed. */
+	if (channel_has_htlc_out(channel) || channel_has_htlc_in(channel))
 		return false;
 
 	/* Ah forget it! */
@@ -2599,6 +2603,18 @@ static struct command_result *json_splice_init(struct command *cmd,
 			*feerate_per_kw = next_feerate_min;
 		}
 	}
+
+	/* channeld would refuse this too, but only after marking a splice in
+	 * progress, which then blocks the next splice_init. */
+	if (!*force_feerate
+	    && !channel->ignore_fee_limits
+	    && !cmd->ld->config.ignore_fee_limits
+	    && *feerate_per_kw > our_feerate_max(cmd->ld, NULL))
+		return command_fail(cmd, JSONRPC2_INVALID_PARAMS,
+				    "Feerate %u is above the most we'll pay"
+				    " (%u)",
+				    *feerate_per_kw,
+				    our_feerate_max(cmd->ld, NULL));
 
 	if (command_check_only(cmd))
 		return command_check_done(cmd);

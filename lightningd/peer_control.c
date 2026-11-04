@@ -280,15 +280,14 @@ static struct bitcoin_tx *sign_last_tx(const tal_t *ctx,
 	return tx;
 }
 
-/* A splice commitment spends the splice's funding output, which uses the
- * funding key the peer gave in splice_init/splice_ack. */
+/* The peer may use a new funding key for a splice: that inflight's
+ * commitment spends the splice output, not the current funding. */
 static const struct pubkey *
-inflight_remote_fundingkey(const struct channel *channel,
-			   const struct channel_inflight *inflight)
+inflight_remote_fundingkey(const struct channel_inflight *inflight)
 {
 	if (inflight->funding->splice_remote_funding)
 		return inflight->funding->splice_remote_funding;
-	return &channel->channel_info.remote_fundingkey;
+	return &inflight->channel->channel_info.remote_fundingkey;
 }
 
 bool invalid_last_tx(const struct bitcoin_tx *tx)
@@ -336,7 +335,8 @@ static struct bitcoin_tx *sign_and_send_last(const tal_t *ctx,
 	struct anchor_details *adet;
 	struct bitcoin_tx *tx;
 
-	tx = sign_last_tx(ctx, channel, last_tx, last_sig, remote_fundingkey);
+	tx = sign_last_tx(ctx, channel, last_tx, last_sig,
+			  remote_fundingkey);
 	bitcoin_txid(tx, &txid);
 	wallet_transaction_add(ld->wallet, tx->wtx, 0, 0);
 	wallet_extract_owned_outputs(ld->wallet, tx->wtx, false, NULL, NULL);
@@ -532,7 +532,7 @@ void drop_to_chain(struct lightningd *ld, struct channel *channel,
 									cmd_id,
 									inflight->last_tx,
 									&inflight->last_sig,
-									inflight_remote_fundingkey(channel, inflight)));
+									inflight_remote_fundingkey(inflight)));
 			}
 			if (!have_current)
 				tal_arr_expand(&txs, sign_and_send_last(tmpctx, ld,
@@ -557,13 +557,15 @@ void drop_to_chain(struct lightningd *ld, struct channel *channel,
 	 * force close. */
 	if (cooperative) {
 		list_for_each(&channel->inflights, inflight, list) {
+			const u8 *funding_wscript;
+
 			if (bitcoin_outpoint_eq(&inflight->funding->outpoint,
 						&channel->funding)) {
 				continue;
 			}
-			const u8 *funding_wscript = bitcoin_redeem_2of2(tmpctx,
-									&channel->local_funding_pubkey,
-									inflight_remote_fundingkey(channel, inflight));
+			funding_wscript = bitcoin_redeem_2of2(tmpctx,
+							      &channel->local_funding_pubkey,
+							      inflight_remote_fundingkey(inflight));
 			watch_scriptpubkey(inflight, ld->topology,
 					   take(scriptpubkey_p2wsh(NULL, funding_wscript)),
 					   &inflight->funding->outpoint,
@@ -2320,6 +2322,20 @@ void handle_peer_spoke(struct lightningd *ld, const u8 *msg)
 						"Channel is closed and forgotten");
 			goto send_error;
 		}
+		break;
+
+	/* BOLT #1:
+	 *
+	 *  - if no existing channel is referred to by `channel_id`:
+	 *    - MUST ignore the message.
+	 */
+	case WIRE_ERROR:
+	case WIRE_WARNING:
+		log_peer_debug(ld->log, &peer->id,
+			       "Ignoring %s for unknown channel %s",
+			       peer_wire_name(msgtype),
+			       fmt_channel_id(tmpctx, &channel_id));
+		return;
 	}
 
 	/* Weird message?  Log and reply with error. */
@@ -4165,7 +4181,7 @@ static struct command_result *json_sign_last_tx(struct command *cmd,
 				continue;
 			tx = sign_last_tx(cmd, channel, inflight->last_tx,
 					  &inflight->last_sig,
-					  inflight_remote_fundingkey(channel, inflight));
+					  inflight_remote_fundingkey(inflight));
 			json_object_start(response, NULL);
 			json_add_txid(response, "funding_txid",
 				      &inflight->funding->outpoint.txid);

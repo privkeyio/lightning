@@ -18,6 +18,9 @@
 /* Specifically: bad/missing rune */
 #define COMMANDO_ERROR_REMOTE_AUTH 0x4c51
 
+/* Real runes are tiny; rune decoding is quadratic in length, so refuse huge ones. */
+#define MAX_RUNE_LEN (64 * 1024)
+
 enum commando_msgtype {
 	/* Requests are split across multiple CONTINUES, then TERM. */
 	COMMANDO_MSG_CMD_CONTINUES = 0x4c4d,
@@ -373,6 +376,9 @@ static struct command_result *try_command(struct command *cmd,
 	struct rune *rune;
 	struct out_req *req;
 
+	destroy_commando(incoming, &incoming_commands);
+	tal_del_destructor2(incoming, destroy_commando, &incoming_commands);
+
 	toks = json_parse_simple(incoming, buf, tal_bytelen(buf));
 	if (!toks) {
 		return commando_error(cmd, incoming, COMMANDO_ERROR_REMOTE,
@@ -404,6 +410,10 @@ static struct command_result *try_command(struct command *cmd,
 		return commando_error(cmd, incoming, COMMANDO_ERROR_REMOTE,
 				      "Missing rune");
 	}
+	if (runetok->end - runetok->start > MAX_RUNE_LEN) {
+		return commando_error(cmd, incoming, COMMANDO_ERROR_REMOTE,
+				      "Rune too long");
+	}
 	rune = rune_from_base64n(tmpctx, buf + runetok->start,
 				 runetok->end - runetok->start);
 	if (!rune) {
@@ -412,10 +422,6 @@ static struct command_result *try_command(struct command *cmd,
 	}
 	/* Gather all the info we need to execute this command (steals toks). */
 	cinfo = new_cond_info(incoming, incoming, toks, method, params, id, filter);
-
-	/* Don't count this towards incomings anymore */
-	destroy_commando(incoming, &incoming_commands);
-	tal_del_destructor2(incoming, destroy_commando, &incoming_commands);
 
 	req = jsonrpc_request_start(cmd, "checkrune",
 				    checkrune_done, checkrune_failed,
@@ -551,8 +557,9 @@ static struct command_result *handle_reply(struct node_id *peer,
 	}
 
 	result = json_get_member(replystr, toks, "result");
-	if (!result)
-		return command_fail(ocmd->cmd, COMMANDO_ERROR_LOCAL, "Reply had no result");
+	if (!result || result->type != JSMN_OBJECT)
+		return command_fail(ocmd->cmd, COMMANDO_ERROR_LOCAL,
+				    "Reply had no valid result");
 
 	res = jsonrpc_stream_success(ocmd->cmd);
 
