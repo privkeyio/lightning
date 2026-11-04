@@ -17,10 +17,13 @@ def test_signpsbt_foreign_sighash_is_rejected_not_fatal(node_factory, bitcoind, 
     bitcoind.generate_block(1)
     l1.daemon.wait_for_log('Owning output')
 
-    funded = l1.rpc.fundpsbt(satoshi=100000, feerate='253perkw', startweight=250)
+    # A change output: signpsbt refuses a PSBT with none before it looks
+    # at the sighash.
+    funded = l1.rpc.fundpsbt(satoshi=100000, feerate='253perkw', startweight=250,
+                             excess_as_change=True)
     tampered = set_input0_sighash(funded['psbt'], sighash)
 
-    with pytest.raises(Exception):
+    with pytest.raises(RpcError, match=r'wallet inputs must use SIGHASH_ALL\|SIGHASH_UNIFIED'):
         l1.rpc.signpsbt(tampered)
 
     # The node must still be answering RPC, and still able to sign normally.
