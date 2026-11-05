@@ -587,8 +587,8 @@ def test_htlc_tx_rbf_without_unified_sigs(node_factory, bitcoind):
         tx = mempool_htlc_tx(bitcoind, commit)
         assert len(tx['vin']) > 1
         wit = [bytes.fromhex(w) for w in tx['vin'][0]['txinwitness']]
-        # BOLT #5: theirs is SIGHASH_SINGLE|SIGHASH_ANYONECANPAY, ours is
-        # SIGHASH_ALL.  No SIGHASH_UNIFIED on either.
+        # Theirs is SIGHASH_SINGLE|SIGHASH_ANYONECANPAY and ours is
+        # SIGHASH_ALL, as BOLT 5 says.  No SIGHASH_UNIFIED on either.
         assert wit[1][-1] == 0x83 and wit[2][-1] == 0x01, (wit[1][-1], wit[2][-1])
         return tx['txid'], wit[2]
 
