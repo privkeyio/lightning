@@ -1736,6 +1736,8 @@ def test_splice_sigs_sent_after_commit(node_factory, bitcoind, executor, l1_init
                                    start=l2_log_start)
 
     del l1.daemon.opts['dev-splice-exit-before-sending-sigs']
+    l1.daemon.logs_catchup()
+    l1_log_start = len(l1.daemon.logs)
     l1.start()
     l1.daemon.wait_for_log(r'peer_in WIRE_CHANNEL_REESTABLISH')
     l2.daemon.wait_for_log(r'peer_in WIRE_CHANNEL_REESTABLISH')
@@ -1743,6 +1745,14 @@ def test_splice_sigs_sent_after_commit(node_factory, bitcoind, executor, l1_init
     bitcoind.generate_block(6, wait_for_mempool=1)
     l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
     l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+
+    # Announcement signatures sent before reestablish would land in the
+    # middle of the resumed tx_signatures exchange.
+    logs = l1.daemon.logs[l1_log_start:]
+    reestablished = next(i for i, line in enumerate(logs)
+                         if 'channel_gossip: reestablished' in line)
+    assert not [line for line in logs[:reestablished]
+                if 'peer_out WIRE_ANNOUNCEMENT_SIGNATURES' in line]
 
     assert not l1.daemon.is_in_log('Peer permanent failure')
     assert not l2.daemon.is_in_log('Peer permanent failure')

@@ -742,8 +742,10 @@ static void send_channel_announce_sigs(struct channel *channel)
 	const u8 *ca, *msg;
 
 	/* Wait until we've exchanged reestablish messages */
-	if (!channel->reestablished)
+	if (!channel->reestablished) {
 		log_debug(channel->log, "channel_gossip: not sending channel_announcement_sigs until reestablished");
+		return;
+	}
 
 	ca = create_channel_announcement(tmpctx, channel, *channel->scid,
 					 NULL, NULL, NULL, NULL);
@@ -758,13 +760,17 @@ static void send_channel_announce_sigs(struct channel *channel)
 
 	/* Double-check that HSM gave valid signatures. */
 	sha256_double(&hash, ca + offset, tal_count(ca) - offset);
-	if (!check_signed_hash(&hash, &local_node_sig, &ld->our_pubkey))
+	if (!check_signed_hash(&hash, &local_node_sig, &ld->our_pubkey)) {
 		channel_internal_error(channel,
 				       "HSM returned an invalid node signature");
+		return;
+	}
 
-	if (!check_signed_hash(&hash, &local_bitcoin_sig, &channel->local_funding_pubkey))
+	if (!check_signed_hash(&hash, &local_bitcoin_sig, &channel->local_funding_pubkey)) {
 		channel_internal_error(channel,
 				       "HSM returned an invalid bitcoin signature");
+		return;
+	}
 
 	msg = towire_announcement_signatures(NULL,
 					     &channel->cid, *channel->scid,
