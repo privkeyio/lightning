@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <wire/peer_wire.h>
 
 #define PENDING_LIMIT 10000
 #define GOSSIP_STORE_COMPACT_FILENAME "gossip_store.compact"
@@ -54,6 +55,7 @@ struct pending_cupdate {
 
 struct pending_nannounce {
 	struct node_id node_id;
+	secp256k1_ecdsa_signature signature;
 	u32 timestamp;
 	const u8 *nannounce;
 	const struct node_id *source_peer;
@@ -117,6 +119,11 @@ struct gossmap_manage {
 
 	/* Non-NULL if a compactd is running. */
 	struct compactd *compactd;
+
+	/* Roughly how much of gossip_store is live: its length right after
+	 * our last compaction, or at startup, its length minus deleted
+	 * records. */
+	u64 compacted_len;
 };
 
 /* Timer recursion */
@@ -171,6 +178,7 @@ static void enqueue_cupdate(struct pending_cupdate ***queue,
 
 static void enqueue_nannounce(struct pending_nannounce ***queue,
 			      const struct node_id *node_id,
+			      const secp256k1_ecdsa_signature *signature,
 			      u32 timestamp,
 			      const u8 *nannounce TAKES,
 			      const struct node_id *source_peer TAKES)
@@ -193,6 +201,7 @@ static void enqueue_nannounce(struct pending_nannounce ***queue,
 	pna = tal(*queue, struct pending_nannounce);
 
 	pna->node_id = *node_id;
+	pna->signature = *signature;
 	pna->timestamp = timestamp;
 	pna->nannounce = tal_dup_talarr(pna, u8, nannounce);
 	pna->source_peer = tal_dup_or_null(pna, struct node_id, source_peer);
@@ -579,6 +588,7 @@ struct gossmap_manage *gossmap_manage_new(const tal_t *ctx,
 					  struct daemon *daemon)
 {
 	struct gossmap_manage *gm = tal(ctx, struct gossmap_manage);
+	u64 deleted;
 
 	if (!setup_gossmap(gm, daemon)) {
 		tal_free(gm->dying_channels);
@@ -591,6 +601,11 @@ struct gossmap_manage *gossmap_manage_new(const tal_t *ctx,
 	assert(gm->raw_gossmap);
 	gm->daemon = daemon;
 	gm->compactd = NULL;
+	deleted = gossmap_deleted_bytes_read(gm->raw_gossmap);
+	if (deleted < gossip_store_len_written(gm->gs))
+		gm->compacted_len = gossip_store_len_written(gm->gs) - deleted;
+	else
+		gm->compacted_len = 0;
 
 	map_init(&gm->pending_ann_map, "pending announcements");
 	gm->pending_cupdates = tal_arr(gm, struct pending_cupdate *, 0);
@@ -672,6 +687,14 @@ const char *gossmap_manage_channel_announcement(const tal_t *ctx,
 	if (taken(announce))
 		tal_steal(tmpctx, announce);
 
+	/* Ignore messages larger than any valid one. */
+	if (is_oversized_gossip_msg(announce)) {
+		status_debug("Ignoring oversized channel_announcement (%zu bytes)",
+			     tal_bytelen(announce));
+		tal_free_if_taken(source_peer);
+		return NULL;
+	}
+
 	if (!fromwire_channel_announcement(tmpctx, announce, &node_signature_1, &node_signature_2,
 					   &bitcoin_signature_1, &bitcoin_signature_2, &features, &chain_hash,
 					   &scid, &node_id_1, &node_id_2, &bitcoin_key_1, &bitcoin_key_2)) {
@@ -733,6 +756,16 @@ const char *gossmap_manage_channel_announcement(const tal_t *ctx,
 	    || map_get(&gm->early_ann_map, scid))
 		return NULL;
 
+	/* dont expect to be more than 12 blocks behind! */
+	if (!known_amount
+	    && blockheight != 0
+	    && short_channel_id_blocknum(scid) > blockheight + 12) {
+		return tal_fmt(ctx,
+			       "Bad gossip order: ignoring channel_announcement %s at blockheight %u",
+			       fmt_short_channel_id(tmpctx, scid),
+			       blockheight);
+	}
+
 	warn = sigcheck_channel_announcement(ctx, &node_id_1, &node_id_2,
 					     &bitcoin_key_1, &bitcoin_key_2,
 					     &node_signature_1, &node_signature_2,
@@ -767,15 +800,6 @@ const char *gossmap_manage_channel_announcement(const tal_t *ctx,
 
 	/* Don't know blockheight yet, or not yet deep enough?  Don't even ask */
 	if (!is_scid_depth_announceable(scid, blockheight)) {
-		/* Don't expect to be more than 12 blocks behind! */
-		if (blockheight != 0
-		    && short_channel_id_blocknum(scid) > blockheight + 12) {
-			return tal_fmt(ctx,
-				       "Bad gossip order: ignoring channel_announcement %s at blockheight %u",
-				       fmt_short_channel_id(tmpctx, scid),
-				       blockheight);
-		}
-
 		if (!map_add(&gm->early_ann_map, scid, pca)) {
 			/* Already pending?  Ignore */
 			tal_free(pca);
@@ -965,6 +989,29 @@ static const char *process_channel_update(const tal_t *ctx,
 		return NULL;
 	}
 
+	/* BOLT #7:
+	 * - if the channel output has been spent:
+	 *   - MUST ignore `channel_update`s, unless they have the `disable` bit set to 1.
+	 */
+	if (gossmap_chan_is_dying(gossmap, chan)
+	    && !(channel_flags & ROUTING_FLAGS_DISABLED)) {
+		status_peer_trace(source_peer,
+				  "Ignoring enabled update for dying channel %s",
+				  fmt_short_channel_id(tmpctx, scid));
+		return NULL;
+	}
+
+	if (gossmap_chan_set(chan, dir)) {
+		u32 prev_timestamp
+			= gossip_store_get_timestamp(gm->gs, chan->cupdate_off[dir]);
+		if (prev_timestamp >= timestamp) {
+			if (timestamp < prev_timestamp)
+				status_trace("Too-old update for %s",
+					     fmt_short_channel_id(tmpctx, scid));
+			return NULL;
+		}
+	}
+
 	/* Now we know node, we can check signature. */
 	gossmap_node_get_id(gossmap,
 			    gossmap_nth_node(gossmap, chan, dir),
@@ -980,24 +1027,10 @@ static const char *process_channel_update(const tal_t *ctx,
 			       fmt_short_channel_id(tmpctx, scid));
 	}
 
-	/* Do we have same or earlier update? */
-	if (gossmap_chan_set(chan, dir)) {
-		u32 prev_timestamp
-			= gossip_store_get_timestamp(gm->gs, chan->cupdate_off[dir]);
-		if (prev_timestamp >= timestamp) {
-			/* Don't spam the logs for duplicates! */
-			if (timestamp < prev_timestamp)
-				status_trace("Too-old update for %s",
-					     fmt_short_channel_id(tmpctx, scid));
-			/* Too old / redundant, ignore */
-			return NULL;
-		}
-	} else {
-		/* Is this the first update in either direction?  If so,
-		 * rewrite channel_announcement so timestamp is correct. */
-		if (!gossmap_chan_set(chan, !dir))
-			gossip_store_set_timestamp(gm->gs, chan->cann_off, timestamp);
-	}
+	/* Is this the first update in either direction?  If so,
+	 * rewrite channel_announcement so timestamp is correct. */
+	if (!gossmap_chan_set(chan, dir) && !gossmap_chan_set(chan, !dir))
+		gossip_store_set_timestamp(gm->gs, chan->cann_off, timestamp);
 
 	/* OK, apply the new one */
 	offset = gossip_store_add(gm->gs, update, timestamp);
@@ -1019,7 +1052,11 @@ static const char *process_channel_update(const tal_t *ctx,
 			    gossmap_nth_node(gossmap, chan, !dir),
 			    &remote_id);
 	if (node_id_eq(&remote_id, &gm->daemon->id)) {
-		tell_lightningd_peer_update(gm->daemon, source_peer,
+		/* We can get public channel_updates from other than
+		 * the direct peer, but we've checked the signature
+		 * against the channel_announcement, so tell lightningd
+		 * to trust us (NULL source). */
+		tell_lightningd_peer_update(gm->daemon, NULL,
 					    scid, fee_base_msat,
 					    fee_proportional_millionths,
 					    cltv_expiry_delta, htlc_minimum_msat,
@@ -1077,6 +1114,13 @@ const char *gossmap_manage_channel_update(const tal_t *ctx,
 
 	if (taken(source_peer))
 		tal_steal(tmpctx, source_peer);
+
+	/* Ignore messages larger than any valid one. */
+	if (is_oversized_gossip_msg(update)) {
+		status_debug("Ignoring oversized channel_update (%zu bytes)",
+			     tal_bytelen(update));
+		return NULL;
+	}
 
 	if (!fromwire_channel_update(update, &signature,
 				     &chain_hash, &scid,
@@ -1192,15 +1236,19 @@ const char *gossmap_manage_channel_update(const tal_t *ctx,
 				      timestamp, update, source_peer);
 }
 
-static void process_node_announcement(struct gossmap_manage *gm,
-				      struct gossmap *gossmap,
-				      const struct gossmap_node *node,
-				      u32 timestamp,
-				      const struct node_id *node_id,
-				      const u8 *nannounce,
-				      const struct node_id *source_peer)
+/* This is called both from when we receive the node announcement, and if we had to defer. */
+static const char *process_node_announcement(const tal_t *ctx,
+					     struct gossmap_manage *gm,
+					     struct gossmap *gossmap,
+					     const struct gossmap_node *node,
+					     const secp256k1_ecdsa_signature *signature,
+					     u32 timestamp,
+					     const struct node_id *node_id,
+					     const u8 *nannounce,
+					     const struct node_id *source_peer)
 {
 	u64 offset;
+	const char *err;
 
 	/* Do we have a later one?  If so, ignore */
 	if (gossmap_node_announced(node)) {
@@ -1208,9 +1256,14 @@ static void process_node_announcement(struct gossmap_manage *gm,
 			= gossip_store_get_timestamp(gm->gs, node->nann_off);
 		if (prev_timestamp >= timestamp) {
 			/* Too old, ignore */
-			return;
+			return NULL;
 		}
 	}
+
+	/* only now do the (expensive) signature check */
+	err = sigcheck_node_announcement(ctx, node_id, signature, nannounce);
+	if (err)
+		return err;
 
 	/* OK, apply the new one */
 	offset = gossip_store_add(gm->gs, nannounce, timestamp);
@@ -1231,6 +1284,7 @@ static void process_node_announcement(struct gossmap_manage *gm,
 	status_peer_trace(source_peer,
 			  "Received node_announcement for node %s",
 			  fmt_node_id(tmpctx, node_id));
+	return NULL;
 }
 
 const char *gossmap_manage_node_announcement(const tal_t *ctx,
@@ -1247,7 +1301,6 @@ const char *gossmap_manage_node_announcement(const tal_t *ctx,
 	struct wireaddr *wireaddrs;
 	struct tlv_node_ann_tlvs *na_tlv;
 	struct gossmap_node *node;
-	const char *err;
 	struct gossmap *gossmap = gossmap_manage_get_gossmap(gm);
 
 	if (taken(nannounce))
@@ -1255,6 +1308,13 @@ const char *gossmap_manage_node_announcement(const tal_t *ctx,
 
 	if (taken(source_peer))
 		tal_steal(tmpctx, source_peer);
+
+	/* Ignore messages larger than any valid one. */
+	if (is_oversized_gossip_msg(nannounce)) {
+		status_debug("Ignoring oversized node_announcement (%zu bytes)",
+			     tal_bytelen(nannounce));
+		return NULL;
+	}
 
 	if (!fromwire_node_announcement(tmpctx, nannounce,
 					&signature, &features, &timestamp,
@@ -1287,11 +1347,7 @@ const char *gossmap_manage_node_announcement(const tal_t *ctx,
 			       tal_hex(tmpctx, nannounce));
 	}
 
-	err = sigcheck_node_announcement(ctx, &node_id, &signature,
-					 nannounce);
-	if (err)
-		return err;
-
+	/* We check the signature in process_node_announcement, after cheaper checks for unknown node and stale timestamp. */
 	node = gossmap_find_node(gossmap, &node_id);
 	if (!node) {
 		/* Still waiting for some channel_announcement? */
@@ -1299,6 +1355,7 @@ const char *gossmap_manage_node_announcement(const tal_t *ctx,
 		    || !map_empty(&gm->early_ann_map)) {
 			enqueue_nannounce(&gm->pending_nannounces,
 					  &node_id,
+					  &signature,
 					  timestamp,
 					  take(nannounce),
 					  source_peer);
@@ -1316,8 +1373,9 @@ const char *gossmap_manage_node_announcement(const tal_t *ctx,
 		return NULL;
 	}
 
-	process_node_announcement(gm, gossmap, node, timestamp, &node_id, nannounce, source_peer);
-	return NULL;
+	return process_node_announcement(ctx, gm, gossmap, node, &signature,
+					 timestamp, &node_id, nannounce,
+					 source_peer);
 }
 
 static void process_pending_cupdate(struct gossmap_manage *gm,
@@ -1409,6 +1467,7 @@ static void reprocess_queued_msgs(struct gossmap_manage *gm)
 		for (size_t i = 0; i < tal_count(pnas); i++) {
 			struct gossmap_node *node;
 			struct gossmap *gossmap = gossmap_manage_get_gossmap(gm);
+			const char *err;
 
 			node = gossmap_find_node(gossmap, &pnas[i]->node_id);
 			if (!node) {
@@ -1424,11 +1483,15 @@ static void reprocess_queued_msgs(struct gossmap_manage *gm)
 				continue;
 			}
 
-			process_node_announcement(gm, gossmap, node,
-						  pnas[i]->timestamp,
-						  &pnas[i]->node_id,
-						  pnas[i]->nannounce,
-						  pnas[i]->source_peer);
+			err = process_node_announcement(tmpctx, gm, gossmap, node,
+							&pnas[i]->signature,
+							pnas[i]->timestamp,
+							&pnas[i]->node_id,
+							pnas[i]->nannounce,
+							pnas[i]->source_peer);
+			if (err)
+				peer_warning(gm, pnas[i]->source_peer,
+					     "node_announcement: %s", err);
 		}
 
 		/* Won't add any new ones */
@@ -1793,6 +1856,7 @@ static void compactd_done(struct io_conn *unused, struct gossmap_manage *gm)
 		status_failed(STATUS_FAIL_INTERNAL_ERROR,
 			      "Error renaming gossip store: %s",
 			      strerror(errno));
+	gm->compacted_len = st.st_size;
 
 	/* Now append record to old one, so everyone will switch */
 	gossip_store_add(gm->gs,
@@ -1802,8 +1866,12 @@ static void compactd_done(struct io_conn *unused, struct gossmap_manage *gm)
 	if (gm->compactd->dev_compact)
 		daemon_conn_send(gm->daemon->master,
 				 take(towire_gossipd_dev_compact_store_reply(NULL, "")));
+	gm->compactd = tal_free(gm->compactd);
+	return;
 
 failed:
+	/* Don't retry on every message: wait until it grows 5x again. */
+	gm->compacted_len = gossip_store_len_written(gm->gs);
 	gm->compactd = tal_free(gm->compactd);
 }
 
@@ -1936,8 +2004,12 @@ void gossmap_manage_maybe_compact(struct gossmap_manage *gm)
 	if (gossip_store_len_written(gm->gs) < 10000000)
 		return;
 
-	/* Compact when the density would be 5x better */
-	if (num_dead < 4 * num_live)
+	/* Compact when the density would be 5x better.  Records vary in size
+	 * (a node_announcement can be ten times a channel_update), so counting
+	 * records alone lets large dead records pile up: also compact once the
+	 * store is 5x its (roughly live) size after the last compaction. */
+	if (num_dead < 4 * num_live
+	    && gossip_store_len_written(gm->gs) < 5 * gm->compacted_len)
 		return;
 
 	compact_started = gossmap_compact(gm, false);

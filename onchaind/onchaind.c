@@ -94,6 +94,22 @@ struct resolution {
 	enum tx_type tx_type;
 };
 
+/* What we currently believe about an HTLC they offered us.  This is
+ * deliberately separate from tracked_output->resolved, which cannot express
+ * "we've written it off, but it could still become ours": a preimage can
+ * arrive at any time until we exit, and we only tell the bookkeeper where
+ * the money went once that can no longer change. */
+enum their_htlc_fate {
+	/* We may still claim it (also: it's not a THEIR_HTLC at all). */
+	THEIR_HTLC_UNDECIDED,
+	/* We stopped trying to claim it (it timed out, or our claim wasn't
+	 * worth the fee): nothing recorded yet, and a preimage still
+	 * revives it. */
+	THEIR_HTLC_ABANDONED,
+	/* Final: it's theirs, and we've told the bookkeeper. */
+	THEIR_HTLC_THEIRS,
+};
+
 struct tracked_output {
 	enum tx_type tx_type;
 	struct bitcoin_outpoint outpoint;
@@ -115,6 +131,9 @@ struct tracked_output {
 
 	/* If it is resolved. */
 	struct resolution *resolved;
+
+	/* For a THEIR_HTLC: where we currently think it's going. */
+	enum their_htlc_fate fate;
 
 	/* stashed so we can pass it along to the coin ledger */
 	struct sha256 payment_hash;
@@ -251,6 +270,17 @@ static void record_external_deposit(const struct tracked_output *out,
 				    struct mvt_tags tags)
 {
 	record_external_output(&out->outpoint, out->sat, blockheight, tags);
+}
+
+/* An HTLC they offered us has ended up back with them.  Only call this once
+ * that's final: the bookkeeper has no way of taking it back, and a preimage
+ * can revive an abandoned HTLC right up until we exit. */
+static void record_htlc_to_them(struct tracked_output *out)
+{
+	assert(out->fate != THEIR_HTLC_THEIRS);
+	record_external_deposit(out, out->tx_blockheight,
+				mk_mvt_tags(MVT_HTLC_TIMEOUT));
+	out->fate = THEIR_HTLC_THEIRS;
 }
 
 static void record_mutual_close(const struct tx_parts *tx,
@@ -598,6 +628,7 @@ new_tracked_output(struct tracked_output ***outs,
 	out->output_type = output_type;
 	out->proposal = NULL;
 	out->resolved = NULL;
+	out->fate = THEIR_HTLC_UNDECIDED;
 	if (htlc)
 		out->htlc = *htlc;
 	out->wscript = tal_steal(out, wscript);
@@ -635,8 +666,16 @@ static void handle_spend_created(struct tracked_output *out, const u8 *msg)
 			      tal_steal(out->proposal, witness));
 
 	/* Did it decide it's not worth it?  Don't wait for it. */
-	if (!worthwhile)
+	if (!worthwhile) {
 		ignore_output(out);
+		/* If that was our claim on their HTLC, we've given up on it
+		 * just as if it had timed out: it's theirs unless a preimage
+		 * (or a better fee) turns up, and the bookkeeper hears
+		 * about it once that can't happen any more. */
+		if (out->output_type == THEIR_HTLC
+		    && out->fate == THEIR_HTLC_UNDECIDED)
+			out->fate = THEIR_HTLC_ABANDONED;
+	}
 }
 
 static struct proposed_resolution *new_proposed_resolution(struct tracked_output *out,
@@ -706,6 +745,11 @@ static void propose_ignore(struct tracked_output *out,
 	out->proposal = new_proposed_resolution(out, block_required, tx_type);
 	out->proposal->welements = NULL;
 
+	/* We've given up on this one, though a preimage can still revive it:
+	 * see handle_preimage(). */
+	if (tx_type == THEIR_HTLC_TIMEOUT_TO_THEM)
+		out->fate = THEIR_HTLC_ABANDONED;
+
 	/* Can we immediately ignore? */
 	if (out->proposal->depth_required == 0)
 		ignore_output(out);
@@ -749,9 +793,9 @@ static bool onchain_witness_element_matches(const struct onchain_witness_element
 	return true;
 }
 
-/* This simple case: true if this was resolved by our proposal. */
-static bool resolved_by_proposal(struct tracked_output *out,
-				 const struct tx_parts *tx_parts)
+/* Does this tx spend the output the way our proposal would? */
+static bool spent_by_proposal(const struct tracked_output *out,
+			      const struct tx_parts *tx_parts)
 {
 	const struct wally_tx_input *input;
 
@@ -762,7 +806,14 @@ static bool resolved_by_proposal(struct tracked_output *out,
 	input = which_input_spends(tx_parts, &out->outpoint);
 	if (!input || !input->witness)
 		return false;
-	if (!onchain_witness_element_matches(out->proposal->welements, input))
+	return onchain_witness_element_matches(out->proposal->welements, input);
+}
+
+/* This simple case: true if this was resolved by our proposal. */
+static bool resolved_by_proposal(struct tracked_output *out,
+				 const struct tx_parts *tx_parts)
+{
+	if (!spent_by_proposal(out, tx_parts))
 		return false;
 
 	out->resolved = tal(out, struct resolution);
@@ -892,12 +943,15 @@ static bool is_local_commitment(const struct bitcoin_txid *txid,
  * once the remote's *resolving* transaction is included in a block at least 100
  * deep, on the most-work blockchain.
  */
+#define IRREVOCABLY_RESOLVED_DEPTH 100
+
 static size_t num_not_irrevocably_resolved(struct tracked_output **outs)
 {
 	size_t i, num = 0;
 
 	for (i = 0; i < tal_count(outs); i++) {
-		if (!outs[i]->resolved || outs[i]->resolved->depth < 100)
+		if (!outs[i]->resolved
+		    || outs[i]->resolved->depth < IRREVOCABLY_RESOLVED_DEPTH)
 			num++;
 	}
 	return num;
@@ -963,8 +1017,9 @@ static void billboard_update(struct tracked_output **outs)
 			       "All outputs resolved:"
 			       " waiting %u more blocks before forgetting"
 			       " channel",
-			       best->resolved->depth < 100
-			       ? 100 - best->resolved->depth : 0);
+			       best->resolved->depth < IRREVOCABLY_RESOLVED_DEPTH
+			       ? IRREVOCABLY_RESOLVED_DEPTH - best->resolved->depth
+			       : 0);
 		return;
 	}
 
@@ -1140,10 +1195,23 @@ static void steal_htlc_tx(struct tracked_output *out,
 	struct amount_asset asset;
 	struct amount_sat htlc_out_amt;
 	const u8 *msg;
+	u8 *wscript;
 
-	u8 *wscript = bitcoin_wscript_htlc_tx(htlc_tx, to_self_delay[REMOTE],
-					      &keyset->self_revocation_key,
-					      &keyset->self_delayed_payment_key);
+	if (htlc_outpoint->n >= tal_count(htlc_tx->outputs)) {
+		status_unusual("%s/%s spent by input %u of %s, which has"
+			       " only %zu outputs: cannot steal",
+			       tx_type_name(out->tx_type),
+			       output_type_name(out->output_type),
+			       htlc_outpoint->n,
+			       fmt_bitcoin_txid(tmpctx, &htlc_tx->txid),
+			       tal_count(htlc_tx->outputs));
+		resolved_by_other(out, &htlc_tx->txid, htlc_tx_type);
+		return;
+	}
+
+	wscript = bitcoin_wscript_htlc_tx(htlc_tx, to_self_delay[REMOTE],
+					  &keyset->self_revocation_key,
+					  &keyset->self_delayed_payment_key);
 
 	asset = wally_tx_output_get_amount(htlc_tx->outputs[htlc_outpoint->n]);
 	assert(amount_asset_is_main(&asset));
@@ -1209,8 +1277,46 @@ static bool output_spent(struct tracked_output ***outs,
 
 		interesting = true;
 
-		if (out->resolved)
+		if (out->resolved) {
+			if (out->resolved->tx_type == SELF
+			    && out->proposal
+			    && spent_by_proposal(out, tx_parts)) {
+				/* We stopped waiting for this spend of our
+				 * own, since lightningd didn't think it worth
+				 * much (see handle_spend_created()), but it
+				 * confirmed anyway.  Book it as ours, and
+				 * re-anchor the resolution on this tx: it's
+				 * what actually resolved the output, so the
+				 * clock for irrevocable resolution restarts
+				 * from its confirmation, not the commitment's.
+				 * A lowball tx can mine long after the
+				 * commitment is 100 deep itself, and with
+				 * one confirmation it could still be
+				 * reorged out. */
+				status_debug("Resolved %s/%s by our lowballed"
+					     " proposal %s (%s) after all",
+					     tx_type_name(out->tx_type),
+					     output_type_name(out->output_type),
+					     tx_type_name(out->proposal->tx_type),
+					     fmt_bitcoin_txid(tmpctx,
+							      &tx_parts->txid));
+				out->resolved->tx_type = out->proposal->tx_type;
+				out->resolved->txid = tx_parts->txid;
+				out->resolved->depth = 0;
+				out->fate = THEIR_HTLC_UNDECIDED;
+				record_coin_movements(out, tx_blockheight,
+						      &tx_parts->txid);
+			} else if (out->output_type == THEIR_HTLC
+				   && out->resolved->tx_type == SELF
+				   && out->fate == THEIR_HTLC_ABANDONED) {
+				/* If we'd abandoned this HTLC (assuming it
+				 * would go back to them), this spend proves
+				 * it: it's really theirs now, and no preimage
+				 * can change that. */
+				record_htlc_to_them(out);
+			}
 			continue;
+		}
 
 		/* Was this our resolution? */
 		if (resolved_by_proposal(out, tx_parts)) {
@@ -1253,11 +1359,20 @@ static bool output_spent(struct tracked_output ***outs,
 					      THEIR_HTLC_TIMEOUT_TO_THEM,
 					      &htlc_outpoint);
 			} else {
-				/* We ignore this timeout tx, since we should
-				 * resolve by ignoring once we reach depth. */
 				onchain_annotate_txout(
 				    &htlc_outpoint,
 				    TX_CHANNEL_HTLC_TIMEOUT | TX_THEIRS);
+
+				/* They took it back.  We usually resolve this
+				 * by ignoring it once we reach depth, but if
+				 * a preimage arrived we replaced that
+				 * proposal with a spend which can now never
+				 * happen: resolve it here, or we'd wait
+				 * forever.  (out->fate stops handle_preimage
+				 * undoing this again). */
+				ignore_output(out);
+				if (out->fate != THEIR_HTLC_THEIRS)
+					record_htlc_to_them(out);
 			}
 			break;
 
@@ -1432,11 +1547,10 @@ static void tx_new_depth(struct tracked_output **outs,
 		if (outs[i]->proposal
 		    && depth >= outs[i]->proposal->depth_required
 		    && !outs[i]->proposal->welements) {
+			/* Note: we don't tell the bookkeeper an HTLC went
+			 * back to them here!  A preimage can still turn up
+			 * and let us claim it: see record_htlc_to_them(). */
 			ignore_output(outs[i]);
-
-			if (outs[i]->proposal->tx_type == THEIR_HTLC_TIMEOUT_TO_THEM)
-				record_external_deposit(outs[i], outs[i]->tx_blockheight,
-							mk_mvt_tags(MVT_HTLC_TIMEOUT));
 		}
 	}
 }
@@ -1486,15 +1600,23 @@ static void handle_preimage(struct tracked_output **outs,
 		if (!ripemd160_eq(&outs[i]->htlc.ripemd, &ripemd))
 			continue;
 
+		/* The only reason not to try to claim it is that we can't:
+		 * they spent it, so there's nothing left to spend. */
+		if (outs[i]->fate == THEIR_HTLC_THEIRS) {
+			status_unusual("HTLC already went to them"
+				       " when we found preimage");
+			continue;
+		}
+
 		/* If HTLC has timed out, we will already have
 		 * proposed a "ignore this, it's their problem".  But
 		 * now try this proposal instead! */
 		if (outs[i]->resolved) {
 			if (outs[i]->resolved->tx_type != SELF) {
-				status_broken("HTLC already resolved by %s"
-					      " when we found preimage",
-					      tx_type_name(outs[i]->resolved->tx_type));
-				return;
+				status_unusual("HTLC already resolved by %s"
+					       " when we found preimage",
+					       tx_type_name(outs[i]->resolved->tx_type));
+				continue;
 			}
 		}
 
@@ -1504,6 +1626,9 @@ static void handle_preimage(struct tracked_output **outs,
 		/* Discard any previous resolution.  Could be a timeout,
 		 * could be due to multiple identical rhashes in tx. */
 		outs[i]->proposal = tal_free(outs[i]->proposal);
+		outs[i]->resolved = tal_free(outs[i]->resolved);
+		/* It's up for grabs again! */
+		outs[i]->fate = THEIR_HTLC_UNDECIDED;
 
 		/* BOLT #5:
 		 *
@@ -1707,6 +1832,13 @@ static void wait_for_resolved(struct tracked_output **outs)
 		clean_tmpctx();
 	}
 
+	/* We're done: no preimage can arrive now, so any HTLC we abandoned
+	 * really did go back to them.  Tell the bookkeeper. */
+	for (size_t i = 0; i < tal_count(outs); i++) {
+		if (outs[i]->fate == THEIR_HTLC_ABANDONED)
+			record_htlc_to_them(outs[i]);
+	}
+
 	wire_sync_write(REQ_FD,
 			take(towire_onchaind_all_irrevocably_resolved(outs)));
 }
@@ -1715,11 +1847,12 @@ struct htlcs_info {
 	struct htlc_stub *htlcs;
 	bool *tell_if_missing;
 	bool *tell_immediately;
+	bool *present;
 };
 
 struct htlc_with_tells {
 	struct htlc_stub htlc;
-	bool tell_if_missing, tell_immediately;
+	bool tell_if_missing, tell_immediately, present;
 };
 
 static int cmp_htlc_with_tells_cltv(const struct htlc_with_tells *a,
@@ -1729,10 +1862,18 @@ static int cmp_htlc_with_tells_cltv(const struct htlc_with_tells *a,
 		return -1;
 	else if (a->htlc.cltv_expiry > b->htlc.cltv_expiry)
 		return 1;
+
+	/* lightningd hands us every HTLC which might be in this commitment,
+	 * including ones removed just before it.  Such an HTLC can have the
+	 * same payment hash, amount and cltv as a live one, and so the same
+	 * output script: make sure the live one gets the output. */
+	if (a->present != b->present)
+		return a->present ? -1 : 1;
 	return 0;
 }
 
-static struct htlcs_info *init_reply(const tal_t *ctx, const char *what)
+static struct htlcs_info *init_reply(const tal_t *ctx, const char *what,
+				     bool our_commitment)
 {
 	struct htlcs_info *htlcs_info = tal(ctx, struct htlcs_info);
 	const u8 *msg;
@@ -1743,7 +1884,8 @@ static struct htlcs_info *init_reply(const tal_t *ctx, const char *what)
 
 	/* Send init_reply first, so billboard gets credited to ONCHAIND */
 	wire_sync_write(REQ_FD,
-			take(towire_onchaind_init_reply(NULL, commit_num)));
+			take(towire_onchaind_init_reply(NULL, commit_num,
+							our_commitment)));
 
 	peer_billboard(true, "%s", what);
 
@@ -1752,7 +1894,8 @@ static struct htlcs_info *init_reply(const tal_t *ctx, const char *what)
 	if (!fromwire_onchaind_htlcs(htlcs_info, msg,
 				     &htlcs_info->htlcs,
 				     &htlcs_info->tell_if_missing,
-				     &htlcs_info->tell_immediately))
+				     &htlcs_info->tell_immediately,
+				     &htlcs_info->present))
 		master_badmsg(WIRE_ONCHAIND_HTLCS, msg);
 
 	/* One convenient structure, so we sort them together! */
@@ -1761,19 +1904,23 @@ static struct htlcs_info *init_reply(const tal_t *ctx, const char *what)
 		htlcs[i].htlc = htlcs_info->htlcs[i];
 		htlcs[i].tell_if_missing = htlcs_info->tell_if_missing[i];
 		htlcs[i].tell_immediately = htlcs_info->tell_immediately[i];
+		htlcs[i].present = htlcs_info->present[i];
 	}
 
-	/* Sort by CLTV, so matches are in CLTV order (and easy to skip dups) */
+	/* Sort by CLTV, so matches are in CLTV order (and easy to skip dups),
+	 * with the ones which are really in this tx first. */
 	asort(htlcs, tal_count(htlcs), cmp_htlc_with_tells_cltv, NULL);
 
 	/* Now put them back (prev were allocated off tmpctx) */
 	htlcs_info->htlcs = tal_arr(htlcs_info, struct htlc_stub, tal_count(htlcs));
 	htlcs_info->tell_if_missing = tal_arr(htlcs_info, bool, tal_count(htlcs));
 	htlcs_info->tell_immediately = tal_arr(htlcs_info, bool, tal_count(htlcs));
+	htlcs_info->present = tal_arr(htlcs_info, bool, tal_count(htlcs));
 	for (size_t i = 0; i < tal_count(htlcs); i++) {
 		htlcs_info->htlcs[i] = htlcs[i].htlc;
 		htlcs_info->tell_if_missing[i] = htlcs[i].tell_if_missing;
 		htlcs_info->tell_immediately[i] = htlcs[i].tell_immediately;
+		htlcs_info->present[i] = htlcs[i].present;
 	}
 
 	return htlcs_info;
@@ -1783,7 +1930,7 @@ static void handle_mutual_close(struct tracked_output **outs,
 				const struct tx_parts *tx)
 {
 	/* In this case, we don't care about htlcs: there are none. */
-	init_reply(tmpctx, "Tracking mutual close transaction");
+	init_reply(tmpctx, "Tracking mutual close transaction", false);
 
 	/* Annotate the first input as close. We can currently only have a
 	 * single input for these. */
@@ -2195,7 +2342,7 @@ static void handle_our_unilateral(const struct tx_parts *tx,
 	size_t i;
 	struct htlcs_info *htlcs_info;
 
-	htlcs_info = init_reply(tx, "Tracking our own unilateral close");
+	htlcs_info = init_reply(tx, "Tracking our own unilateral close", true);
 	onchain_annotate_txin(&tx->txid, 0, TX_CHANNEL_UNILATERAL);
 
 	/* BOLT #5:
@@ -2646,7 +2793,8 @@ static void handle_their_cheat(const struct tx_parts *tx,
 	struct htlcs_info *htlcs_info;
 
 	htlcs_info = init_reply(tx,
-				"Tracking their illegal close: taking all funds");
+				"Tracking their illegal close: taking all funds",
+				false);
 	onchain_annotate_txin(
 	    &tx->txid, 0, TX_CHANNEL_UNILATERAL | TX_CHANNEL_CHEAT | TX_THEIRS);
 
@@ -2980,7 +3128,7 @@ static void handle_their_unilateral(const struct tx_parts *tx,
 	size_t i;
 	struct htlcs_info *htlcs_info;
 
-	htlcs_info = init_reply(tx, "Tracking their unilateral close");
+	htlcs_info = init_reply(tx, "Tracking their unilateral close", false);
 	onchain_annotate_txin(&tx->txid, 0, TX_CHANNEL_UNILATERAL | TX_THEIRS);
 
 	/* HSM can't derive this. */
@@ -3392,12 +3540,14 @@ found:
 	if (to_us_output == -1) {
 		status_broken("FUNDS LOST.  Unknown commitment #%"PRIu64"!",
 			      commit_num);
-		htlcs_info = init_reply(tx, "ERROR: FUNDS LOST.  Unknown commitment!");
+		htlcs_info = init_reply(tx, "ERROR: FUNDS LOST.  Unknown commitment!",
+					false);
 	} else {
 		status_broken("ERROR: Unknown commitment #%"PRIu64
 			      ", recovering our funds!",
 			      commit_num);
-		htlcs_info = init_reply(tx, "ERROR: Unknown commitment, recovering our funds!");
+		htlcs_info = init_reply(tx, "ERROR: Unknown commitment, recovering our funds!",
+					false);
 	}
 
 	/* Tell master to give up on HTLCs immediately. */

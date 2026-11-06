@@ -2,12 +2,11 @@
 #define LIGHTNING_OPENINGD_COMMON_H
 
 #include "config.h"
+#include <common/channel_config.h>
 #include <common/utils.h>
 
-struct amount_sat;
 struct bitcoin_tx;
 struct bitcoin_signature;
-struct channel_config;
 
 
 bool check_config_bounds(const tal_t *ctx,
@@ -19,6 +18,16 @@ bool check_config_bounds(const tal_t *ctx,
 			 const struct channel_config *localconf,
 			 bool option_anchors_zero_fee_htlc_tx,
 			 char **err_reason);
+
+/* Check their dust_limit_satoshis is one we're willing to live with:
+ * not below MIN_REMOTE_DUST_LIMIT, not above MAX_REMOTE_DUST_LIMIT
+ * (see common/channel_config.h), and (unless allow_dust_reserve) not
+ * above the reserve we hold them to. */
+bool check_dust_limit(const tal_t *ctx,
+		      const struct channel_config *remoteconf,
+		      const struct channel_config *localconf,
+		      bool allow_dust_reserve,
+		      char **err_reason);
 
 bool anchors_negotiated(struct feature_set *our_features,
 			const u8 *their_features);

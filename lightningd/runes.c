@@ -17,6 +17,9 @@
 /* "640k should be enough for anybody!" */
 #define MAX_BLACKLIST_NUM 100000000
 
+/* Real runes are tiny; rune decoding is quadratic in length, so refuse huge ones. */
+#define MAX_RUNE_LEN (64 * 1024)
+
 static const u64 sec_per_nsec = 1000000000;
 
 struct cond_info {
@@ -224,6 +227,10 @@ static struct command_result *param_rune(struct command *cmd, const char *name,
 					 struct rune_and_string **rune_and_string)
 {
 	u64 uid;
+
+	if (tok->end - tok->start > MAX_RUNE_LEN)
+		return command_fail_badparam(cmd, name, buffer, tok,
+					     "is too long");
 
 	*rune_and_string = tal(cmd, struct rune_and_string);
 	(*rune_and_string)->runestr = json_strdup(*rune_and_string, buffer, tok);
@@ -699,6 +706,23 @@ static const struct json_command destroyrune_command = {
 };
 AUTODATA(json_command, &destroyrune_command);
 
+/* Several parameters map to this name, and commands differ in which one
+ * they'd use, so any restriction on it fails. */
+static const jsmntok_t ambiguous_param;
+
+static void cache_param(struct cond_info *cinfo, const char *name,
+			const jsmntok_t *val)
+{
+	const jsmntok_t *old = strmap_get(&cinfo->cached_params, name);
+
+	if (!old) {
+		strmap_add(&cinfo->cached_params, name, val);
+	} else if (old != val) {
+		strmap_del(&cinfo->cached_params, name, NULL);
+		strmap_add(&cinfo->cached_params, name, &ambiguous_param);
+	}
+}
+
 /* Returns the parameter name and set *invf, or NULL */
 static const char *match_inv_condition(const tal_t *ctx,
 				       const char *fieldname,
@@ -796,6 +820,8 @@ static const char *check_inv_condition(const tal_t *ctx,
 			  tal_fmt(tmpctx, "pname%s", param));
 	if (!ptok)
 		return tal_fmt(ctx, "Unknown invoice parameter %s", param);
+	if (ptok == &ambiguous_param)
+		return tal_fmt(ctx, "Ambiguous invoice parameter %s", param);
 
 	invstr = json_strdup(tmpctx, cinfo->buf, ptok);
 	if (strstarts(invstr, "lightning:") || strstarts(invstr, "LIGHTNING:"))
@@ -868,8 +894,7 @@ static const char *check_condition(const tal_t *ctx,
 				size_t off = strlen("pname");
 
 				/* First, add version with underscores intact. */
-				strmap_add(&cinfo->cached_params,
-					   tal_strdup(tmpctx, pmemname), t+1);
+				cache_param(cinfo, tal_strdup(tmpctx, pmemname), t+1);
 
 				/* Now with punctuation removed: */
 				for (size_t n = off; pmemname[n]; n++) {
@@ -878,7 +903,7 @@ static const char *check_condition(const tal_t *ctx,
 					pmemname[off++] = pmemname[n];
 				}
 				pmemname[off++] = '\0';
-				strmap_add(&cinfo->cached_params, pmemname, t+1);
+				cache_param(cinfo, pmemname, t+1);
 			}
 		} else if (cinfo->params->type == JSMN_ARRAY) {
 			json_for_each_arr(i, t, cinfo->params) {
@@ -895,6 +920,8 @@ static const char *check_condition(const tal_t *ctx,
 	ptok = strmap_get(&cinfo->cached_params, alt->fieldname);
 	if (!ptok)
 		return rune_alt_single_missing(ctx, alt);
+	if (ptok == &ambiguous_param)
+		return tal_fmt(ctx, "%s is ambiguous", alt->fieldname);
 
 	/* Pass through valid integers as integers. */
 	if (ptok->type == JSMN_PRIMITIVE) {

@@ -351,6 +351,10 @@ struct lightningd {
 	 * if we are the fundee. */
 	u32 dev_max_funding_unconfirmed;
 
+	/* Seconds a peer's dual-funded open (or RBF) has to reach
+	 * commitment_signed. */
+	u32 dev_max_dualopen_negotiation_secs;
+
 	/* Special switches to test onion compatibility */
 	bool dev_ignore_modern_onion;
 
@@ -477,7 +481,7 @@ struct lightningd {
 
 	/* Should we re-exec ourselves instead of just exiting? */
 	bool try_reexec;
-	/* If set, we are to restart with --recover=... */
+	/* If set, we are to restart and recover with this secret */
 	const char *recover_secret;
 
 	/* Array of (even) TLV types that we should allow. This is required

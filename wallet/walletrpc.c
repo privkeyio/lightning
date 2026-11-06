@@ -15,6 +15,7 @@
 #include <lightningd/notification.h>
 #include <wallet/txfilter.h>
 #include <wallet/walletrpc.h>
+#include <wally_psbt_members.h>
 #include <wire/wire_sync.h>
 
 /* May return NULL if encoding error occurs. */
@@ -779,6 +780,28 @@ static bool match_psbt_outputs_to_wallet(struct wally_psbt *psbt,
 	return ok;
 }
 
+static bool input_spends_utxo(const struct wally_psbt_input *input,
+			      struct utxo **utxos)
+{
+	for (size_t i = 0; i < tal_count(utxos); i++) {
+		if (wally_psbt_input_spends(input, &utxos[i]->outpoint))
+			return true;
+	}
+	return false;
+}
+
+static bool psbt_input_signed(const struct wally_psbt *psbt, size_t in)
+{
+	size_t taproot_sig_len;
+
+	if (psbt->inputs[in].signatures.num_items != 0
+	    || psbt->inputs[in].final_witness)
+		return true;
+	return wally_psbt_get_input_taproot_signature_len(psbt, in,
+							  &taproot_sig_len) == WALLY_OK
+		&& taproot_sig_len != 0;
+}
+
 static struct command_result *param_input_numbers(struct command *cmd,
 						  const char *name,
 						  const char *buffer,
@@ -854,6 +877,11 @@ static struct command_result *json_signpsbt(struct command *cmd,
 				    " added inputs to this PSBT? If not, then"
 				    " there is no need to sign it.");
 
+	/* libwally can't compute a sighash without outputs. */
+	if (psbt->num_outputs == 0)
+		return command_fail(cmd, JSONRPC2_INVALID_PARAMS,
+				    "PSBT has no outputs");
+
 	if (command_check_only(cmd))
 		return command_check_done(cmd);
 
@@ -863,8 +891,8 @@ static struct command_result *json_signpsbt(struct command *cmd,
 				    "Could not add keypaths to PSBT?");
 
 	/* The hsm signs wallet inputs under the unified digest only, and
-	 * refusing there is fatal, so catch a caller-supplied sighash here
-	 * where we can still report it. */
+	 * returns the PSBT unsigned if asked for anything else, so catch a
+	 * caller-supplied sighash here where we can say why. */
 	if (!is_elements(chainparams)) {
 		for (size_t i = 0; i < tal_count(utxos); i++) {
 			for (size_t j = 0; j < psbt->num_inputs; j++) {
@@ -907,6 +935,16 @@ static struct command_result *json_signpsbt(struct command *cmd,
 		return command_fail(cmd, LIGHTNINGD,
 				    "Unable to combine signed psbt: %s",
 				    fmt_wally_psbt(tmpctx, signed_psbt));
+	}
+
+	/* hsmd returns the PSBT unsigned if libwally refused it. */
+	for (size_t i = 0; i < combined_psbt->num_inputs; i++) {
+		if (!input_spends_utxo(&combined_psbt->inputs[i], utxos))
+			continue;
+		if (!psbt_input_signed(combined_psbt, i))
+			return command_fail(cmd, JSONRPC2_INVALID_PARAMS,
+					    "HSM could not sign input %zu"
+					    " (see logs)", i);
 	}
 
 	if (!psbt_set_version(combined_psbt, psbt_version)) {

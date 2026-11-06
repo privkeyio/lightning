@@ -75,6 +75,7 @@
 #include <lightningd/plugin_hook.h>
 #include <lightningd/runes.h>
 #include <lightningd/subd.h>
+#include <sodium/utils.h>
 #include <sys/resource.h>
 #include <wallet/invoices.h>
 #include <wally_bip32.h>
@@ -140,6 +141,7 @@ static struct lightningd *new_lightningd(const tal_t *ctx)
 	ld->dev_no_htlc_timeout = false;
 	ld->dev_no_version_checks = false;
 	ld->dev_max_funding_unconfirmed = 2016;
+	ld->dev_max_dualopen_negotiation_secs = 600;
 	ld->dev_low_prio_anchor_blocks = 2016;
 	ld->dev_ignore_modern_onion = false;
 	ld->dev_disable_commit = -1;
@@ -1181,6 +1183,91 @@ static void setup_fd_limit(struct lightningd *ld, size_t num_channels)
 	}
 }
 
+/* Is argv[i] --name[=val]?  Returns how many args it takes (0-2). */
+static size_t opt_args(char *argv[], size_t i, const char *name, char **val)
+{
+	size_t len = strlen(name);
+
+	if (!strstarts(argv[i], name))
+		return 0;
+	if (argv[i][len] == '=') {
+		*val = argv[i] + len + 1;
+		return 1;
+	}
+	if (argv[i][len] != '\0')
+		return 0;
+	/* Same guess as initial_config_opts() */
+	if (argv[i+1] && !strstarts(argv[i+1], "-")) {
+		*val = argv[i+1];
+		return 2;
+	}
+	*val = NULL;
+	return 1;
+}
+
+/*~ We store a copy of our arguments before parsing mangles them, so we can
+ * re-exec if versions of subdaemons change.  Minus --recover, which would
+ * only fail now: we stay offline instead. */
+static char **reexec_args(const tal_t *ctx, int argc, char *argv[])
+{
+	char **args = tal_arr(ctx, char *, 0);
+	bool recovered = false, offline = false;
+
+	/*~ Turn argv[0] into an absolute path (if not already) */
+	tal_arr_expand(&args, path_join(args, take(path_cwd(NULL)), argv[0]));
+	for (size_t i = 1; i < argc; i++) {
+		char *val;
+		size_t n = opt_args(argv, i, "--recover", &val);
+
+		if (!n)
+			n = opt_args(argv, i, "--recover-fd", &val);
+		if (n) {
+			recovered = true;
+			i += n - 1;
+			continue;
+		}
+		if (streq(argv[i], "--offline"))
+			offline = true;
+		tal_arr_expand(&args, tal_strdup(args, argv[i]));
+	}
+	if (recovered && !offline)
+		tal_arr_expand(&args, tal_strdup(args, "--offline"));
+	tal_arr_expand(&args, NULL);
+	return args;
+}
+
+/* Anyone can read argv (e.g. ps), so wipe the secret once parsed. */
+static void scrub_recover_secret(char *argv[])
+{
+	for (size_t i = 1; argv[i]; i++) {
+		char *val;
+
+		if (opt_args(argv, i, "--recover", &val) && val)
+			sodium_memzero(val, strlen(val));
+	}
+}
+
+/* The recover command's secret goes to our re-exec'd self through a pipe
+ * on this fd, which is free after closefrom(). */
+#define RECOVER_FD (STDERR_FILENO + 1)
+
+static void pipe_recover_secret(const char *secret)
+{
+	int fds[2];
+
+	if (pipe(fds) != 0)
+		err(1, "Creating pipe for recover");
+	/* Tiny, so it fits in the pipe */
+	if (!write_all(fds[1], secret, strlen(secret)))
+		err(1, "Writing recover secret");
+	close(fds[1]);
+	if (fds[0] != RECOVER_FD) {
+		if (dup2(fds[0], RECOVER_FD) != RECOVER_FD)
+			err(1, "Moving recover pipe");
+		close(fds[0]);
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	struct lightningd *ld;
@@ -1192,7 +1279,8 @@ int main(int argc, char *argv[])
 	int sigchld_rfd;
 	struct io_conn *sigchld_conn = NULL;
 	int exit_code = 0;
-	char **orig_argv;
+	char **orig_argv, **args_to_scrub;
+	const char *recover_secret = NULL;
 	bool try_reexec;
 	size_t num_channels;
 
@@ -1233,17 +1321,9 @@ int main(int argc, char *argv[])
 	ld->state = LD_STATE_INITIALIZING;
 	log_info(ld->log, "%s", version());
 
-	/*~ We store an copy of our arguments before parsing mangles them, so
-	 * we can re-exec if versions of subdaemons change.  Note the use of
-	 * notleak() since our leak-detector can't find orig_argv on the
-	 * stack. */
-	orig_argv = notleak(tal_arr(ld, char *, argc + 1));
-	for (size_t i = 1; i < argc; i++)
-		orig_argv[i] = tal_strdup(orig_argv, argv[i]);
-
-	/*~ Turn argv[0] into an absolute path (if not already) */
-	orig_argv[0] = path_join(orig_argv, take(path_cwd(NULL)), argv[0]);
-	orig_argv[argc] = NULL;
+	/*~ Note the use of notleak() since our leak-detector can't find
+	 * orig_argv on the stack. */
+	orig_argv = notleak(reexec_args(ld, argc, argv));
 
 	/* Figure out where our subdaemons are first. */
 	find_subdaemons_and_plugins(ld, argv[0]);
@@ -1254,8 +1334,12 @@ int main(int argc, char *argv[])
 	/*~ Handle early options; this moves us into --lightning-dir.
 	 * Plugins may add new options, which is why we are splitting
 	 * between early args (including --plugin registration) and
-	 * non-early opts.  This also forks if they say --daemon. */
+	 * non-early opts.  This also forks if they say --daemon.
+	 * Parsing removes args from argv, so keep them to scrub after. */
+	args_to_scrub = tal_dup_arr(NULL, char *, argv, argc + 1, 0);
 	handle_early_opts(ld, argc, argv);
+	scrub_recover_secret(args_to_scrub);
+	tal_free(args_to_scrub);
 
 	/*~ Set the default portnum according to the used network
 	 * similarly to what Bitcoin Core does to ports by default. */
@@ -1531,6 +1615,10 @@ stop:
 	/* Get rid of per-channel subdaemons. */
 	subd_shutdown_nonglobals(ld);
 
+	/* Save peers' channel_updates we held back, while db_write
+	 * plugins can still see them. */
+	channel_gossip_shutdown(ld);
+
 	/* Tell plugins we're shutting down, use force if necessary. */
 	shutdown_plugins(ld);
 
@@ -1555,11 +1643,16 @@ stop:
 	/* Gather these before we free ld! */
 	try_reexec = ld->try_reexec;
 	if (try_reexec) {
-		/* Maybe we reexec with --recover, due to recover command */
+		/* Maybe we reexec with the secret, due to recover command */
 		if (ld->recover_secret) {
-			tal_arr_insert(&orig_argv, argc,
-				       tal_fmt(orig_argv, "--recover=%s",
-					       ld->recover_secret));
+			/* Before the NULL: tal_arr_insert() evaluates this
+			 * after resizing */
+			size_t end = tal_count(orig_argv) - 1;
+
+			recover_secret = tal_steal(orig_argv, ld->recover_secret);
+			tal_arr_insert(&orig_argv, end,
+				       tal_fmt(orig_argv, "--recover-fd=%i",
+					       RECOVER_FD));
 		}
 		tal_steal(NULL, orig_argv);
 	}
@@ -1588,6 +1681,8 @@ stop:
 
 		/* Close all filedescriptors except stdin/stdout/stderr */
 		closefrom(STDERR_FILENO + 1);
+		if (recover_secret)
+			pipe_recover_secret(recover_secret);
 		execv(orig_argv[0], orig_argv);
 		err(1, "Failed to re-exec ourselves after version change/recover");
 	}

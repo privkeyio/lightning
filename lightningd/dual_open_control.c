@@ -13,8 +13,10 @@
 #include <common/interactivetx.h>
 #include <common/json_channel_type.h>
 #include <common/json_command.h>
+#include <common/memleak.h>
 #include <common/psbt_open.h>
 #include <common/shutdown_scriptpubkey.h>
+#include <common/timeout.h>
 #include <common/wire_error.h>
 #include <connectd/connectd_wiregen.h>
 #include <errno.h>
@@ -511,6 +513,19 @@ static void rbf_channel_remove_dualopend(struct subd *dualopend,
 	payload->dualopend = NULL;
 }
 
+/* The channel itself is fine (its funding tx is signed and broadcast), so
+ * only the RBF attempt is dropped.  dualopend only reads the peer while
+ * negotiating, so it can't act on the funding tx confirming until we
+ * disconnect to unblock it; channel_cleanup_commands fires
+ * channel_open_failed so funder cleans up its side of the attempt. */
+static void accepter_rbf_timeout(struct channel *channel)
+{
+	channel_disconnect(channel, LOG_INFORM, true,
+			   tal_fmt(tmpctx,
+				   "Peer did not complete RBF within %u seconds",
+				   channel->peer->ld->dev_max_dualopen_negotiation_secs));
+}
+
 static void rbf_channel_hook_cb(struct rbf_channel_payload *payload STEALS)
 {
 	struct subd *dualopend = payload->dualopend;
@@ -550,6 +565,11 @@ static void rbf_channel_hook_cb(struct rbf_channel_payload *payload STEALS)
 
 	/* Update channel with new open attempt. */
 	channel->open_attempt = new_channel_open_attempt(channel);
+	/* Bound how long the peer can stall us, as for the initial open.
+	 * Freed with open_attempt at commitment_signed. */
+	notleak(new_reltimer(dualopend->ld->timers, channel->open_attempt,
+			     time_from_sec(dualopend->ld->dev_max_dualopen_negotiation_secs),
+			     accepter_rbf_timeout, channel));
 	msg = towire_dualopend_got_rbf_offer_reply(NULL,
 						   payload->our_funding,
 						   payload->psbt);
@@ -655,6 +675,31 @@ static void openchannel2_remove_dualopend(struct subd *dualopend,
 	payload->dualopend = NULL;
 }
 
+static void forget_channel_open(struct channel *channel, const char *why);
+
+/* dualopend is blocked reading the peer and can't hear a dualopend_fail,
+ * so we tell the peer and kill it.  channel_open_failed is what makes
+ * funder unreserve. */
+static void accepter_negotiation_timeout(struct channel *channel)
+{
+	struct lightningd *ld = channel->peer->ld;
+	const char *why = tal_fmt(tmpctx,
+				  "Peer did not complete channel open"
+				  " within %u seconds",
+				  ld->dev_max_dualopen_negotiation_secs);
+
+	subd_send_msg(ld->connectd,
+		      take(towire_connectd_peer_send_msg(NULL,
+							 &channel->peer->id,
+							 channel->peer->connectd_counter,
+							 towire_errorfmt(tmpctx,
+									 &channel->cid,
+									 "%s", why))));
+	channel_cleanup_commands(channel, why);
+	channel_set_owner(channel, NULL);
+	forget_channel_open(channel, why);
+}
+
 static void
 openchannel2_hook_cb(struct openchannel2_payload *payload STEALS)
 {
@@ -706,6 +751,11 @@ openchannel2_hook_cb(struct openchannel2_payload *payload STEALS)
 	channel->cid = payload->channel_id;
 	channel->opener = REMOTE;
 	channel->open_attempt = new_channel_open_attempt(channel);
+	/* Bound how long the peer can hold what our hook reserved.
+	 * Freed with open_attempt at commitment_signed. */
+	notleak(new_reltimer(dualopend->ld->timers, channel->open_attempt,
+			     time_from_sec(dualopend->ld->dev_max_dualopen_negotiation_secs),
+			     accepter_negotiation_timeout, channel));
 	channel->req_confirmed_ins[REMOTE] =
 		payload->req_confirmed_ins_remote;
 	msg = towire_dualopend_got_offer_reply(NULL,

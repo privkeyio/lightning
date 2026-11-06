@@ -558,8 +558,8 @@ def test_unified_htlc_tx_rbf(node_factory, bitcoind, case):
 
 @pytest.mark.openchannel('v1')
 def test_htlc_tx_rbf_without_unified_sigs(node_factory, bitcoind):
-    """A channel without option_unified_sigs signs its HTLC txs as before, on
-    a node which offers it."""
+    """A channel without option_unified_sigs signs its HTLC txs without
+    SIGHASH_UNIFIED, on a node which offers it."""
     no_unified = {'dev-force-features': '-514', 'may_reconnect': True, 'allow_warning': True}
     l1, l2 = node_factory.line_graph(2, opts=[{**no_unified,
                                                'feerates': (3000,) * 4,
@@ -587,14 +587,15 @@ def test_htlc_tx_rbf_without_unified_sigs(node_factory, bitcoind):
         tx = mempool_htlc_tx(bitcoind, commit)
         assert len(tx['vin']) > 1
         wit = [bytes.fromhex(w) for w in tx['vin'][0]['txinwitness']]
-        # SIGHASH_SINGLE|SIGHASH_ANYONECANPAY for both halves, no SIGHASH_UNIFIED.
-        assert wit[1][-1] == 0x83 and wit[2][-1] == 0x83, (wit[1][-1], wit[2][-1])
+        # Theirs is SIGHASH_SINGLE|SIGHASH_ANYONECANPAY and ours is
+        # SIGHASH_ALL, as BOLT 5 says.  No SIGHASH_UNIFIED on either.
+        assert wit[1][-1] == 0x83 and wit[2][-1] == 0x01, (wit[1][-1], wit[2][-1])
         return tx['txid'], wit[2]
 
     txid, sig = our_htlc_sigs()
     l1.set_feerates((6000,) * 4)
     bitcoind.generate_block(1, needfeerate=10**9)
     wait_for(lambda: (mempool_htlc_tx(bitcoind, commit) or {}).get('txid') not in (None, txid))
-    # The fee bump left our signature alone: it was never over the fee inputs.
+    # Ours commits to the fee inputs, so the fee bump signed again.
     newtxid, newsig = our_htlc_sigs()
-    assert newtxid != txid and newsig == sig
+    assert newtxid != txid and newsig != sig

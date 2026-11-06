@@ -1,7 +1,6 @@
 #include "config.h"
 #include <bitcoin/chainparams.h>
 #include <ccan/ccan/tal/str/str.h>
-#include <common/channel_config.h>
 #include <common/features.h>
 #include <common/initial_commit_tx.h>
 #include <common/shutdown_scriptpubkey.h>
@@ -165,6 +164,67 @@ bool check_config_bounds(const tal_t *ctx,
 		return false;
 	}
 
+	return true;
+}
+
+bool check_dust_limit(const tal_t *ctx,
+		      const struct channel_config *remoteconf,
+		      const struct channel_config *localconf,
+		      bool allow_dust_reserve,
+		      char **err_reason)
+{
+	/* BOLT #2:
+	 *
+	 * The receiving node MUST fail the channel if:
+	 *...
+	 *   - `dust_limit_satoshis` is smaller than `354 satoshis` (see [BOLT 3](03-transactions.md#dust-limits)).
+	 */
+	if (amount_sat_less(remoteconf->dust_limit, MIN_REMOTE_DUST_LIMIT)) {
+		*err_reason = tal_fmt(ctx,
+				      "dust_limit_satoshis %s too small"
+				      " (minimum %s)",
+				      fmt_amount_sat(ctx, remoteconf->dust_limit),
+				      fmt_amount_sat(ctx, MIN_REMOTE_DUST_LIMIT));
+		return false;
+	}
+
+	/* Everything we hold below their dust limit is trimmed from
+	 * *their* commitment transaction and goes to miners when they
+	 * force close.  When they open, we derive the reserve from their
+	 * dust limit, so without an absolute ceiling a peer could set it
+	 * to half the channel, pay us up to just under it, and burn (or,
+	 * with a miner, steal) our whole balance. */
+	/* BOLT #2:
+	 *
+	 * The receiving node MAY fail the channel if:
+	 *...
+	 *   - it considers `dust_limit_satoshis` too large (see [BOLT 3](03-transactions.md#dust-limits)).
+	 */
+	if (amount_sat_greater(remoteconf->dust_limit, MAX_REMOTE_DUST_LIMIT)) {
+		*err_reason = tal_fmt(ctx,
+				      "dust_limit_satoshis %s too large"
+				      " (maximum %s)",
+				      fmt_amount_sat(ctx, remoteconf->dust_limit),
+				      fmt_amount_sat(ctx, MAX_REMOTE_DUST_LIMIT));
+		return false;
+	}
+
+	/* BOLT #2:
+	 *
+	 * The receiving node MUST fail the channel if:
+	 *...
+	 *   - `dust_limit_satoshis` is greater than `channel_reserve_satoshis`.
+	 */
+	if (!allow_dust_reserve
+	    && amount_sat_greater(remoteconf->dust_limit,
+				  localconf->channel_reserve)) {
+		*err_reason = tal_fmt(ctx,
+				      "dust_limit_satoshis %s"
+				      " would be above our reserve %s",
+				      fmt_amount_sat(ctx, remoteconf->dust_limit),
+				      fmt_amount_sat(ctx, localconf->channel_reserve));
+		return false;
+	}
 	return true;
 }
 
