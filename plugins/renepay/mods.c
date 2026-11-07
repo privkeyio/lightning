@@ -210,6 +210,7 @@ static struct command_result *previoussuccess_done(struct command *cmd,
 
 	payment->payment_info.start_time.ts.tv_sec = success.created_at;
 	payment->payment_info.start_time.ts.tv_nsec = 0;
+	payment_set_counted_parts(payment, NULL);
 	payment->total_delivering = success.deliver_msat;
 	payment->total_sent = success.sent_msat;
 	payment->next_partid = success.parts + 1;
@@ -994,8 +995,8 @@ static struct command_result *pendingsendpays_done(struct command *cmd,
 	u64 unused_groupid;
 	u64 pending_group_id COMPILER_WANTS_INIT(0, "12.3.0-17ubuntu1 -O3");
 	u64 max_pending_partid = 0;
-	struct amount_msat pending_sent = AMOUNT_MSAT(0),
-			   pending_msat = AMOUNT_MSAT(0);
+	struct counted_part *pending_parts =
+	    tal_arr(tmpctx, struct counted_part, 0);
 
 	arr = json_get_member(buf, result, "payments");
 	if (!arr || arr->type != JSMN_ARRAY) {
@@ -1010,6 +1011,7 @@ static struct command_result *pendingsendpays_done(struct command *cmd,
 		/* Have success data, hence the payment is complete, we stop. */
 		payment->payment_info.start_time.ts.tv_sec = success.created_at;
 		payment->payment_info.start_time.ts.tv_nsec = 0;
+		payment_set_counted_parts(payment, NULL);
 		payment->total_delivering = success.deliver_msat;
 		payment->total_sent = success.sent_msat;
 		payment->next_partid = success.parts + 1;
@@ -1093,13 +1095,9 @@ static struct command_result *pendingsendpays_done(struct command *cmd,
 				    "Multiple pending groups for this "
 				    "payment.");
 
-			if (!amount_msat_add(&pending_msat, pending_msat,
-					     this_msat) ||
-			    !amount_msat_add(&pending_sent, pending_sent,
-					     this_sent))
-				plugin_err(pay_plugin->plugin,
-					   "%s (line %d) amount_msat overflow.",
-					   __func__, __LINE__);
+			struct counted_part part = {partid, this_msat,
+						    this_sent};
+			tal_arr_expand(&pending_parts, part);
 		}
 		assert(!streq(status, "complete"));
 	}
@@ -1118,8 +1116,7 @@ static struct command_result *pendingsendpays_done(struct command *cmd,
 		/* Continue where we left off? */
 		payment->groupid = pending_group_id;
 		payment->next_partid = max_pending_partid + 1;
-		payment->total_sent = pending_sent;
-		payment->total_delivering = pending_msat;
+		payment_set_counted_parts(payment, take(pending_parts));
 
 		plugin_log(pay_plugin->plugin, LOG_DBG,
 			   "There are pending sendpays to this invoice. "
@@ -1134,8 +1131,7 @@ static struct command_result *pendingsendpays_done(struct command *cmd,
 		 * sendpay group. */
 		payment->groupid = unused_groupid;
 		payment->next_partid = 1;
-		payment->total_sent = AMOUNT_MSAT(0);
-		payment->total_delivering = AMOUNT_MSAT(0);
+		payment_set_counted_parts(payment, NULL);
 	}
 
 	return payment_continue(payment);

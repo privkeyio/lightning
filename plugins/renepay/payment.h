@@ -9,6 +9,12 @@
 
 enum payment_status { PAYMENT_PENDING, PAYMENT_SUCCESS, PAYMENT_FAIL };
 
+/* A part of groupid whose amounts are in total_sent and total_delivering. */
+struct counted_part {
+	u64 partid;
+	struct amount_msat delivering, sent;
+};
+
 #define INVALID_STATE UINT64_MAX
 
 struct payment {
@@ -41,6 +47,10 @@ struct payment {
 
 	/* Groupid, so listpays() can group them back together */
 	u64 groupid;
+
+	/* The parts that make up total_sent and total_delivering, while the
+	 * payment is pending. */
+	struct counted_part *counted_parts;
 
 
 	/* === Hidden State === */
@@ -125,6 +135,16 @@ bool payment_set_constraints(
 		const struct route_exclusion **exclusions);
 
 bool payment_refresh(struct payment *p);
+
+/* Sets the totals to the given parts, all of groupid. */
+void payment_set_counted_parts(struct payment *p,
+			       const struct counted_part *parts TAKES);
+
+void payment_count_part(struct payment *p, u64 partid,
+			struct amount_msat delivering, struct amount_msat sent);
+
+/* Removes a part from the totals, if it is in them. */
+void payment_uncount_part(struct payment *p, u64 partid);
 
 struct amount_msat payment_sent(const struct payment *p);
 struct amount_msat payment_delivered(const struct payment *p);
