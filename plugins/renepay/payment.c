@@ -35,6 +35,7 @@ struct payment *payment_new(const tal_t *ctx, const struct sha256 *payment_hash,
 	p->total_delivering = AMOUNT_MSAT(0);
 	p->paynotes = tal_arr(p, const char*, 0);
 	p->groupid = 1;
+	p->counted_parts = tal_arr(p, struct counted_part, 0);
 
 	p->exec_state = INVALID_STATE;
 	p->next_partid = 1;
@@ -80,6 +81,7 @@ bool payment_refresh(struct payment *p){
 	p->error_msg = tal_free(p->error_msg);
 	p->total_sent = AMOUNT_MSAT(0);
 	p->total_delivering = AMOUNT_MSAT(0);
+	tal_resize(&p->counted_parts, 0);
 	// p->paynotes are unchanged, they accumulate messages
 	p->groupid++;
 
@@ -102,6 +104,54 @@ bool payment_refresh(struct payment *p){
 	    timeabs_add(pinfo->start_time, time_from_sec(pinfo->retryfor));
 
 	return true;
+}
+
+void payment_set_counted_parts(struct payment *p,
+			       const struct counted_part *parts TAKES)
+{
+	p->total_sent = AMOUNT_MSAT(0);
+	p->total_delivering = AMOUNT_MSAT(0);
+	tal_resize(&p->counted_parts, 0);
+	for (size_t i = 0; i < tal_count(parts); i++)
+		payment_count_part(p, parts[i].partid, parts[i].delivering,
+				   parts[i].sent);
+	if (taken(parts))
+		tal_free(parts);
+}
+
+void payment_count_part(struct payment *p, u64 partid,
+			struct amount_msat delivering, struct amount_msat sent)
+{
+	struct counted_part part = {partid, delivering, sent};
+
+	if (!amount_msat_add(&p->total_delivering, p->total_delivering,
+			     delivering) ||
+	    !amount_msat_add(&p->total_sent, p->total_sent, sent))
+		plugin_err(pay_plugin->plugin,
+			   "%s: amount_msat arithmetic overflow.", __func__);
+	tal_arr_expand(&p->counted_parts, part);
+}
+
+void payment_uncount_part(struct payment *p, u64 partid)
+{
+	for (size_t i = 0; i < tal_count(p->counted_parts); i++) {
+		struct counted_part *part = &p->counted_parts[i];
+		if (part->partid != partid)
+			continue;
+		if (!amount_msat_deduct(&p->total_delivering,
+					part->delivering) ||
+		    !amount_msat_deduct(&p->total_sent, part->sent))
+			plugin_err(pay_plugin->plugin,
+				   "%s: routes do not add up to payment total "
+				   "amount.",
+				   __func__);
+		tal_arr_remove(&p->counted_parts, i);
+		return;
+	}
+	plugin_log(pay_plugin->plugin, LOG_DBG,
+		   "%s: partid %" PRIu64 " of groupid %" PRIu64
+		   " is not in the totals",
+		   __func__, partid, p->groupid);
 }
 
 bool payment_set_constraints(

@@ -6,6 +6,7 @@ from utils import (
     mine_funding_to_announce,
     sync_blockheight,
     TEST_NETWORK,
+    TIMEOUT,
 )
 import pytest
 import random
@@ -941,5 +942,69 @@ def test_foreign_sendpay_failure(node_factory):
     l1.daemon.wait_for_log('recieved a sendpay result with groupid=5')
     l1.rpc.call("renepaystatus", {"invstring": inv["bolt11"]})
     assert not l1.daemon.is_in_log('plugin-cln-renepay: Killing plugin')
+    l1.stop()
+    assert not l1.daemon.is_in_log('MEMLEAK')
+
+
+def test_foreign_sendpay_failure_same_groupid(node_factory):
+    """A failed sendpay renepay did not send, with the groupid of renepay's
+    payment, is not deducted from that payment's totals."""
+    l1, l2, l3 = node_factory.line_graph(
+        3, wait_for_announce=True, opts={'allow-deprecated-apis': True})
+    inv = l3.rpc.invoice(100000, "test_foreign_same_groupid", "description")
+    with pytest.raises(RpcError):
+        l1.rpc.call("renepay", {"invstring": inv["bolt11"], "maxfee": 0})
+
+    # renepay's payment uses groupid 1, since nothing was sent before it.
+    route = l1.rpc.getroute(l3.info['id'], 100000, 1)['route']
+    route[0]['amount_msat'] = route[1]['amount_msat']
+    l1.rpc.sendpay(route, inv["payment_hash"],
+                   payment_secret=inv["payment_secret"], groupid=1)
+    with pytest.raises(RpcError, match=r'WIRE_FEE_INSUFFICIENT'):
+        l1.rpc.waitsendpay(inv["payment_hash"], groupid=1)
+    l1.daemon.wait_for_log(r'partid 0 of groupid 1 is not in the totals')
+    l1.rpc.call("renepaystatus", {"invstring": inv["bolt11"]})
+    assert not l1.daemon.is_in_log('routes do not add up')
+    assert not l1.daemon.is_in_log('plugin-cln-renepay: Killing plugin')
+    l1.stop()
+    assert not l1.daemon.is_in_log('MEMLEAK')
+
+
+def test_adopted_sendpay_failure(node_factory, executor):
+    """A pending part renepay adopted from listsendpays is deducted from the
+    payment's totals when it fails, so renepay sends a replacement."""
+    plugin = os.path.join(os.path.dirname(__file__), 'plugins/hold_htlcs.py')
+    opts = {'allow-deprecated-apis': True}
+    l1, l2, l3, l4 = node_factory.get_nodes(
+        4, opts=[opts,
+                 {**opts, 'plugin': plugin, 'hold-time': 30,
+                  'fee-base': 1000000},
+                 opts, opts])
+    node_factory.join_nodes([l1, l2, l4], wait_for_announce=True)
+    node_factory.join_nodes([l1, l3, l4], wait_for_announce=True)
+
+    inv = l4.rpc.invoice("100000sat", "test_adopted_sendpay_failure",
+                         "description")
+    # A part through l2 paying it no fee: held, then failed.
+    route = l1.rpc.getroute(l4.info['id'], "50000sat", 1,
+                            exclude=[l3.info['id']])['route']
+    assert route[0]['id'] == l2.info['id']
+    route[0]['amount_msat'] = route[1]['amount_msat']
+    l1.rpc.sendpay(route, inv["payment_hash"],
+                   payment_secret=inv["payment_secret"],
+                   amount_msat="100000sat", groupid=1, partid=1)
+    l2.daemon.wait_for_log("Holding onto an incoming htlc")
+
+    fut = executor.submit(l1.rpc.call, "renepay", {"invstring": inv["bolt11"]})
+    l1.daemon.wait_for_log(r'There are pending sendpays to this invoice. '
+                           r'groupid = 1 delivering = 50000000msat')
+    with pytest.raises(RpcError, match=r'WIRE_FEE_INSUFFICIENT'):
+        l1.rpc.waitsendpay(inv["payment_hash"], groupid=1, partid=1)
+
+    details = fut.result(TIMEOUT)
+    assert details["status"] == "complete"
+    invoice = only_one(l4.rpc.listinvoices("test_adopted_sendpay_failure")["invoices"])
+    assert invoice["amount_received_msat"] == Millisatoshi("100000sat")
+    assert not l1.daemon.is_in_log('routes do not add up')
     l1.stop()
     assert not l1.daemon.is_in_log('MEMLEAK')

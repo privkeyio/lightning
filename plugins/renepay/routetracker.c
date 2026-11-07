@@ -175,15 +175,8 @@ static void route_pending_register(struct routetracker *routetracker,
 		plugin_err(pay_plugin->plugin, "%s: failed to register route.",
 			   __func__);
 
-	if (!amount_msat_add(&payment->total_sent, payment->total_sent,
-			     route_sends(route)) ||
-	    !amount_msat_add(&payment->total_delivering,
-			     payment->total_delivering,
-			     route_delivers(route))) {
-		plugin_err(pay_plugin->plugin,
-			   "%s: amount_msat arithmetic overflow.",
-			   __func__);
-	}
+	payment_count_part(payment, route->key.partid, route_delivers(route),
+			   route_sends(route));
 }
 
 void payment_collect_results(struct payment *payment,
@@ -237,15 +230,7 @@ void payment_collect_results(struct payment *payment,
 				*final_msg = tal_strdup(tmpctx, r->final_msg);
 		}
 
-		if (!amount_msat_deduct(&payment->total_delivering,
-					route_delivers(r)) ||
-		    !amount_msat_deduct(&payment->total_sent,
-					route_sends(r))) {
-			plugin_err(pay_plugin->plugin,
-				   "%s: routes do not add up to "
-				   "payment total amount.",
-				   __func__);
-		}
+		payment_uncount_part(payment, r->key.partid);
 	}
 	for (size_t i = 0; i < ncompleted; i++)
 		tal_free(routetracker->finalized_routes[i]);
@@ -521,7 +506,14 @@ struct command_result *notification_sendpay_failure(struct command *cmd,
 				   json_tok_full(buf, sub));
 	}
 
-	assert(route->result == NULL);
+	/* A repeated result for a route still being processed. */
+	if (route->result) {
+		plugin_log(pay_plugin->plugin, LOG_UNUSUAL,
+			   "Ignoring sendpay_failure for a route that already has "
+			   "a result: %s",
+			   fmt_routekey(tmpctx, &route->key));
+		return notification_handled(cmd);
+	}
 	route->result = tal_sendpay_result_from_json(route, buf, sub,
 						     route->shared_secrets);
 	if (route->result == NULL)
@@ -586,7 +578,14 @@ struct command_result *notification_sendpay_success(struct command *cmd,
 			   json_tok_full_len(sub), json_tok_full(buf, sub));
 	}
 
-	assert(route->result == NULL);
+	/* A repeated result for a route still being processed. */
+	if (route->result) {
+		plugin_log(pay_plugin->plugin, LOG_UNUSUAL,
+			   "Ignoring sendpay_success for a route that already has "
+			   "a result: %s",
+			   fmt_routekey(tmpctx, &route->key));
+		return notification_handled(cmd);
+	}
 	route->result = tal_sendpay_result_from_json(route, buf, sub,
 						     route->shared_secrets);
 	if (route->result == NULL)
