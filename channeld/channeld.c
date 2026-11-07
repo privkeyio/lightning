@@ -2351,14 +2351,18 @@ static struct commitsig_info *handle_peer_commit_sig(struct peer *peer,
 		}
 	}
 
-	/* We were supposed to check this was affordable as we go. */
+	/* We were supposed to check this was affordable as we go, but a
+	 * splice that raises the reserve can leave the opener below it. */
 	if (peer->channel->opener == REMOTE) {
 		status_debug("Feerates are %u/%u",
 			     channel_feerate(peer->channel, LOCAL),
 			     channel_feerate(peer->channel, REMOTE));
-		assert(can_opener_afford_feerate(peer->channel,
-						 channel_feerate(peer->channel,
-								 LOCAL)));
+		if (!can_opener_afford_feerate(peer->channel,
+					       channel_feerate(peer->channel,
+							       LOCAL)))
+			status_unusual("Opener is below fee plus reserve"
+				       " at feerate %u",
+				       channel_feerate(peer->channel, LOCAL));
 	}
 
 	/* SIGHASH_ALL is implied. */
