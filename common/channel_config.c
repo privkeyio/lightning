@@ -2,6 +2,16 @@
 #include <common/channel_config.h>
 #include <wire/wire.h>
 
+struct amount_sat channel_reserve_for_capacity(struct amount_sat capacity,
+					       struct amount_sat opener_dust_limit)
+{
+	struct amount_sat reserve = amount_sat_div(capacity, 100);
+
+	if (amount_sat_greater(opener_dust_limit, reserve))
+		return opener_dust_limit;
+	return reserve;
+}
+
 void towire_channel_config(u8 **pptr, const struct channel_config *config)
 {
 	towire_amount_sat(pptr, config->dust_limit);
