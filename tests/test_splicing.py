@@ -1834,7 +1834,7 @@ def test_splice_reserve_changes_at_reestablish(node_factory, bitcoind):
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
-def test_splice_reserve_changes_at_reestablish_after_lost_splice_locked(node_factory, bitcoind):
+def test_splice_reserve_after_lost_splice_locked(node_factory, bitcoind):
     # l1's splice_locked is dropped, so only l1 locks before the reconnect.
     l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
                                      opts=[{'may_reconnect': True,
