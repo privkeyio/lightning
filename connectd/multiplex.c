@@ -290,6 +290,7 @@ void setup_peer_gossip_store(struct peer *peer,
 	peer->gs.bytes_rcvd_this_second = 0;
 	peer->gs.bytes_this_second = 0;
 	peer->gs.cpu_usec_this_second = 0;
+	peer->gs.skip_cpu_usec_this_second = 0;
 	peer->gs.throttle_warned = false;
 
 	/* BOLT #7:
@@ -645,6 +646,7 @@ static void maybe_reset_usage_window(struct peer *peer)
 	peer->gs.bytes_rcvd_this_second = 0;
 	peer->gs.bytes_this_second = 0;
 	peer->gs.cpu_usec_this_second = 0;
+	peer->gs.skip_cpu_usec_this_second = 0;
 }
 
 /* Each peer gets its "fair share" of our query-answering CPU.  No floor:
@@ -704,6 +706,49 @@ static u64 maybe_throttle_usec(struct peer *peer, bool *warned, const char *dire
 	return wait;
 }
 
+static void throttle_gossip(struct peer *peer, u64 wait_usec)
+{
+	/* Replace normal timer with a timer after throttle. */
+	peer->gs.active = false;
+	tal_free(peer->gs.gossip_timer);
+	peer->gs.gossip_timer
+		= new_abstimer(&peer->daemon->timers,
+			       peer,
+			       timemono_add(time_mono(), time_from_usec(wait_usec)),
+			       wake_gossip, peer);
+}
+
+static u64 outgoing_throttle_usec(struct peer *peer, u64 cpu_budget)
+{
+	return maybe_throttle_usec(peer, &peer->gs.throttle_warned, "outgoing",
+				   peer->gs.bytes_this_second, peer->daemon->gossip_stream_limit,
+				   peer->gs.cpu_usec_this_second
+				   + peer->gs.skip_cpu_usec_this_second,
+				   cpu_budget);
+}
+
+/* Skipping store records costs CPU but sends nothing, so charge it to the
+ * CPU budget, and throttle once that's spent.  Returns true if throttled.
+ * Deleted records gossmap_stream_next() passes over aren't counted in
+ * skipped, but their time is charged with any later skipped record in the same
+ * call. */
+static bool charge_skipping(struct peer *peer, struct timemono *start,
+			    u64 cpu_budget)
+{
+	struct timemono now = time_mono();
+	u64 wait_usec;
+
+	peer->gs.skip_cpu_usec_this_second
+		+= time_to_usec(timemono_between(now, *start));
+	*start = now;
+
+	wait_usec = outgoing_throttle_usec(peer, cpu_budget);
+	if (!wait_usec)
+		return false;
+	throttle_gossip(peer, wait_usec);
+	return true;
+}
+
 /* Gossip response or something from gossip store */
 static const u8 *maybe_gossip_msg(const tal_t *ctx, struct peer *peer)
 {
@@ -714,23 +759,16 @@ static const u8 *maybe_gossip_msg(const tal_t *ctx, struct peer *peer)
 	const u8 **msgs;
 	u64 cpu_budget, wait_usec;
 	bool answering;
+	struct timemono skip_start;
+	size_t skipped;
 
 	maybe_reset_usage_window(peer);
 
 	cpu_budget = peer_cpu_budget(peer);
 
-	wait_usec = maybe_throttle_usec(peer, &peer->gs.throttle_warned, "outgoing",
-					peer->gs.bytes_this_second, peer->daemon->gossip_stream_limit,
-					peer->gs.cpu_usec_this_second, cpu_budget);
+	wait_usec = outgoing_throttle_usec(peer, cpu_budget);
 	if (wait_usec) {
-		/* Replace normal timer with a timer after throttle. */
-		peer->gs.active = false;
-		tal_free(peer->gs.gossip_timer);
-		peer->gs.gossip_timer
-			= new_abstimer(&peer->daemon->timers,
-				       peer,
-				       timemono_add(time_mono(), time_from_usec(wait_usec)),
-				       wake_gossip, peer);
+		throttle_gossip(peer, wait_usec);
 		return NULL;
 	}
 
@@ -771,25 +809,34 @@ static const u8 *maybe_gossip_msg(const tal_t *ctx, struct peer *peer)
 	/* This should be around to kick us every 60 seconds */
 	assert(peer->gs.gossip_timer);
 
+	/* A filter matching almost nothing makes this walk the whole store
+	 * without sending a byte, so charge the walk to the CPU budget. */
+	skip_start = time_mono();
+	skipped = 0;
 again:
 	msg = gossmap_stream_next(ctx, gossmap, peer->gs.iter, &timestamp);
 	if (msg) {
-		/* Don't send back gossip they sent to us! */
-		if (gossip_rcvd_filter_del(peer->gs.grf, msg)) {
+		/* Don't send back gossip they sent to us!  Check timestamp
+		 * (zero for channel_announcement with no update yet!):
+		 * FIXME: we could ignore this! */
+		if (gossip_rcvd_filter_del(peer->gs.grf, msg)
+		    || (timestamp
+			&& (timestamp < peer->gs.timestamp_min || timestamp > peer->gs.timestamp_max))) {
 			msg = tal_free(msg);
+			if (++skipped % 64 == 0
+			    && charge_skipping(peer, &skip_start, cpu_budget))
+				return NULL;
 			goto again;
 		}
-		/* Check timestamp (zero for channel_announcement with
-		 * no update yet!):  FIXME: we could ignore this! */
-		if (timestamp
-		    && (timestamp < peer->gs.timestamp_min || timestamp > peer->gs.timestamp_max)) {
-			msg = tal_free(msg);
-			goto again;
-		}
+		if (skipped)
+			charge_skipping(peer, &skip_start, cpu_budget);
 		peer->gs.bytes_this_second += tal_bytelen(msg);
 		status_peer_io(LOG_IO_OUT, &peer->id, msg);
 		return msg;
 	}
+
+	if (skipped && charge_skipping(peer, &skip_start, cpu_budget))
+		return NULL;
 
 	/* No gossip left to send */
 	peer->gs.active = false;

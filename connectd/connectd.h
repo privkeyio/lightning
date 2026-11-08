@@ -40,6 +40,10 @@ struct gossip_state {
 	size_t bytes_this_second;
 	/* CPU time spent on their behalf in the last second. */
 	u64 cpu_usec_this_second;
+	/* CPU time spent skipping store records they filtered out, in the
+	 * last second.  Kept apart so it only throttles our gossip to them,
+	 * not what they send us. */
+	u64 skip_cpu_usec_this_second;
 	/* Only log throttling once */
 	bool throttle_warned;
 };
