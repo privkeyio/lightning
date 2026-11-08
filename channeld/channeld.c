@@ -478,7 +478,7 @@ static void check_mutual_channel_ready(const struct peer *peer)
 /* Call this method when splice_locked status are changed. If both sides have
  * splice_locked'ed than this function consumes the `splice_locked_ready` values
  * and considers the channel funding to be switched to the splice tx. */
-static void check_mutual_splice_locked(struct peer *peer)
+static void check_mutual_splice_locked(struct peer *peer, bool at_reestablish)
 {
 	u8 *msg;
 	const char *error;
@@ -555,12 +555,35 @@ static void check_mutual_splice_locked(struct peer *peer)
 	status_debug("mutual splice_locked, channel updated to: %s",
 		     fmt_channel(tmpctx, peer->channel));
 
+	/* BOLT-splice #2:
+	 *     - MUST use as each side's channel reserve 1% of the new channel
+	 *       capacity, rounded down, or the channel opener's
+	 *       `dust_limit_satoshis` if greater, from the first
+	 *       `channel_reestablish` exchange in which both nodes'
+	 *       `my_current_funding_locked` name this splice transaction, once it
+	 *       has received its peer's `channel_reestablish`.
+	 *     - Until then, MUST keep the channel reserves it used before the
+	 *       splice.
+	 */
+	if (at_reestablish) {
+		struct amount_sat reserve
+			= channel_reserve_for_capacity(peer->channel->funding_sats,
+						       peer->channel->opener == LOCAL
+						       ? chainparams->dust_limit
+						       : peer->channel->config[REMOTE].dust_limit);
+		peer->channel->config[LOCAL].channel_reserve = reserve;
+		peer->channel->config[REMOTE].channel_reserve = reserve;
+		status_debug("mutual splice_locked at reestablish, reserves now %s",
+			     fmt_amount_sat(tmpctx, reserve));
+	}
+
 	/* ensure the signer is locking at the same time */
 	lock_signer_outpoint(&inflight->outpoint);
 
 	msg = towire_channeld_got_splice_locked(NULL, inflight->amnt,
 						inflight->splice_amnt,
-						&inflight->outpoint.txid);
+						&inflight->outpoint.txid,
+						at_reestablish);
 	wire_sync_write(MASTER_FD, take(msg));
 
 	peer->splice_state->inflights = tal_free(peer->splice_state->inflights);
@@ -575,7 +598,8 @@ static void check_mutual_splice_locked(struct peer *peer)
 }
 
 static void implied_peer_splice_locked(struct peer *peer,
-				       struct bitcoin_txid splice_txid)
+				       struct bitcoin_txid splice_txid,
+				       bool at_reestablish)
 {
 	/* If we've `mutual_splice_locked` but our peer hasn't, we can ignore
 	 * this message harmlessly */
@@ -597,7 +621,7 @@ static void implied_peer_splice_locked(struct peer *peer,
 	*peer->splice_state->remote_locked_txid = splice_txid;
 
 	peer->splice_state->locked_ready[REMOTE] = true;
-	check_mutual_splice_locked(peer);
+	check_mutual_splice_locked(peer, at_reestablish);
 }
 
 /* Our peer told us they saw our splice confirm on chain with `splice_locked`.
@@ -631,7 +655,7 @@ static void handle_peer_splice_locked(struct peer *peer, const u8 *msg)
 		return;
 	}
 
-	implied_peer_splice_locked(peer, splice_txid);
+	implied_peer_splice_locked(peer, splice_txid, false);
 }
 
 static void handle_peer_channel_ready(struct peer *peer, const u8 *msg)
@@ -1289,6 +1313,14 @@ static bool want_fee_update(const struct peer *peer, u32 *target)
 			val = current;
 	} else
 		val = peer->desired_feerate;
+
+	/* A splice that raised the reserve can leave us below it, and a
+	 * lower feerate is not always cheaper (fewer HTLCs are trimmed). */
+	if (val != current && !can_opener_afford_feerate(peer->channel, val)) {
+		status_debug("Cannot afford feerate %u, keeping %u",
+			     val, current);
+		return false;
+	}
 
 	if (target)
 		*target = val;
@@ -2246,6 +2278,7 @@ static struct commitsig_info *handle_peer_commit_sig(struct peer *peer,
 	const struct htlc **htlc_map;
 	const u8 *funding_wscript;
 	size_t i;
+	u32 old_feerate;
 	const struct hsm_htlc *htlcs;
 	const u8 * msg2;
 	struct bitcoin_outpoint outpoint;
@@ -2308,6 +2341,7 @@ static struct commitsig_info *handle_peer_commit_sig(struct peer *peer,
 				"Must send funding_txid when sending"
 				" a commitment batch");
 
+	old_feerate = channel_feerate(peer->channel, LOCAL);
 	if (!changed_htlcs) {
 		changed_htlcs = tal_arr(msg, const struct htlc *, 0);
 		if (!channel_rcvd_commit(peer->channel, &changed_htlcs)
@@ -2327,14 +2361,29 @@ static struct commitsig_info *handle_peer_commit_sig(struct peer *peer,
 		}
 	}
 
-	/* We were supposed to check this was affordable as we go. */
+	/* We check affordability as updates arrive, but adds after an
+	 * update_fee are checked at the old feerate, so this is the backstop.
+	 * A splice that raised the reserve can also leave an honest opener
+	 * below it: that is only allowed if this commitment neither adds its
+	 * HTLCs nor changes the fee (a lower one can untrim our HTLCs). */
 	if (peer->channel->opener == REMOTE) {
-		status_debug("Feerates are %u/%u",
-			     channel_feerate(peer->channel, LOCAL),
+		u32 feerate = channel_feerate(peer->channel, LOCAL);
+
+		status_debug("Feerates are %u/%u", feerate,
 			     channel_feerate(peer->channel, REMOTE));
-		assert(can_opener_afford_feerate(peer->channel,
-						 channel_feerate(peer->channel,
-								 LOCAL)));
+		if (!can_opener_afford_feerate(peer->channel, feerate)) {
+			bool opener_added = false;
+
+			for (i = 0; i < tal_count(changed_htlcs); i++)
+				if (changed_htlcs[i]->state == RCVD_ADD_COMMIT)
+					opener_added = true;
+			if (opener_added || feerate != old_feerate)
+				peer_failed_warn(peer->pps, &peer->channel_id,
+						 "Cannot afford fee and reserve"
+						 " at feerate %u", feerate);
+			status_unusual("Opener is below fee plus reserve"
+				       " at feerate %u", feerate);
+		}
 	}
 
 	/* SIGHASH_ALL is implied. */
@@ -6567,7 +6616,7 @@ static void peer_reconnect(struct peer *peer,
 			 *     - MUST process `my_current_funding_locked` as if it was receiving `splice_locked`
 			 *       for this `txid`.
 			 */
-			implied_peer_splice_locked(peer, itr->outpoint.txid);
+			implied_peer_splice_locked(peer, itr->outpoint.txid, true);
 			break;
 		}
 	}
@@ -6863,7 +6912,7 @@ static void handle_funding_depth(struct peer *peer, const u8 *msg)
 			peer_write(peer->pps, take(msg));
 
 			peer->splice_state->locked_ready[LOCAL] = true;
-			check_mutual_splice_locked(peer);
+			check_mutual_splice_locked(peer, false);
 		}
 
 		return;

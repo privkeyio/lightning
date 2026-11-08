@@ -101,6 +101,10 @@ struct channel_config {
 
 #define MAX_REMOTE_DUST_LIMIT AMOUNT_SAT(5000)
 
+/* 1% of the capacity, rounded down, or the opener's dust limit if greater. */
+struct amount_sat channel_reserve_for_capacity(struct amount_sat capacity,
+					       struct amount_sat opener_dust_limit);
+
 void towire_channel_config(u8 **pptr, const struct channel_config *config);
 void fromwire_channel_config(const u8 **ptr, size_t *max,
 			     struct channel_config *config);

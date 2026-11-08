@@ -138,6 +138,8 @@ msgtype,channeld_got_splice_locked,1119
 msgdata,channeld_got_splice_locked,funding_sats,amount_sat,
 msgdata,channeld_got_splice_locked,splice_amnt,s64,
 msgdata,channeld_got_splice_locked,locked_txid,bitcoin_txid,
+# The lock came from the peer's channel_reestablish, so its reserves apply now.
+msgdata,channeld_got_splice_locked,at_reestablish,bool,
 
 #include <common/penalty_base.h>
 
