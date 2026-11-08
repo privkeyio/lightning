@@ -1902,7 +1902,7 @@ def test_splice_reserve_rises_above_opener_balance(node_factory, bitcoind):
     l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
                                      opts=[{'may_reconnect': True,
                                             'plugin': os.path.join(os.getcwd(), 'tests/plugins/hold_htlcs.py'),
-                                            'hold-time': 40},
+                                            'hold-time': 120 if VALGRIND else 40},
                                            {'may_reconnect': True}])
     chan_id = l1.get_channel_id(l2)
     scid = first_scid(l1, l2)
@@ -1938,12 +1938,19 @@ def test_splice_reserve_rises_above_opener_balance(node_factory, bitcoind):
     l1.daemon.wait_for_log(r'peer_in WIRE_CHANNEL_REESTABLISH')
     l2.daemon.wait_for_log(r'peer_in WIRE_CHANNEL_REESTABLISH')
     assert not l1.daemon.is_in_log(r'htlc_accepted hook called')
+    marks = {n: len(n.daemon.logs) for n in (l1, l2)}
 
     # l1 is below the new reserve only because of l2's splice, so its
     # fulfill, which raises its balance, must still go through.
     l2.rpc.waitsendpay(inv['payment_hash'], timeout=TIMEOUT)
-    assert not l2.daemon.is_in_log(r'Owning subdaemon channeld died')
-    assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'
+    l2.daemon.wait_for_log(r'Opener is below fee plus reserve')
+
+    # l1 cannot afford a fee update either, so it keeps the current one.
+    l1.set_feerates((1000, 1000, 1000, 1000), False)
+    l1.daemon.wait_for_log(r'Cannot afford feerate [0-9]+, keeping')
+    for n in (l1, l2):
+        assert not [l for l in n.daemon.logs[marks[n]:] if 'Owning subdaemon channeld died' in l]
+        assert only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'
 
 
 def mature_coinbase(node, bitcoind):
