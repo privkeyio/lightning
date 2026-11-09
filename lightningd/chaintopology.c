@@ -1123,6 +1123,7 @@ static void get_new_block(struct bitcoind *bitcoind,
 			  struct bitcoin_block *blk,
 			  struct chain_topology *topo)
 {
+	trace_span_resume(topo);
 	if (!blkid && !blk) {
 		/* No such block, we're done. */
 		updates_complete(topo);
@@ -1156,6 +1157,7 @@ static void try_extend_tip(struct chain_topology *topo)
 	trace_span_start("extend_tip", topo);
 	bitcoind_getrawblockbyheight(topo->request_ctx, topo->bitcoind, topo->tip->height + 1,
 				     get_new_block, topo);
+	trace_span_suspend(topo);
 }
 
 u32 get_block_height(const struct chain_topology *topo)

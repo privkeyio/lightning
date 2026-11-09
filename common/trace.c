@@ -441,16 +441,21 @@ static void destroy_trace_span(const void *key)
 {
 	size_t numkey = trace_key(key);
 	struct span *span = trace_span_find(numkey);
+	struct span *prev = current;
 
 	/* It's usually ended normally. */
 	if (!span)
 		return;
 
-	/* Otherwise resume so we can terminate it */
+	/* Otherwise resume so we can terminate it, then restore whatever
+	 * span we were freed from. */
+	if (prev == span)
+		prev = span->parent;
 	if (trace_to_file)
 		fprintf(trace_to_file, "destroying span\n");
 	trace_span_resume(key);
 	trace_span_end(key);
+	current = prev;
 }
 
 void trace_span_suspend_may_free_(const void *key, const char *lbl)
