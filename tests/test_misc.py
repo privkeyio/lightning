@@ -5285,6 +5285,7 @@ def test_tracing(node_factory):
 
     traces = set()
     suspended = set()
+    parents = {}
     for fname in glob.glob(f"{trace_fnamebase}.*"):
         with open(fname, "rt") as f:
             for linenum, l in enumerate(f.readlines(), 1):
@@ -5315,6 +5316,7 @@ def test_tracing(node_factory):
                 elif cmd == 'span_start':
                     assert spanid not in traces
                     traces.add(spanid)
+                    parents[spanid] = parts[2].split()[0]
                 elif cmd == 'span_suspend':
                     assert spanid in traces
                     assert spanid not in suspended
@@ -5327,9 +5329,17 @@ def test_tracing(node_factory):
                 else:
                     assert False, "Unknown trace line"
 
-        # We can actually have a calls suspended when we shut down!
+        # We can actually have a calls suspended when we shut down!  Its
+        # ancestors can still be open too, so allow those (which also
+        # means a span leaked above a suspended call isn't caught).
         assert len(suspended) <= 1
-        assert suspended == traces
+        open_ok = set()
+        for spanid in suspended:
+            while spanid in parents:
+                if spanid in traces:
+                    open_ok.add(spanid)
+                spanid = parents[spanid]
+        assert traces == open_ok
 
     # Test parent trace
     trace_fnamebase = os.path.join(l1.daemon.lightning_dir, TEST_NETWORK, "l1.parent.trace")
