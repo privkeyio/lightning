@@ -8,8 +8,10 @@ from utils import (
     mine_funding_to_announce, default_ln_port, CHANNEL_SIZE,
     first_scid, generate_gossip_store, GenChannel
 )
+from pyln.testing.utils import VALGRIND
 
 import coincurve
+import crc32c
 import hashlib
 import json
 import logging
@@ -2347,6 +2349,72 @@ def test_gossip_query_channel_range_cpu_throttle(node_factory, chainparams):
     l2.daemon.wait_for_log(r'Throttling outgoing peer .*: too much CPU')
     gossipwith.kill()
     gossipwith.wait()
+
+
+def test_gossip_stream_skip_cpu_throttle(node_factory, chainparams):
+    """A gossip_timestamp_filter from 0 whose range matches nothing makes
+    us walk the whole store without sending a byte.  Make sure that walk
+    is charged to the CPU budget, and resumes where it stopped."""
+    chans = [GenChannel(i, i + 1) for i in range(15000)]
+    gsfile, nodemap = generate_gossip_store(chans)
+
+    # Generated records have timestamp 0, which every filter accepts:
+    # give all but the last gossip message timestamp 1, so a filter of
+    # [0, 0] skips every one before it.
+    with open(gsfile.name, 'rb') as f:
+        store = bytearray(f.read())
+    records = []
+    off = 1
+    while off < len(store):
+        flags, msglen, crc, timestamp = struct.unpack('>HHII', store[off:off + 12])
+        msg = bytes(store[off + 12:off + 12 + msglen])
+        assert crc == crc32c.crc32c(msg, timestamp)
+        records.append((off, flags, msg))
+        off += 12 + msglen
+    last = [r for r in records if struct.unpack('>H', r[2][:2])[0] in (256, 257, 258)][-1]
+    for off, flags, msg in records:
+        if off != last[0]:
+            store[off:off + 12] = struct.pack('>HHII', flags, len(msg),
+                                              crc32c.crc32c(msg, 1), 1)
+    with open(gsfile.name, 'wb') as f:
+        f.write(store)
+
+    unneeded_plugins = ['recover', 'cln-askrene', 'cln-renepay', 'bookkeeper',
+                        'topology', 'cln-xpay']
+    # Small enough that the walk takes several budgets, large enough that
+    # it finishes in a few seconds.
+    l1 = node_factory.get_node(gossip_store_file=gsfile.name,
+                               options={'disable-plugin': unneeded_plugins,
+                                        'dev-fast-gossip': None,
+                                        'dev-gossip-cpu-budget': 200000 if VALGRIND else 20000},
+                               broken_log='Throttling (incoming|outgoing) peer')
+    assert l1.daemon.is_in_log(r'gossip_store: [0-9]+ live records, 0 deleted')
+
+    # first_timestamp 0 restarts the stream at the start of the store, and
+    # a range of 1 matches only timestamp 0.  Nothing else is sent, so only
+    # CPU can throttle it.
+    skip_all = subprocess.run(['devtools/mkquery',
+                               'gossip_timestamp_filter',
+                               chainparams['chain_hash'],
+                               '0', '1'],
+                              check=True, timeout=TIMEOUT,
+                              stdout=subprocess.PIPE).stdout.strip()
+    out = subprocess.run(['devtools/gossipwith',
+                          '--no-gossip',
+                          '--handle-pings',
+                          '--hex',
+                          '--filter=256,257,258',
+                          '--max-messages=1',
+                          '--network={}'.format(TEST_NETWORK),
+                          '{}@localhost:{}'.format(l1.info['id'], l1.port),
+                          skip_all],
+                         check=True, timeout=TIMEOUT,
+                         stdout=subprocess.PIPE).stdout.decode().split()
+
+    assert l1.daemon.is_in_log(r'Throttling outgoing peer .*: too much CPU')
+    # Skipping only holds back our gossip to them, not what they send us.
+    assert not l1.daemon.is_in_log(r'Throttling incoming peer')
+    assert out == [last[2].hex()]
 
 
 def test_gossip_throttle_no_unrequested_stream(node_factory, chainparams):
