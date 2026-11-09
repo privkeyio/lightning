@@ -2178,6 +2178,23 @@ def test_dump_own_gossip(node_factory):
 GOSSIPWITH_ID = '0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c'
 
 
+def gossip_until_distinct(args, distinct):
+    """Run gossipwith with args until it has printed distinct different
+    messages, and return them."""
+    seen = set()
+    with subprocess.Popen(['devtools/gossipwith', '--hex',
+                           '--timeout-after={}'.format(TIMEOUT)] + args,
+                          stdout=subprocess.PIPE) as proc:
+        try:
+            while len(seen) < distinct:
+                line = proc.stdout.readline()
+                assert line, "gossipwith exited after {} messages".format(len(seen))
+                seen.add(line.strip())
+        finally:
+            proc.kill()
+    return seen
+
+
 def test_gossip_throttle(node_factory, bitcoind, chainparams):
     """Make some gossip, test it gets throttled"""
     l1, l2, l3, l4 = node_factory.line_graph(4, wait_for_announce=True,
@@ -2185,35 +2202,29 @@ def test_gossip_throttle(node_factory, bitcoind, chainparams):
                                                    {'broken_log': 'Throttling (incoming|outgoing) peer',
                                                     'dev-throttle-gossip': None}])
 
-    # We expect: self-advertizement (3 messages for l1 and l4) plus
     # 4 node announcements, 3 channel announcements and 6 channel updates.
-    expected = 4 + 4 + 3 + 6
+    # Each stream also repeats its node's own gossip, and a query reply
+    # repeats node announcements, so read until all of them have arrived
+    # rather than for a fixed number of messages.
+    expected = 4 + 3 + 6
 
     # l1 is unlimited
     start_fast = time.time()
-    out1 = subprocess.run(['devtools/gossipwith',
-                           '--all-gossip',
-                           '--hex',
-                           '--network={}'.format(TEST_NETWORK),
-                           '--filter=256,257,258',
-                           '--max-messages={}'.format(expected),
-                           '{}@localhost:{}'.format(l1.info['id'], l1.port)],
-                          check=True,
-                          timeout=TIMEOUT, stdout=subprocess.PIPE).stdout.split()
+    out1 = gossip_until_distinct(['--all-gossip',
+                                  '--network={}'.format(TEST_NETWORK),
+                                  '--filter=256,257,258',
+                                  '{}@localhost:{}'.format(l1.info['id'], l1.port)],
+                                 expected)
     time_fast = time.time() - start_fast
     assert time_fast < 2
 
     # l4 is throttled
     start_slow = time.time()
-    out2 = subprocess.run(['devtools/gossipwith',
-                           '--all-gossip',
-                           '--hex',
-                           '--network={}'.format(TEST_NETWORK),
-                           '--filter=256,257,258',
-                           '--max-messages={}'.format(expected),
-                           '{}@localhost:{}'.format(l4.info['id'], l4.port)],
-                          check=True,
-                          timeout=TIMEOUT, stdout=subprocess.PIPE).stdout.split()
+    out2 = gossip_until_distinct(['--all-gossip',
+                                  '--network={}'.format(TEST_NETWORK),
+                                  '--filter=256,257,258',
+                                  '{}@localhost:{}'.format(l4.info['id'], l4.port)],
+                                 expected)
     time_slow = time.time() - start_slow
     # A throttle waits at least a second; how many it takes depends on
     # message sizes and the random flush delay, so check the log for it.
@@ -2247,31 +2258,23 @@ def test_gossip_throttle(node_factory, bitcoind, chainparams):
 
     # Queries should also be ratelimited, so compare l1 vs l4.
     start_fast = time.time()
-    out3 = subprocess.run(['devtools/gossipwith',
-                           '--no-gossip',
-                           '--hex',
-                           '--network={}'.format(TEST_NETWORK),
-                           '--filter=256,257,258',
-                           '--max-messages={}'.format(expected),
-                           '{}@localhost:{}'.format(l1.info['id'], l1.port),
-                           query],
-                          check=True,
-                          timeout=TIMEOUT, stdout=subprocess.PIPE).stdout.split()
+    out3 = gossip_until_distinct(['--no-gossip',
+                                  '--network={}'.format(TEST_NETWORK),
+                                  '--filter=256,257,258',
+                                  '{}@localhost:{}'.format(l1.info['id'], l1.port),
+                                  query],
+                                 expected)
     time_fast = time.time() - start_fast
     assert time_fast < 2
     assert set(out1) == set(out3)
 
     start_slow = time.time()
-    out4 = subprocess.run(['devtools/gossipwith',
-                           '--no-gossip',
-                           '--hex',
-                           '--network={}'.format(TEST_NETWORK),
-                           '--filter=256,257,258',
-                           '--max-messages={}'.format(expected),
-                           '{}@localhost:{}'.format(l4.info['id'], l4.port),
-                           query],
-                          check=True,
-                          timeout=TIMEOUT, stdout=subprocess.PIPE).stdout.split()
+    out4 = gossip_until_distinct(['--no-gossip',
+                                  '--network={}'.format(TEST_NETWORK),
+                                  '--filter=256,257,258',
+                                  '{}@localhost:{}'.format(l4.info['id'], l4.port),
+                                  query],
+                                 expected)
     time_slow = time.time() - start_slow
     assert time_slow > 1
     l4.daemon.wait_for_log(r'Throttling outgoing peer {}: too much'.format(GOSSIPWITH_ID))
