@@ -1,4 +1,6 @@
 #include "config.h"
+#include <ccan/str/str.h>
+#include <ccan/tal/tal.h>
 #include <common/setup.h>
 #include <common/trace.h>
 
@@ -31,6 +33,16 @@ int main(int argx, char *argv[])
 
 		trace_span_end(&a);
 	}
+
+	/* Freeing a suspended span's object inside another span ends the
+	 * suspended one and leaves the other current. */
+	char *p = tal(NULL, char);
+	trace_span_start("p", p);
+	trace_span_suspend_may_free(p);
+	trace_span_start("b", &b);
+	tal_free(p);
+	trace_span_end(&b);
+
 	trace_cleanup();
 	common_shutdown();
 }

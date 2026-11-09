@@ -5275,6 +5275,56 @@ def test_bolt12_invoice_decode(node_factory):
     subprocess.run(["devtools/bolt12-cli", "decode", inv], check=True)
 
 
+def trace_file_spans(fname):
+    """Replay a CLN_DEV_TRACE_FILE, checking it, and return the spans still
+    open, those suspended, and every span's name."""
+    traces = set()
+    suspended = set()
+    names = {}
+    with open(fname, "rt") as f:
+        for linenum, l in enumerate(f.readlines(), 1):
+            # In case an assertion fails
+            print(f"Parsing {fname}:{linenum}: {l.strip()}")
+            parts = l.split(maxsplit=2)
+            cmd = parts[0]
+            spanid = parts[1]
+            if cmd == 'span_emit':
+                assert spanid in traces
+                assert spanid not in suspended
+                # Should be valid JSON
+                res = json.loads(parts[2])
+
+                # This is an array for some reason
+                assert len(res) == 1
+                res = res[0]
+                assert res['id'] == spanid
+                assert res['localEndpoint'] == {"serviceName": "lightningd"}
+                expected_keys = ['id', 'name', 'timestamp', 'duration', 'tags', 'traceId', 'localEndpoint']
+                if 'parentId' in res:
+                    assert res['parentId'] in traces
+                    expected_keys.append('parentId')
+                assert set(res.keys()) == set(expected_keys)
+                traces.remove(spanid)
+            elif cmd == 'span_end':
+                assert spanid in traces
+            elif cmd == 'span_start':
+                assert spanid not in traces
+                traces.add(spanid)
+                names[spanid] = parts[2].strip()
+            elif cmd == 'span_suspend':
+                assert spanid in traces
+                assert spanid not in suspended
+                suspended.add(spanid)
+            elif cmd == 'span_resume':
+                assert spanid in traces
+                suspended.remove(spanid)
+            elif cmd == 'destroying':
+                pass
+            else:
+                assert False, "Unknown trace line"
+    return traces, suspended, names
+
+
 @unittest.skipIf(env('HAVE_USDT') != '1', "Test requires tracing compiled in")
 def test_tracing(node_factory):
     l1 = node_factory.get_node(start=False)
@@ -5286,46 +5336,9 @@ def test_tracing(node_factory):
     traces = set()
     suspended = set()
     for fname in glob.glob(f"{trace_fnamebase}.*"):
-        with open(fname, "rt") as f:
-            for linenum, l in enumerate(f.readlines(), 1):
-                # In case an assertion fails
-                print(f"Parsing {fname}:{linenum}: {l.strip()}")
-                parts = l.split(maxsplit=2)
-                cmd = parts[0]
-                spanid = parts[1]
-                if cmd == 'span_emit':
-                    assert spanid in traces
-                    assert spanid not in suspended
-                    # Should be valid JSON
-                    res = json.loads(parts[2])
-
-                    # This is an array for some reason
-                    assert len(res) == 1
-                    res = res[0]
-                    assert res['id'] == spanid
-                    assert res['localEndpoint'] == {"serviceName": "lightningd"}
-                    expected_keys = ['id', 'name', 'timestamp', 'duration', 'tags', 'traceId', 'localEndpoint']
-                    if 'parentId' in res:
-                        assert res['parentId'] in traces
-                        expected_keys.append('parentId')
-                    assert set(res.keys()) == set(expected_keys)
-                    traces.remove(spanid)
-                elif cmd == 'span_end':
-                    assert spanid in traces
-                elif cmd == 'span_start':
-                    assert spanid not in traces
-                    traces.add(spanid)
-                elif cmd == 'span_suspend':
-                    assert spanid in traces
-                    assert spanid not in suspended
-                    suspended.add(spanid)
-                elif cmd == 'span_resume':
-                    assert spanid in traces
-                    suspended.remove(spanid)
-                elif cmd == 'destroying':
-                    pass
-                else:
-                    assert False, "Unknown trace line"
+        file_traces, file_suspended, _ = trace_file_spans(fname)
+        traces |= file_traces
+        suspended |= file_suspended
 
         # We can actually have a calls suspended when we shut down!
         assert len(suspended) <= 1
@@ -5355,6 +5368,42 @@ def test_tracing(node_factory):
                     assert res[0]['traceId'] == '00112233445566778899aabbccddeeff'
                     # Everyone has a parent!
                     assert 'parentId' in res[0]
+
+
+@unittest.skipIf(env('HAVE_USDT') != '1', "Test requires tracing compiled in")
+def test_tracing_stop_during_block_fetch(node_factory, bitcoind):
+    """Stopping while extend_tip waits on bcli must end the bitcoind call's
+    span, not leave it keyed on the freed request"""
+    l1 = node_factory.get_node(start=False)
+    trace_fnamebase = os.path.join(l1.daemon.lightning_dir, TEST_NETWORK, "l1.trace")
+    l1.daemon.env["CLN_DEV_TRACE_FILE"] = trace_fnamebase
+    l1.start()
+    trace_fname = f"{trace_fnamebase}.{l1.daemon.proc.pid}"
+
+    # Keep bcli retrying the next block, so the fetch is pending at stop.
+    getblock_calls = []
+
+    def mock_getblock(r):
+        getblock_calls.append(r)
+        return {"id": r["id"], "result": None,
+                "error": {"code": -1, "message": "Block not available (pruned data)"}}
+
+    def mock_getpeerinfo(r):
+        return {"id": r["id"], "result": [{"id": 1, "services": "000000000000040d"}]}
+
+    def mock_getblockfrompeer(r):
+        return {"id": r["id"], "result": {}}
+
+    l1.daemon.rpcproxy.mock_rpc("getblock", mock_getblock)
+    l1.daemon.rpcproxy.mock_rpc("getpeerinfo", mock_getpeerinfo)
+    l1.daemon.rpcproxy.mock_rpc("getblockfrompeer", mock_getblockfrompeer)
+    bitcoind.generate_block(1)
+    wait_for(lambda: getblock_calls)
+    l1.stop()
+
+    traces, suspended, names = trace_file_spans(trace_fname)
+    assert [names[s] for s in suspended] == ['extend_tip']
+    assert suspended == traces
 
 
 def test_zero_locktime_blocks(node_factory, bitcoind):
