@@ -20220,7 +20220,7 @@
                 }
               },
               "independent-secrets": {
-                "added": "v26.06.9-blake2b.10",
+                "added": "v26.06.10-blake2b.2",
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
@@ -20648,7 +20648,7 @@
                 }
               },
               "max-independent-secrets": {
-                "added": "v26.06.9-blake2b.10",
+                "added": "v26.06.10-blake2b.2",
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
@@ -25064,7 +25064,7 @@
                 },
                 "independent_secrets_stored": {
                   "type": "u64",
-                  "added": "v26.06.9-blake2b.10",
+                  "added": "v26.06.10-blake2b.2",
                   "description": [
                     "Only for a channel with *independent_secrets/even* in its channel_type: how many of the peer's per-commitment secrets we store one by one in the database, because they don't fit a shachain (0 while they all do)."
                   ]
