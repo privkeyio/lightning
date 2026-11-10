@@ -604,8 +604,7 @@ static size_t max_entries(enum query_option_flags query_option_flags)
 }
 
 /* This just gathers the scids they asked for: no channel_update lookups
- * (i.e. no timestamps or checksums), so it's cheap regardless of how large
- * a range they asked for. */
+ * (i.e. no timestamps or checksums), but it still walks every channel. */
 static struct short_channel_id *gather_range_scids(const tal_t *ctx,
 						    struct gossmap *gossmap,
 						    u32 first_blocknum,
@@ -677,6 +676,12 @@ static const u8 *maybe_create_range_response(const tal_t *ctx,
 	u32 this_num_blocks, out_limit_block;
 	bool final, split_block;
 
+	if (peer->range_gather_pending) {
+		peer->range_scids = gather_range_scids(peer, gossmap,
+						       peer->range_first_blocknum,
+						       peer->range_blocks_remaining);
+		peer->range_gather_pending = false;
+	}
 	if (!peer->range_scids)
 		return NULL;
 
@@ -788,7 +793,7 @@ void handle_query_channel_range(struct peer *peer, const u8 *msg)
 	/* We only answer one query_channel_range at a time (like
 	 * query_short_channel_ids), so we don't have to juggle multiple
 	 * in-flight trickled replies per peer. */
-	if (peer->range_scids) {
+	if (peer->range_scids || peer->range_gather_pending) {
 		warning_to_peer(peer, "Bad concurrent query_channel_range");
 		return;
 	}
@@ -797,11 +802,10 @@ void handle_query_channel_range(struct peer *peer, const u8 *msg)
 	if (first_blocknum + number_of_blocks < first_blocknum)
 		number_of_blocks = UINT_MAX - first_blocknum;
 
-	/* Gathering the scids is cheap; we work out timestamps/checksums
-	 * (and actually send the replies) lazily, as we trickle them out
-	 * via maybe_create_query_responses(). */
-	peer->range_scids = gather_range_scids(peer, get_gossmap(peer->daemon),
-					       first_blocknum, number_of_blocks);
+	/* Gathering the scids walks every channel, so leave it to the write
+	 * loop like the rest of the reply: it charges it to the CPU budget,
+	 * and won't start while we're over it. */
+	peer->range_gather_pending = true;
 	peer->range_scid_off = 0;
 	peer->range_first_blocknum = first_blocknum;
 	peer->range_blocks_remaining = number_of_blocks;

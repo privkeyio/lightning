@@ -53,7 +53,7 @@ struct io_conn {
 };
 
 static struct secret notsosecret;
-static bool no_gossip = false, all_gossip = false;
+static bool no_gossip = false, all_gossip = false, no_timestamp_filter = false;
 static unsigned long max_messages = -1UL;
 static u16 *accept_messages = NULL;
 
@@ -210,12 +210,14 @@ static struct io_plan *handshake_success(struct io_conn *conn,
 		tal_free(sync_crypto_read(NULL, peer_fd, cs));
 		tal_free(tlvs);
 
-		msg = towire_gossip_timestamp_filter(NULL,
-						     &chainparams->genesis_blockhash,
-						     all_gossip ? 0
-						     : no_gossip ? 0xFFFFFFFF : clock_time().ts.tv_sec,
-						     0xFFFFFFFF);
-		sync_crypto_write(peer_fd, cs, take(msg));
+		if (!no_timestamp_filter) {
+			msg = towire_gossip_timestamp_filter(NULL,
+							     &chainparams->genesis_blockhash,
+							     all_gossip ? 0
+							     : no_gossip ? 0xFFFFFFFF : clock_time().ts.tv_sec,
+							     0xFFFFFFFF);
+			sync_crypto_write(peer_fd, cs, take(msg));
+		}
 	}
 
 	if (stream_stdin)
@@ -361,6 +363,8 @@ int main(int argc, char *argv[])
 			   "Reply to pings");
 	opt_register_noarg("--no-gossip", opt_set_bool, &no_gossip,
 			   "Suppress all gossip at start");
+	opt_register_noarg("--no-timestamp-filter", opt_set_bool, &no_timestamp_filter,
+			   "Don't send a gossip_timestamp_filter at start");
 	opt_register_arg("--filter", opt_set_filter, NULL, &accept_messages,
 			 "Only process these message types");
 	opt_register_arg("--max-messages", opt_set_ulongval, opt_show_ulongval,
@@ -392,6 +396,8 @@ int main(int argc, char *argv[])
 			   "Print this message.");
 
 	opt_parse(&argc, argv, opt_log_stderr_exit);
+	if (no_timestamp_filter && (all_gossip || no_gossip))
+		opt_usage_exit_fail("--no-timestamp-filter sends no filter for --all-gossip or --no-gossip");
 	if (argc < 2)
 		opt_usage_exit_fail("Need an id@addr to connect to");
 	at = strchr(argv[1], '@');

@@ -151,6 +151,7 @@ static struct peer *new_peer(struct daemon *daemon,
 	peer->scid_query_nodes = NULL;
 	peer->scid_query_nodes_idx = 0;
 	peer->range_scids = NULL;
+	peer->range_gather_pending = false;
 	peer->range_scid_off = 0;
 	peer->range_first_blocknum = 0;
 	peer->range_blocks_remaining = 0;
@@ -2602,6 +2603,8 @@ int main(int argc, char *argv[])
 	daemon->incoming_stream_limit = 1000000;
 	/* Half a CPU-second/sec, total, split across however many peers we have */
 	daemon->cpu_budget_usec_limit = 500000;
+	daemon->gossip_cpu_usec_backlog = 0;
+	daemon->gossip_cpu_drained = time_mono();
 	daemon->scid_htable = new_htable(daemon, scid_htable);
 
 	/* stdin == control */
