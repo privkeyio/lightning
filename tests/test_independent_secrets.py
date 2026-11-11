@@ -57,6 +57,15 @@ def stored_secrets(node):
         'SELECT commitnum FROM channel_revocation_secrets ORDER BY commitnum;')]
 
 
+def wait_for_closed_onchain(node, peer, bitcoind):
+    """node failed the channel and broadcast its commitment, and sent peer
+    an error.  peer then fails the channel too, and its commitment may reach
+    the mempool before node's: wait for either to confirm."""
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    wait_for(lambda: only_one(node.rpc.listpeerchannels(peer.info['id'])['channels'])['state']
+             == 'ONCHAIN')
+
+
 def reported_stored(node, peer):
     """What listpeerchannels says node stores of peer's secrets."""
     return only_one(node.rpc.listpeerchannels(peer.info['id'])['channels']).get('independent_secrets_stored')
@@ -412,7 +421,7 @@ def test_independent_secrets_cap_unilateral(node_factory, bitcoind, executor):
                              r'Stored 11 of the peer.s per-commitment secrets,'
                              r' max-independent-secrets=10, and the channel still'
                              r" isn't closed: closing it unilaterally"])
-    l2.wait_for_channel_onchain(l1.info['id'])
+    wait_for_closed_onchain(l2, l1, bitcoind)
     closed = only_one(l2.rpc.listpeerchannels()['channels'])
     assert 'Stored too many per-commitment secrets' in [s['message'] for s in closed['state_changes']]
 
@@ -827,7 +836,7 @@ def test_independent_secrets_cap_lease(node_factory, bitcoind, executor):
                            r' max-independent-secrets=10, and the channel still'
                            r" isn't closed: closing it unilaterally")
     assert not l2.daemon.is_in_log(r'max-independent-secrets=10: closing the channel')
-    l2.wait_for_channel_onchain(l1.info['id'])
+    wait_for_closed_onchain(l2, l1, bitcoind)
 
 
 def test_independent_secrets_cap_close_restart(node_factory, executor):
