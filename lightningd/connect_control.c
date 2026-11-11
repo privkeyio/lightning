@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <hsmd/permissions.h>
 #include <lightningd/channel.h>
+#include <lightningd/channel_control.h>
 #include <lightningd/connect_control.h>
 #include <lightningd/dual_open_control.h>
 #include <lightningd/hsm_control.h>
@@ -686,8 +687,11 @@ void force_peer_disconnect(struct lightningd *ld,
 		/* This frees c! */
 		if (channel_state_uncommitted(c->state))
 			channel_unsaved_close_conn(c, why);
-		else
+		else {
+			/* Not through channel_err() */
+			channel_fail_splice_command(c, why, true);
 			channel_set_owner(c, NULL);
+		}
 	}
 
 	subd_send_msg(peer->ld->connectd,

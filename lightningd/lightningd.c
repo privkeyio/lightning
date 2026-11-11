@@ -160,6 +160,8 @@ static struct lightningd *new_lightningd(const tal_t *ctx)
 	ld->dev_splice_corrupt_input_witness = false;
 	ld->dev_splice_exit_before_sending_sigs = false;
 	ld->dev_splice_sign_second = false;
+	ld->dev_splice_sign_first = false;
+	ld->dev_splice_resume_wait = 60;
 	ld->dev_allow_shutdown_destination_change = false;
 	ld->dev_hsmd_no_preapprove_check = false;
 	ld->dev_hsmd_fail_preapprove = false;

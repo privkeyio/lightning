@@ -16,6 +16,15 @@ bool peer_start_channeld(struct channel *channel,
 			 const u8 *fwd_msg,
 			 bool reconnected);
 
+/* channeld is going, and any splice negotiation with it: fail a splice
+ * command waiting on it, so it doesn't wait for ever and leave later
+ * splices refused as busy.  If the channel can resume (resumable) and
+ * channeld has saved splice_signed's signatures, a reconnect resumes the
+ * splice and our broadcast answers it, so that one waits, for
+ * dev_splice_resume_wait seconds at most. */
+void channel_fail_splice_command(struct channel *channel, const char *why,
+				 bool resumable);
+
 /* Send message to channeld (if connected) to tell it about depth
  * c.f. dualopen_tell_depth! */
 void channeld_tell_depth(struct channel *channel,

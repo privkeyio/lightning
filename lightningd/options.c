@@ -968,6 +968,14 @@ static void dev_register_opts(struct lightningd *ld)
 		     opt_set_bool,
 		     &ld->dev_splice_sign_second,
 		     "Never send splice tx_signatures first");
+	clnopt_noarg("--dev-splice-sign-first", OPT_DEV,
+		     opt_set_bool,
+		     &ld->dev_splice_sign_first,
+		     "Always send splice tx_signatures first");
+	clnopt_witharg("--dev-splice-resume-wait", OPT_DEV|OPT_SHOWINT,
+		       opt_set_u32, opt_show_u32,
+		       &ld->dev_splice_resume_wait,
+		       "Seconds a splice_signed with saved signatures waits for the peer to reconnect");
 	clnopt_noarg("--dev-allow-shutdown-destination-change", OPT_DEV,
 		     opt_set_bool,
 		     &ld->dev_allow_shutdown_destination_change,

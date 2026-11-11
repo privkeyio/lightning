@@ -419,6 +419,14 @@ struct lightningd {
 	 * before signing can be tested. */
 	bool dev_splice_sign_second;
 
+	/* Always send splice tx_signatures first, as when the peer adds
+	 * more than us, so our wait for theirs can be tested. */
+	bool dev_splice_sign_first;
+
+	/* How long a splice_signed whose signatures channeld saved waits,
+	 * once channeld goes, for the reconnect that resumes the splice. */
+	u32 dev_splice_resume_wait;
+
 	/* Allow changing of shutdown output point even if dangerous */
 	bool dev_allow_shutdown_destination_change;
 
