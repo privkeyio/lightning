@@ -999,6 +999,29 @@
               }
             }
           },
+          "splice-sigs-wait": {
+            "added": "v26.06.10-blake2b.2",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "value_int",
+              "source"
+            ],
+            "properties": {
+              "value_int": {
+                "type": "u32",
+                "description": [
+                  "Field from config or cmdline, or default."
+                ]
+              },
+              "source": {
+                "type": "string",
+                "description": [
+                  "Source of configuration setting."
+                ]
+              }
+            }
+          },
           "min-capacity-sat": {
             "type": "object",
             "additionalProperties": false,
@@ -2102,6 +2125,10 @@
           },
           "max-dust-htlc-exposure-msat": {
             "value_msat": 50000000,
+            "source": "default"
+          },
+          "splice-sigs-wait": {
+            "value_int": 60,
             "source": "default"
           },
           "min-capacity-sat": {

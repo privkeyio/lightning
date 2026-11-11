@@ -93,6 +93,17 @@ static char *opt_set_u32(const char *arg, u32 *u)
 	return NULL;
 }
 
+/* A wait of 0 seconds would fail before anything could answer. */
+static char *opt_set_splice_sigs_wait(const char *arg, u32 *u)
+{
+	char *err = opt_set_u32(arg, u);
+	if (err)
+		return err;
+	if (*u == 0)
+		return tal_fmt(tmpctx, "'%s' must be at least 1", arg);
+	return NULL;
+}
+
 static char *opt_set_s32(const char *arg, s32 *u)
 {
 	char *endp;
@@ -943,6 +954,11 @@ static void dev_register_opts(struct lightningd *ld)
 		     &ld->dev_splice_warn_instead_of_sigs,
 		     "Signing a splice second, send a warning instead of"
 		     " tx_signatures until reconnect");
+	clnopt_noarg("--dev-splice-abort-instead-of-sigs", OPT_DEV,
+		     opt_set_bool,
+		     &ld->dev_splice_abort_instead_of_sigs,
+		     "Send a warning and then tx_abort instead of a"
+		     " splice's tx_signatures");
 	clnopt_noarg("--dev-splice-abort-after-sigs", OPT_DEV,
 		     opt_set_bool,
 		     &ld->dev_splice_abort_after_sigs,
@@ -968,6 +984,10 @@ static void dev_register_opts(struct lightningd *ld)
 		     opt_set_bool,
 		     &ld->dev_splice_sign_second,
 		     "Never send splice tx_signatures first");
+	clnopt_noarg("--dev-splice-sign-first", OPT_DEV,
+		     opt_set_bool,
+		     &ld->dev_splice_sign_first,
+		     "Always send splice tx_signatures first");
 	clnopt_noarg("--dev-allow-shutdown-destination-change", OPT_DEV,
 		     opt_set_bool,
 		     &ld->dev_allow_shutdown_destination_change,
@@ -1660,6 +1680,11 @@ static void register_opts(struct lightningd *ld)
 	clnopt_witharg("--max-concurrent-htlcs", OPT_SHOWINT, opt_set_u32, opt_show_u32,
 			 &ld->config.max_concurrent_htlcs,
 			 "Number of HTLCs one channel can handle concurrently. Should be between 1 and 483");
+	clnopt_witharg("--splice-sigs-wait", OPT_SHOWINT,
+		       opt_set_splice_sigs_wait, opt_show_u32,
+		       &ld->splice_sigs_wait,
+		       "Seconds splice_signed waits for the peer's"
+		       " tx_signatures once ours are saved");
 	clnopt_witharg("--max-dust-htlc-exposure-msat", OPT_SHOWMSATS,
 		       opt_set_msat,
 		       opt_show_msat, &ld->config.max_dust_htlc_exposure_msat,

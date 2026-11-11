@@ -82,6 +82,7 @@ msgdata,channeld_init,dev_disable_commit,?u32,
 msgdata,channeld_init,dev_splice_corrupt_shared_sig,bool,
 msgdata,channeld_init,dev_splice_corrupt_input_witness,bool,
 msgdata,channeld_init,dev_splice_sign_second,bool,
+msgdata,channeld_init,dev_splice_sign_first,bool,
 msgdata,channeld_init,num_penalty_bases,u32,
 msgdata,channeld_init,pbases,penalty_base,num_penalty_bases
 msgdata,channeld_init,num_inflights,u16,
@@ -89,6 +90,7 @@ msgdata,channeld_init,inflights,inflight,num_inflights
 msgdata,channeld_init,scid_alias,short_channel_id,
 msgdata,channeld_init,dev_splice_abort_at_tx_complete,bool,
 msgdata,channeld_init,dev_splice_warn_instead_of_sigs,bool,
+msgdata,channeld_init,dev_splice_abort_instead_of_sigs,bool,
 msgdata,channeld_init,dev_delay_confirmed_stfu,u32,
 msgdata,channeld_init,dev_shutdown_during_splice,bool,
 msgdata,channeld_init,dev_splice_ack_contribution,u64,
@@ -303,6 +305,8 @@ msgdata,channeld_update_inflight,num_htlc_sigs,u16,
 msgdata,channeld_update_inflight,htlc_sigs,bitcoin_signature,num_htlc_sigs
 msgdata,channeld_update_inflight,locked_scid,?short_channel_id,
 msgdata,channeld_update_inflight,i_sent_sigs,bool,
+# Set when this saves the signatures splice_signed gave us
+msgdata,channeld_update_inflight,saves_user_sigs,bool,
 
 # channeld->master: A funding error has occured
 msgtype,channeld_splice_funding_error,7220

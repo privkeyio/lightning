@@ -4,11 +4,13 @@ from pyln.testing.utils import EXPERIMENTAL_DUAL_FUND, SLOW_MACHINE, VALGRIND
 import os
 import re
 import pytest
+import struct
 import threading
 import unittest
 import time
 from utils import (
-    sync_blockheight, wait_for, TEST_NETWORK, first_scid, only_one, TIMEOUT
+    sync_blockheight, wait_for, TEST_NETWORK, first_scid, only_one, TIMEOUT,
+    psbt_maps, psbt_join,
 )
 
 
@@ -2981,6 +2983,36 @@ def test_splice_signed_psbt_above_max_supply(node_factory, bitcoind):
     bad = l1.rpc.addpsbtoutput(1100000000000001, bad)['psbt']
     with pytest.raises(RpcError, match='exceed max supply'):
         l1.rpc.splice_signed(chan_id, bad)
+
+    # The splice is still there to sign.
+    result = l1.rpc.splice_signed(chan_id, signed)
+    bitcoind.generate_block(6, wait_for_mempool=result['txid'])
+    l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_signed_conflicting_locktimes(node_factory, bitcoind):
+    """splice_signed refuses a PSBT one of whose inputs requires a time
+    locktime and another a height locktime, which leaves it no valid
+    locktime, rather than crash on it."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True)
+    chan_id = l1.get_channel_id(l2)
+
+    funds_result = l1.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
+    result = l1.rpc.splice_init(chan_id, 100000, funds_result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    assert result['commitments_secured'] is True
+    signed = l1.rpc.signpsbt(result['psbt'])['signed_psbt']
+
+    glob, inputs, outputs = psbt_maps(l1.rpc.setpsbtversion(signed, 2)['psbt'])
+    assert len(inputs) == 2
+    inputs[0].append((b'\x11', struct.pack('<I', 500000000)))
+    inputs[1].append((b'\x12', struct.pack('<I', 100)))
+    with pytest.raises(RpcError, match=r'Expected a PSBT'):
+        l1.rpc.splice_signed(chan_id, psbt_join(glob, inputs, outputs))
 
     # The splice is still there to sign.
     result = l1.rpc.splice_signed(chan_id, signed)

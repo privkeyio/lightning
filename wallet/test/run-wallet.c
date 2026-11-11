@@ -821,6 +821,12 @@ u8 *wire_sync_read(const tal_t *ctx UNNEEDED, int fd UNNEEDED)
 void plugin_hook_db_sync(struct db *db UNNEEDED)
 {
 }
+/* delete_channel() calls it: these channels have no splice command */
+void channel_fail_splice_command(struct channel *channel UNNEEDED,
+				 const char *why UNNEEDED,
+				 bool resumable UNNEEDED)
+{
+}
 void notify_channel_state_changed(struct lightningd *ld UNNEEDED,
 				  const struct node_id *peer_id UNNEEDED,
 				  const struct channel_id *cid UNNEEDED,

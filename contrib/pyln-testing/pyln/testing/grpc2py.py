@@ -2667,6 +2667,13 @@ def listconfigs_configs_signet2py(m):
     })
 
 
+def listconfigs_configs_splice_sigs_wait2py(m):
+    return remove_default({
+        "source": m.source,  # PrimitiveField in generate_composite
+        "value_int": m.value_int,  # PrimitiveField in generate_composite
+    })
+
+
 def listconfigs_configs_subdaemon2py(m):
     return remove_default({
         "sources": [m.sources for i in m.sources], # ArrayField[primitive] in generate_composite

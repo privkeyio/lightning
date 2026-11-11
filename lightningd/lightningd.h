@@ -394,6 +394,10 @@ struct lightningd {
 	 * tx_signatures (a reconnect resends them), so the peer's handling
 	 * of a missing tx_signatures can be tested. */
 	bool dev_splice_warn_instead_of_sigs;
+	/* Instead of a splice's tx_signatures, signing first or second, a
+	 * warning and then tx_abort, which the peer gets outside the
+	 * negotiation. */
+	bool dev_splice_abort_instead_of_sigs;
 
 	/* Let abort_channels reach channeld after we sent tx_signatures, so
 	 * channeld's own refusal can be tested. */
@@ -418,6 +422,14 @@ struct lightningd {
 	/* Never send splice tx_signatures first, so the checks we make
 	 * before signing can be tested. */
 	bool dev_splice_sign_second;
+
+	/* Always send splice tx_signatures first, as when the peer adds
+	 * more than us, so our wait for theirs can be tested. */
+	bool dev_splice_sign_first;
+
+	/* How long a splice_signed whose signatures channeld saved waits,
+	 * from then, for the peer's signatures. */
+	u32 splice_sigs_wait;
 
 	/* Allow changing of shutdown output point even if dangerous */
 	bool dev_allow_shutdown_destination_change;

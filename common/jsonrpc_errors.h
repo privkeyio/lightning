@@ -84,6 +84,8 @@ enum jsonrpc_errcode {
 	SPLICE_HIGH_FEE = 360,
 	SPLICE_ABORT = 362,
 	SPLICE_CHANNEL_ERROR = 363,
+	/* splice_signed failed, but the peer may hold our signatures */
+	SPLICE_MAY_BE_COMMITTED = 364,
 
 	/* `connect` errors */
 	CONNECT_NO_KNOWN_ADDRESS = 400,

@@ -477,6 +477,16 @@ Should be between 1 and 483 (default 30).
 
   Option which limits the total amount of sats to be allowed as dust on a channel.
 
+* **splice-sigs-wait**=*SECONDS*
+
+  How long lightning-splice\_signed(7) waits for the peer's `tx_signatures`
+once ours are saved (default 60, at least 1).  It then fails with code 364, saying the
+splice may still confirm: the peer holds our signatures, a reconnect still
+asks for theirs, and we still broadcast the splice when they come.  The
+command also returns once the splice is seen in a block, so a value longer
+than a block interval lets it wait for a peer that broadcasts the splice
+without sending its `tx_signatures`.  (Added in v26.06.10-blake2b.2).
+
 * **cltv-delta**=*BLOCKS*
 
   The number of blocks between incoming payments and outgoing payments:

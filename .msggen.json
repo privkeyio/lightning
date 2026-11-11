@@ -2574,6 +2574,7 @@
             "ListConfigs.configs.rpc-file": 15,
             "ListConfigs.configs.rpc-file-mode": 57,
             "ListConfigs.configs.signet": 7,
+            "ListConfigs.configs.splice-sigs-wait": 76,
             "ListConfigs.configs.subdaemon": 63,
             "ListConfigs.configs.testnet": 8,
             "ListConfigs.configs.tor-service-password": 66,
@@ -2866,6 +2867,10 @@
         "ListconfigsConfigsSignet": {
             "ListConfigs.configs.signet.set": 1,
             "ListConfigs.configs.signet.source": 2
+        },
+        "ListconfigsConfigsSplice-sigs-wait": {
+            "ListConfigs.configs.splice-sigs-wait.source": 1,
+            "ListConfigs.configs.splice-sigs-wait.value_int": 2
         },
         "ListconfigsConfigsSubdaemon": {
             "ListConfigs.configs.subdaemon.sources[]": 2,
@@ -10577,6 +10582,18 @@
         },
         "ListConfigs.configs.signet.source": {
             "added": "v23.08",
+            "deprecated": null
+        },
+        "ListConfigs.configs.splice-sigs-wait": {
+            "added": "v26.06.10-blake2b.2",
+            "deprecated": null
+        },
+        "ListConfigs.configs.splice-sigs-wait.source": {
+            "added": "v26.06.10-blake2b.2",
+            "deprecated": null
+        },
+        "ListConfigs.configs.splice-sigs-wait.value_int": {
+            "added": "v26.06.10-blake2b.2",
             "deprecated": null
         },
         "ListConfigs.configs.subdaemon": {

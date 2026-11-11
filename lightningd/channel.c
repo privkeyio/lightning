@@ -9,6 +9,7 @@
 #include <common/wire_error.h>
 #include <hsmd/hsmd_wiregen.h>
 #include <lightningd/channel.h>
+#include <lightningd/channel_control.h>
 #include <lightningd/channel_gossip.h>
 #include <lightningd/channel_state_names_gen.h>
 #include <lightningd/closed_channel.h>
@@ -124,6 +125,8 @@ void delete_channel(struct channel *channel STEALS,
 				     REASON_UNKNOWN,
 				     NULL);
 
+	/* forget() and the like: the command must not outlive the channel */
+	channel_fail_splice_command(channel, "Channel deleted", false);
 	tal_free(channel);
 
 	maybe_delete_peer(peer);
@@ -1148,6 +1151,8 @@ static void channel_fail_perm(struct channel *channel,
 		channel->error = towire_errorfmt(channel,
 						 &channel->cid, "%s", why);
 
+	/* No splice resumes on a failed channel */
+	channel_fail_splice_command(channel, why, false);
 	channel_set_owner(channel, NULL);
 
 	if (channel_state_wants_onchain_fail(channel->state) && !channel->withheld) {
@@ -1383,6 +1388,9 @@ static void channel_err(struct channel *channel, bool disconnect, const char *wh
 		return;
 	}
 
+	/* Every transient failure drops channeld here, and not every
+	 * caller goes through channel_cleanup_commands() first. */
+	channel_fail_splice_command(channel, why, true);
 	channel_set_owner(channel, NULL);
 
 	/* Force a disconnect in case the issue is with TCP */

@@ -3724,6 +3724,16 @@ impl From<responses::ListconfigsConfigsSignet> for pb::ListconfigsConfigsSignet 
 }
 
 #[allow(unused_variables)]
+impl From<responses::ListconfigsConfigsSplicesigswait> for pb::ListconfigsConfigsSplicesigswait {
+    fn from(c: responses::ListconfigsConfigsSplicesigswait) -> Self {
+        Self {
+            source: c.source, // Rule #2 for type string
+            value_int: c.value_int, // Rule #2 for type u32
+        }
+    }
+}
+
+#[allow(unused_variables)]
 impl From<responses::ListconfigsConfigsSubdaemon> for pb::ListconfigsConfigsSubdaemon {
     fn from(c: responses::ListconfigsConfigsSubdaemon) -> Self {
         Self {
@@ -3843,6 +3853,7 @@ impl From<responses::ListconfigsConfigs> for pb::ListconfigsConfigs {
             rpc_file: c.rpc_file.map(|v| v.into()),
             rpc_file_mode: c.rpc_file_mode.map(|v| v.into()),
             signet: c.signet.map(|v| v.into()),
+            splice_sigs_wait: c.splice_sigs_wait.map(|v| v.into()),
             subdaemon: c.subdaemon.map(|v| v.into()),
             testnet: c.testnet.map(|v| v.into()),
             tor_service_password: c.tor_service_password.map(|v| v.into()),
