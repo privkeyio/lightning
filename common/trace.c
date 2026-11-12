@@ -506,6 +506,10 @@ void trace_span_resume_(const void *key, const char *lbl)
 void trace_cleanup(void)
 {
 	spans = tal_free(spans);
+	if (trace_to_file) {
+		fclose(trace_to_file);
+		trace_to_file = NULL;
+	}
 	if (trace_socket_fd >= 0) {
 		close(trace_socket_fd);
 		trace_socket_fd = -1;
