@@ -1096,17 +1096,17 @@ static void maybe_send_shutdown(struct peer *peer)
 }
 
 /* Under BOLT 2, neither `splice_init` after `shutdown`, nor `shutdown` while
- * a splice isn't locked, is allowed.  So a channel stops splicing once either side has
- * sent `shutdown`, or once lightningd has asked us to send one (which it can
- * do by itself, say at max-independent-secrets): otherwise that shutdown
- * would have to wait for a splice that may never lock.  A shutdown already
- * waiting for a signed splice to lock (maybe_send_shutdown()) still lets
- * that splice be replaced by RBF. */
+ * a splice isn't locked, is allowed.  So a channel stops splicing once
+ * either side has sent `shutdown`, or once lightningd has asked us to send
+ * one (which it can do by itself, say at max-independent-secrets):
+ * otherwise that shutdown would have to wait for a splice that may never
+ * lock.  A shutdown already waiting for a signed splice to lock
+ * (shutdown_held()) still lets that splice be replaced by RBF. */
 static bool channel_closing(const struct peer *peer)
 {
 	if (peer->shutdown_sent[LOCAL] || peer->shutdown_sent[REMOTE])
 		return true;
-	return peer->send_shutdown && !have_signed_splice(peer);
+	return peer->send_shutdown && !shutdown_held(peer);
 }
 
 static void send_shutdown_complete(struct peer *peer)

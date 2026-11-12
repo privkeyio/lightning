@@ -170,11 +170,11 @@ static bool htlc_in_commitment(const struct channel *channel,
 		u64 nrev;
 
 		side = REMOTE;
-		nrev = revocations_received(&channel->their_shachain.chain);
+		nrev = channel_their_revocations(channel);
 		/* next_index[REMOTE] advances when we send commitment_signed,
 		 * so next_index - 2 is their previous commitment.  That one
 		 * is still unrevoked only while we're waiting for
-		 * revoke_and_ack (revocations_received == next_index - 2).
+		 * revoke_and_ack (their revocations == next_index - 2).
 		 * Once they have revoked it, onchaind takes the cheat path
 		 * and sweeps every output, so the present bit doesn't matter. */
 		if (commit_num + 1 == channel->next_index[REMOTE])
