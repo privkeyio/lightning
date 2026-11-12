@@ -79,7 +79,10 @@ struct span {
 	/* The unique key used to find ourselves in the active
 	 * spans. */
 	size_t key;
-	struct span *parent;
+	/* The parent can end before us, so we keep its key and id rather
+	 * than a pointer. A root span has a parent_key of 0. */
+	size_t parent_key;
+	u64 parent_id;
 	struct span_tag tags[SPAN_MAX_TAGS];
 	const char *name;
 
@@ -113,7 +116,8 @@ static void init_span(struct span *s, size_t key, const char *name,
 	s->key = key;
 	s->id = pseudorand_u64();
 	s->start_time = (now.ts.tv_sec * 1000000) + now.ts.tv_nsec / 1000;
-	s->parent = parent;
+	s->parent_key = parent ? parent->key : 0;
+	s->parent_id = parent ? parent->id : 0;
 	s->name = name;
 	s->suspended = false;
 	for (size_t i = 0; i < SPAN_MAX_TAGS; i++)
@@ -121,12 +125,12 @@ static void init_span(struct span *s, size_t key, const char *name,
 
 	/* If this is a new root span we also need to associate a new
 	 * trace_id with it. */
-	if (!s->parent) {
+	if (!parent) {
 		s->trace_id_hi = pseudorand_u64();
 		s->trace_id_lo = pseudorand_u64();
 	} else {
-		s->trace_id_hi = current->trace_id_hi;
-		s->trace_id_lo = current->trace_id_lo;
+		s->trace_id_hi = parent->trace_id_hi;
+		s->trace_id_lo = parent->trace_id_lo;
 	}
 	span_htable_add(spans, s);
 }
@@ -155,7 +159,7 @@ static void trace_inject_traceparent(void)
 	assert(current);
 
 	init_span(current, trace_key(&spans), "", NULL);
-	assert(current && !current->parent);
+	assert(current && !current->parent_key);
 
 	if (!hex_decode(traceparent + 3, 16, &trace_hi, sizeof(trace_hi)) ||
 	    !hex_decode(traceparent + 3 + 16, 16, &trace_lo,
@@ -246,6 +250,19 @@ static struct span *trace_span_find(size_t key)
 	return span_htable_get(spans, key);
 }
 
+/* NULL if the parent has already ended, even if its key was reused. */
+static struct span *trace_span_parent(const struct span *s)
+{
+	struct span *parent;
+
+	if (!s->parent_key)
+		return NULL;
+	parent = trace_span_find(s->parent_key);
+	if (parent && parent->id == s->parent_id)
+		return parent;
+	return NULL;
+}
+
 /**
  * Find an empty slot for a new span.
  */
@@ -277,10 +294,10 @@ static void trace_emit(struct span *s)
 		       span_id, s->name, s->start_time,
 		       s->end_time - s->start_time, trace_service_name);
 
-	if (s->parent != NULL) {
+	if (s->parent_key) {
 		len +=
 		    snprintf(buffer + len, MAX_BUF_SIZE - len,
-			     "\"parentId\":\"%016" PRIx64 "\",", s->parent->id);
+			     "\"parentId\":\"%016" PRIx64 "\",", s->parent_id);
 		if (len > MAX_BUF_SIZE)
 			len = MAX_BUF_SIZE;
 	}
@@ -345,6 +362,7 @@ void trace_span_start_(const char *name, const void *key)
 	if (disable_trace)
 		return;
 
+	assert(numkey != 0);
 	assert(trace_span_find(numkey) == NULL);
 	struct span *s = trace_span_slot();
 	if (!s)
@@ -384,7 +402,7 @@ void trace_span_end(const void *key)
 	trace_emit(s);
 
 	/* Reset the context span we are in. */
-	current = s->parent;
+	current = trace_span_parent(s);
 
 	/* Now reset the span */
 	trace_span_clear(s);
@@ -424,11 +442,12 @@ void trace_span_suspend_(const void *key, const char *lbl)
 
 	size_t numkey = trace_key(key);
 	struct span *span = trace_span_find(numkey);
+	assert(span);
 	TRACE_DBG("Suspending span %s (%zu)\n", current->name, current->key);
 	assert(current == span);
 	assert(!span->suspended);
 	span->suspended = true;
-	current = current->parent;
+	current = trace_span_parent(span);
 	DTRACE_PROBE1(lightningd, span_suspend, span->id);
 	if (trace_to_file) {
 		fprintf(trace_to_file, "span_suspend %016" PRIx64 "\n",
@@ -450,7 +469,7 @@ static void destroy_trace_span(const void *key)
 	/* Otherwise resume so we can terminate it, then restore whatever
 	 * span we were freed from. */
 	if (prev == span)
-		prev = span->parent;
+		prev = trace_span_parent(span);
 	if (trace_to_file)
 		fprintf(trace_to_file, "destroying span\n");
 	trace_span_resume(key);
@@ -487,6 +506,10 @@ void trace_span_resume_(const void *key, const char *lbl)
 void trace_cleanup(void)
 {
 	spans = tal_free(spans);
+	if (trace_to_file) {
+		fclose(trace_to_file);
+		trace_to_file = NULL;
+	}
 	if (trace_socket_fd >= 0) {
 		close(trace_socket_fd);
 		trace_socket_fd = -1;
