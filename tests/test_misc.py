@@ -5410,7 +5410,8 @@ def test_tracing_parent_after_onchaind_replay(node_factory, bitcoind):
     """onchaind replays at startup fetch blocks under the startup span,
     which ends before they return: no span may name a parent that had
     already ended"""
-    num_peers = 10
+    num_peers = 2
+    # A channel_update can arrive before its channel_announcement here.
     l1 = node_factory.get_node(may_reconnect=True, allow_bad_gossip=True)
     peers = node_factory.get_nodes(num_peers, opts={'allow_bad_gossip': True})
 
@@ -5436,7 +5437,8 @@ def test_tracing_parent_after_onchaind_replay(node_factory, bitcoind):
     l1.daemon.env["CLN_DEV_TRACE_FILE"] = trace_fnamebase
     l1.start()
     trace_fname = f"{trace_fnamebase}.{l1.daemon.proc.pid}"
-    wait_for(lambda: sum('Restarting onchaind' in line for line in l1.daemon.logs) == num_peers)
+    l1.daemon.logs_catchup()
+    assert sum('Restarting onchaind' in line for line in l1.daemon.logs) == num_peers
     bitcoind.generate_block(3)
     sync_blockheight(bitcoind, [l1])
     l1.stop()
