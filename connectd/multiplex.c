@@ -706,6 +706,74 @@ static u64 maybe_throttle_usec(struct peer *peer, bool *warned, const char *dire
 	return wait;
 }
 
+static void drain_gossip_cpu(struct daemon *daemon)
+{
+	struct timemono now = time_mono();
+	u64 elapsed = time_to_usec(timemono_between(now, daemon->gossip_cpu_drained));
+	u64 drained;
+
+	/* Compare times first, so a long idle can't overflow the product. */
+	if (daemon->cpu_budget_usec_limit == 0
+	    || elapsed >= usec_over_budget(daemon->gossip_cpu_usec_backlog,
+					   daemon->cpu_budget_usec_limit)) {
+		daemon->gossip_cpu_usec_backlog = 0;
+		daemon->gossip_cpu_drained = now;
+		return;
+	}
+
+	/* Only use up the time we credit, so frequent calls don't round
+	 * the drain away. */
+	drained = elapsed * daemon->cpu_budget_usec_limit / 1000000;
+	daemon->gossip_cpu_usec_backlog -= drained;
+	daemon->gossip_cpu_drained
+		= timemono_add(daemon->gossip_cpu_drained,
+			       time_from_usec(usec_over_budget(drained,
+							       daemon->cpu_budget_usec_limit)));
+}
+
+/* Charges gossip-answering CPU to the peer's counter and to the daemon. */
+static void charge_gossip_cpu(struct peer *peer, u64 *counter,
+			      struct timemono start)
+{
+	u64 usec = time_to_usec(timemono_between(time_mono(), start));
+
+	*counter += usec;
+	drain_gossip_cpu(peer->daemon);
+	peer->daemon->gossip_cpu_usec_backlog += usec;
+	/* So the throttle outlasts an attack by about a second at most. */
+	if (peer->daemon->gossip_cpu_usec_backlog
+	    > 2 * peer->daemon->cpu_budget_usec_limit)
+		peer->daemon->gossip_cpu_usec_backlog
+			= 2 * peer->daemon->cpu_budget_usec_limit;
+}
+
+/* A peer can reconnect for a fresh budget of its own, so also cap the
+ * total: once more than a second's worth is waiting to drain, nobody's
+ * gossip is answered until it has. */
+static u64 daemon_throttle_usec(struct peer *peer)
+{
+	struct daemon *daemon = peer->daemon;
+	u64 wait;
+
+	if (daemon->cpu_budget_usec_limit == 0)
+		return 0;
+	drain_gossip_cpu(daemon);
+	if (daemon->gossip_cpu_usec_backlog <= daemon->cpu_budget_usec_limit)
+		return 0;
+
+	if (!peer->gs.throttle_warned) {
+		status_debug("Throttling outgoing peer %s: too much CPU across all peers",
+			     fmt_node_id(tmpctx, &peer->id));
+		peer->gs.throttle_warned = true;
+	}
+	wait = usec_over_budget(daemon->gossip_cpu_usec_backlog
+				- daemon->cpu_budget_usec_limit,
+				daemon->cpu_budget_usec_limit);
+	if (wait < 1000000)
+		wait = 1000000;
+	return wait;
+}
+
 static void throttle_gossip(struct peer *peer, u64 wait_usec)
 {
 	/* Replace normal timer with a timer after throttle. */
@@ -720,11 +788,14 @@ static void throttle_gossip(struct peer *peer, u64 wait_usec)
 
 static u64 outgoing_throttle_usec(struct peer *peer, u64 cpu_budget)
 {
-	return maybe_throttle_usec(peer, &peer->gs.throttle_warned, "outgoing",
-				   peer->gs.bytes_this_second, peer->daemon->gossip_stream_limit,
-				   peer->gs.cpu_usec_this_second
-				   + peer->gs.skip_cpu_usec_this_second,
-				   cpu_budget);
+	u64 wait = maybe_throttle_usec(peer, &peer->gs.throttle_warned, "outgoing",
+				       peer->gs.bytes_this_second, peer->daemon->gossip_stream_limit,
+				       peer->gs.cpu_usec_this_second
+				       + peer->gs.skip_cpu_usec_this_second,
+				       cpu_budget);
+	if (wait)
+		return wait;
+	return daemon_throttle_usec(peer);
 }
 
 /* Skipping store records costs CPU but sends nothing, so charge it to the
@@ -735,12 +806,10 @@ static u64 outgoing_throttle_usec(struct peer *peer, u64 cpu_budget)
 static bool charge_skipping(struct peer *peer, struct timemono *start,
 			    u64 cpu_budget)
 {
-	struct timemono now = time_mono();
 	u64 wait_usec;
 
-	peer->gs.skip_cpu_usec_this_second
-		+= time_to_usec(timemono_between(now, *start));
-	*start = now;
+	charge_gossip_cpu(peer, &peer->gs.skip_cpu_usec_this_second, *start);
+	*start = time_mono();
 
 	wait_usec = outgoing_throttle_usec(peer, cpu_budget);
 	if (!wait_usec)
@@ -779,13 +848,13 @@ static const u8 *maybe_gossip_msg(const tal_t *ctx, struct peer *peer)
 	 * cpu_usec_this_second above.  But only while we're answering a
 	 * query: we're called every time the output queue drains, and the
 	 * rest of the time it's a no-op. */
-	answering = peer->scid_queries || peer->range_scids;
+	answering = peer->scid_queries || peer->range_scids
+		|| peer->range_gather_pending;
 	query_start = time_mono();
 	msgs = maybe_create_query_responses(tmpctx, peer, gossmap);
 	if (answering)
-		peer->gs.cpu_usec_this_second
-			+= time_to_usec(timemono_between(time_mono(),
-							 query_start));
+		charge_gossip_cpu(peer, &peer->gs.cpu_usec_this_second,
+				  query_start);
 	if (tal_count(msgs) > 0) {
 		/* We return the first one for immediate sending, and queue
 		 * others for future.  We add all the lengths now though! */
@@ -1617,9 +1686,8 @@ static struct io_plan *read_body_from_peer_done(struct io_conn *peer_conn,
 		* another daemon (gossip, custom messages). */
 	       if (type == WIRE_QUERY_CHANNEL_RANGE
 		   || type == WIRE_QUERY_SHORT_CHANNEL_IDS)
-		       peer->gs.cpu_usec_this_second
-			       += time_to_usec(timemono_between(time_mono(),
-								handled_start));
+		       charge_gossip_cpu(peer, &peer->gs.cpu_usec_this_second,
+					 handled_start);
 	       /* Make sure to update peer->peer_in_lastmsg so we blame correct msg! */
 	       goto out;
        }

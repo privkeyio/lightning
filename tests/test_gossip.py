@@ -2354,10 +2354,9 @@ def test_gossip_query_channel_range_cpu_throttle(node_factory, chainparams):
     gossipwith.wait()
 
 
-def test_gossip_stream_skip_cpu_throttle(node_factory, chainparams):
-    """A gossip_timestamp_filter from 0 whose range matches nothing makes
-    us walk the whole store without sending a byte.  Make sure that walk
-    is charged to the CPU budget, and resumes where it stopped."""
+def skip_walk_store():
+    """A store of 15000 channels where a gossip_timestamp_filter of
+    (0, 1) skips every gossip message but the last, which is returned."""
     chans = [GenChannel(i, i + 1) for i in range(15000)]
     gsfile, nodemap = generate_gossip_store(chans)
 
@@ -2381,27 +2380,41 @@ def test_gossip_stream_skip_cpu_throttle(node_factory, chainparams):
                                               crc32c.crc32c(msg, 1), 1)
     with open(gsfile.name, 'wb') as f:
         f.write(store)
+    return gsfile, last
 
-    unneeded_plugins = ['recover', 'cln-askrene', 'cln-renepay', 'bookkeeper',
-                        'topology', 'cln-xpay']
+
+def skip_all_filter(chainparams):
+    """first_timestamp 0 restarts the stream at the start of the store, and
+    a range of 1 matches only timestamp 0.  Nothing else is sent, so only
+    CPU can throttle it."""
+    return subprocess.run(['devtools/mkquery',
+                           'gossip_timestamp_filter',
+                           chainparams['chain_hash'],
+                           '0', '1'],
+                          check=True, timeout=TIMEOUT,
+                          stdout=subprocess.PIPE).stdout.strip()
+
+
+SKIP_WALK_PLUGINS = ['recover', 'cln-askrene', 'cln-renepay', 'bookkeeper',
+                     'topology', 'cln-xpay']
+
+
+def test_gossip_stream_skip_cpu_throttle(node_factory, chainparams):
+    """A gossip_timestamp_filter from 0 whose range matches nothing makes
+    us walk the whole store without sending a byte.  Make sure that walk
+    is charged to the CPU budget, and resumes where it stopped."""
+    gsfile, last = skip_walk_store()
+
     # Small enough that the walk takes several budgets, large enough that
     # it finishes in a few seconds.
     l1 = node_factory.get_node(gossip_store_file=gsfile.name,
-                               options={'disable-plugin': unneeded_plugins,
+                               options={'disable-plugin': SKIP_WALK_PLUGINS,
                                         'dev-fast-gossip': None,
                                         'dev-gossip-cpu-budget': 200000 if VALGRIND else 20000},
                                broken_log='Throttling (incoming|outgoing) peer')
     assert l1.daemon.is_in_log(r'gossip_store: [0-9]+ live records, 0 deleted')
 
-    # first_timestamp 0 restarts the stream at the start of the store, and
-    # a range of 1 matches only timestamp 0.  Nothing else is sent, so only
-    # CPU can throttle it.
-    skip_all = subprocess.run(['devtools/mkquery',
-                               'gossip_timestamp_filter',
-                               chainparams['chain_hash'],
-                               '0', '1'],
-                              check=True, timeout=TIMEOUT,
-                              stdout=subprocess.PIPE).stdout.strip()
+    skip_all = skip_all_filter(chainparams)
     out = subprocess.run(['devtools/gossipwith',
                           '--no-gossip',
                           '--handle-pings',
@@ -2418,6 +2431,40 @@ def test_gossip_stream_skip_cpu_throttle(node_factory, chainparams):
     # Skipping only holds back our gossip to them, not what they send us.
     assert not l1.daemon.is_in_log(r'Throttling incoming peer')
     assert out == [last[2].hex()]
+
+
+@unittest.skipIf(VALGRIND, "Reconnects must come faster than the budget drains")
+def test_gossip_cpu_budget_survives_reconnect(node_factory, chainparams):
+    """A peer's own CPU budget starts fresh on every connection, so make
+    sure reconnecting peers still share one budget across all peers."""
+    gsfile, _ = skip_walk_store()
+    l1 = node_factory.get_node(gossip_store_file=gsfile.name,
+                               options={'disable-plugin': SKIP_WALK_PLUGINS,
+                                        'dev-gossip-cpu-budget': 20000},
+                               broken_log='Throttling (incoming|outgoing) peer')
+
+    # Sent as the first filter, so the walk starts at once.
+    skip_all = skip_all_filter(chainparams)
+    for i in range(1, 6):
+        privkey = '{:064x}'.format(i)
+        nodeid = coincurve.PrivateKey(bytes.fromhex(privkey)).public_key.format().hex()
+        gossipwith = subprocess.Popen(['devtools/gossipwith',
+                                       '--no-timestamp-filter',
+                                       '--handle-pings',
+                                       '--privkey={}'.format(privkey),
+                                       '--network={}'.format(TEST_NETWORK),
+                                       '{}@localhost:{}'.format(l1.info['id'], l1.port),
+                                       skip_all],
+                                      stdout=subprocess.DEVNULL)
+        line = l1.daemon.wait_for_log(r'Throttling outgoing peer {}: too much CPU'.format(nodeid))
+        gossipwith.kill()
+        gossipwith.wait()
+        if line.endswith('across all peers'):
+            break
+    # The first connection spends its own budget, then a fresh one is
+    # stopped by what the earlier ones spent.
+    assert i > 1
+    assert line.endswith('across all peers')
 
 
 def test_gossip_throttle_no_unrequested_stream(node_factory, chainparams):

@@ -156,6 +156,9 @@ struct peer {
 	/* Non-NULL (even if empty) iff we're trickling out a reply to a
 	 * query_channel_range. */
 	const struct short_channel_id *range_scids;
+	/* We have a query_channel_range whose scids we haven't gathered yet:
+	 * the write loop does that, so it's held back by the CPU budget. */
+	bool range_gather_pending;
 	size_t range_scid_off;
 	/* first_blocknum/number_of_blocks of the *remaining* reply. */
 	u32 range_first_blocknum;
@@ -351,6 +354,11 @@ struct daemon {
 
 	/* Total CPU time to spend across all peers for gossip_queries etc */
 	u64 cpu_budget_usec_limit;
+	/* CPU spent answering gossip for all peers, draining at
+	 * cpu_budget_usec_limit per second.  Unlike a peer's own budget, a
+	 * reconnect doesn't reset it. */
+	u64 gossip_cpu_usec_backlog;
+	struct timemono gossip_cpu_drained;
 
 	/* We support use of a SOCKS5 proxy (e.g. Tor) */
 	struct addrinfo *proxyaddr;
