@@ -17,7 +17,10 @@ def is_signature(raw):
 
 
 def assert_unified_witnesses(bitcoind, txid, minimum):
-    tx = bitcoind.rpc.getrawtransaction(txid, True)
+    return assert_tx_unified_witnesses(bitcoind.rpc.getrawtransaction(txid, True), minimum)
+
+
+def assert_tx_unified_witnesses(tx, minimum):
     signatures = []
     # SIGHASH_UNIFIED is added to the hash type that would otherwise apply,
     # so SIGHASH_ALL becomes 0x21, and the anchors HTLC form 0xa3.
@@ -436,6 +439,22 @@ def mempool_htlc_tx(bitcoind, commit):
     return mempool_spend(bitcoind, commit, witness_items=5)
 
 
+def wait_htlc_tx(bitcoind, commit, oldtxid=None):
+    """Our HTLC tx in the mempool, once there is one other than oldtxid.
+    Returns the copy found, since the node may replace it at any time."""
+    found = []
+
+    def ready():
+        tx = mempool_htlc_tx(bitcoind, commit)
+        if tx is not None and tx['txid'] != oldtxid:
+            found.append(tx)
+            return True
+        return False
+
+    wait_for(ready)
+    return found[-1]
+
+
 def offer_stuck_htlc(l1, l2):
     """l1 offers l2 an HTLC which l2 never resolves, then l2 goes away."""
     # Ignored rather than failed: l1 may reconnect, and a peer that only
@@ -515,13 +534,14 @@ def test_unified_htlc_tx_rbf(node_factory, bitcoind, case):
     # txid -> our signature, for each version seen in the mempool.
     versions = {}
 
-    def check_current():
-        tx = mempool_htlc_tx(bitcoind, commit)
+    def check_current(tx):
         assert len(tx['vin']) > 1
         wit = [bytes.fromhex(w) for w in tx['vin'][0]['txinwitness']]
         assert wit[1][-1] == 0xa3, '0x%02x' % wit[1][-1]
         assert wit[2][-1] == 0x21, '0x%02x' % wit[2][-1]
-        assert_unified_witnesses(bitcoind, tx['txid'], 2)
+        # The node may replace it again at any time, so check this copy
+        # rather than looking it up by txid.
+        assert_tx_unified_witnesses(tx, 2)
         if tx['txid'] not in versions:
             # SIGHASH_ALL: a different tx needs a different signature.
             assert wit[2] not in versions.values()
@@ -529,13 +549,12 @@ def test_unified_htlc_tx_rbf(node_factory, bitcoind, case):
         return tx['txid']
 
     def next_version(oldtxid):
-        wait_for(lambda: (mempool_htlc_tx(bitcoind, commit) or {}).get('txid') not in (None, oldtxid))
         known = len(versions)
-        txid = check_current()
+        txid = check_current(wait_htlc_tx(bitcoind, commit, oldtxid))
         assert len(versions) == known + 1, versions
         return txid
 
-    txid = check_current()
+    txid = check_current(wait_htlc_tx(bitcoind, commit))
     # Each step outbids the last by enough to replace it in the mempool,
     # even after smoothing and even when it uses fewer inputs and no change.
     for rate in (6000, 18000):
@@ -547,13 +566,15 @@ def test_unified_htlc_tx_rbf(node_factory, bitcoind, case):
         # Fees rise while it is down, so only the restarted node can have
         # built and signed the next version.
         node.stop()
+        # A timed rebroadcast may have bumped it once more before the stop.
+        txid = check_current(wait_htlc_tx(bitcoind, commit))
         node.set_feerates((rate * 3 // 2,) * 4, wait_for_effect=False)
         logpos = len(node.daemon.logs)
         node.start()
         txid = next_version(txid)
         assert node.daemon.is_in_log(r'RBF HTLC txid .* with txid {}'.format(txid), start=logpos)
 
-    assert len(versions) == 5, versions
+    assert len(versions) >= 5, versions
 
 
 @pytest.mark.openchannel('v1')
@@ -583,8 +604,8 @@ def test_htlc_tx_rbf_without_unified_sigs(node_factory, bitcoind):
     offer_stuck_htlc(l1, l2)
     commit = htlc_timeout_onchain(l1, bitcoind, chan['funding_txid'])
 
-    def our_htlc_sigs():
-        tx = mempool_htlc_tx(bitcoind, commit)
+    def our_htlc_sigs(oldtxid=None):
+        tx = wait_htlc_tx(bitcoind, commit, oldtxid)
         assert len(tx['vin']) > 1
         wit = [bytes.fromhex(w) for w in tx['vin'][0]['txinwitness']]
         # Theirs is SIGHASH_SINGLE|SIGHASH_ANYONECANPAY and ours is
@@ -595,7 +616,6 @@ def test_htlc_tx_rbf_without_unified_sigs(node_factory, bitcoind):
     txid, sig = our_htlc_sigs()
     l1.set_feerates((6000,) * 4)
     bitcoind.generate_block(1, needfeerate=10**9)
-    wait_for(lambda: (mempool_htlc_tx(bitcoind, commit) or {}).get('txid') not in (None, txid))
     # Ours commits to the fee inputs, so the fee bump signed again.
-    newtxid, newsig = our_htlc_sigs()
+    newtxid, newsig = our_htlc_sigs(txid)
     assert newtxid != txid and newsig != sig
