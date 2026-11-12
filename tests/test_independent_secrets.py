@@ -1243,6 +1243,8 @@ def test_independent_secrets_cap_refuses_splice(node_factory, bitcoind, executor
     # stfu follows the revoke_and_ack that reaches the limit.
     chan_id = l2.get_channel_id(l1)
     funds = l2.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
+    l1.daemon.logs_catchup()
+    start = len(l1.daemon.logs)
     l2.daemon.logs_catchup()
     l2.daemon.logsearch_start = len(l2.daemon.logs)
     fut = executor.submit(l1.pay, l2, 10_000_000)
@@ -1263,8 +1265,8 @@ def test_independent_secrets_cap_refuses_splice(node_factory, bitcoind, executor
     # The close spent the funding we had: no splice was agreed.
     assert closed_on(bitcoind) == funding_txid
     assert not l1.daemon.is_in_log(r'peer_out WIRE_SPLICE_ACK')
-    assert not l1.daemon.is_in_log(r'CHANNELD_SHUTTING_DOWN to CHANNELD_AWAITING_SPLICE')
-    assert not l1.daemon.is_in_log(r'unexpected value CHANNELD_SHUTTING_DOWN')
+    # l1 signed no splice either.
+    assert not l1.daemon.is_in_log(r'Watching splice inflight', start=start)
     assert not l1.daemon.is_in_log('closing it unilaterally')
 
 
@@ -1323,8 +1325,8 @@ def test_independent_secrets_cap_refuses_splice_at_lock(node_factory, bitcoind, 
     assert not l1.daemon.is_in_log(r'peer_out WIRE_SPLICE_ACK', start=start)
     for n in (l1, l2):
         n.daemon.wait_for_log(r'to CLOSINGD_COMPLETE')
-    assert not l1.daemon.is_in_log(r'CHANNELD_SHUTTING_DOWN to CHANNELD_AWAITING_SPLICE')
-    assert not l1.daemon.is_in_log(r'unexpected value CHANNELD_SHUTTING_DOWN')
+    # l1 signed no new splice ...
+    assert not l1.daemon.is_in_log(r'Watching splice inflight', start=start)
     # ... and the close spent the funding that locked.
     bitcoind.generate_block(1, wait_for_mempool=1)
     l1.daemon.wait_for_log(r'to ONCHAIN')
