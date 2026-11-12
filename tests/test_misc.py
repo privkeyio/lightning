@@ -5406,6 +5406,61 @@ def test_tracing_stop_during_block_fetch(node_factory, bitcoind):
     assert suspended == traces
 
 
+def test_tracing_parent_after_onchaind_replay(node_factory, bitcoind):
+    """onchaind replays at startup fetch blocks under the startup span,
+    which ends before they return: no span may name a parent that had
+    already ended"""
+    num_peers = 10
+    l1 = node_factory.get_node(may_reconnect=True, allow_bad_gossip=True)
+    peers = node_factory.get_nodes(num_peers, opts={'allow_bad_gossip': True})
+
+    l1.fundwallet(num_peers * 2 * 10**6)
+    l1.rpc.multifundchannel([{"id": f"{p.info['id']}@localhost:{p.port}",
+                              "amount": 10**6} for p in peers])
+    bitcoind.generate_block(6, wait_for_mempool=1)
+    for p in peers:
+        wait_for(lambda: only_one(l1.rpc.listpeerchannels(p.info['id'])['channels'])['state'] == 'CHANNELD_NORMAL')
+
+    for p in peers:
+        p.rpc.dev_fail(l1.info['id'])
+    bitcoind.generate_block(1, wait_for_mempool=num_peers)
+    for p in peers:
+        wait_for(lambda: only_one(l1.rpc.listpeerchannels(p.info['id'])['channels'])['state'] == 'ONCHAIN')
+
+    # Deeper than the startup rescan, so each channel replays its onchaind.
+    bitcoind.generate_block(20)
+    sync_blockheight(bitcoind, [l1])
+
+    l1.stop()
+    trace_fnamebase = os.path.join(l1.daemon.lightning_dir, TEST_NETWORK, "l1.trace")
+    l1.daemon.env["CLN_DEV_TRACE_FILE"] = trace_fnamebase
+    l1.start()
+    trace_fname = f"{trace_fnamebase}.{l1.daemon.proc.pid}"
+    wait_for(lambda: sum('Restarting onchaind' in line for line in l1.daemon.logs) == num_peers)
+    bitcoind.generate_block(3)
+    sync_blockheight(bitcoind, [l1])
+    l1.stop()
+
+    started, ended, emitted = {}, {}, {}
+    with open(trace_fname, "rt") as f:
+        for seq, line in enumerate(f):
+            parts = line.split(maxsplit=2)
+            if parts[0] == 'span_start':
+                started.setdefault(parts[1], seq)
+            elif parts[0] == 'span_end':
+                ended.setdefault(parts[1], seq)
+            elif parts[0] == 'span_emit':
+                emitted[parts[1]] = json.loads(parts[2])[0]
+
+    assert any(s['name'] == 'plugin/bitcoind' for s in emitted.values())
+    for sid, span in emitted.items():
+        pid = span.get('parentId')
+        if pid is None:
+            continue
+        assert pid in started and started[pid] < started[sid], span
+        assert ended.get(pid, float('inf')) > started[sid], span
+
+
 def test_zero_locktime_blocks(node_factory, bitcoind):
     """Ensure our node "works" even if locktime set to 0."""
     l1, l2, l3 = node_factory.line_graph(3, opts=[{}, {'watchtime-blocks': 0}, {}], wait_for_announce=True)
