@@ -2469,25 +2469,37 @@ def test_gossip_cpu_budget_survives_reconnect(node_factory, chainparams):
 
 def test_gossip_throttle_no_unrequested_stream(node_factory, chainparams):
     """When a throttle ends for a peer which never sent
-    gossip_timestamp_filter, we must not start streaming gossip to it."""
+    gossip_timestamp_filter, we must not start streaming gossip to it,
+    but must still resume the query replies it asked for."""
     # Few enough channels that walking them costs little, but enough that
     # a full range reply is over --dev-throttle-gossip's 1000 bytes a
     # second: that throttles by traffic for a couple of seconds, whatever
     # the machine's speed.
-    chans = [GenChannel(i, i + 1) for i in range(300)]
+    num_chans = 300
+    chans = [GenChannel(i, i + 1) for i in range(num_chans)]
     gsfile, nodemap = generate_gossip_store(chans)
 
     # The huge CPU budget leaves only --dev-throttle-gossip's traffic
-    # limit, so the throttle is always the traffic one.
+    # limit, so the throttle is always the traffic one.  No pings, so
+    # nothing but the end of the throttle can wake the stalled replies.
     l1 = node_factory.get_node(options={'disable-plugin': ['recover', 'cln-askrene', 'cln-renepay',
                                                            'bookkeeper', 'topology', 'cln-xpay'],
                                         'dev-throttle-gossip': None,
+                                        'dev-no-ping-timer': None,
                                         'dev-gossip-cpu-budget': 1000000000},
                                gossip_store_file=gsfile.name,
                                broken_log='Throttling (incoming|outgoing) peer')
 
-    # gossipwith's usual init, but no gossip_timestamp_filter after it.
-    features = (1 << 7) | (1 << 512)
+    # 200 scids per reply_channel_range, so the reply is two messages.  The
+    # first fills a whole write, so the throttle starts with nothing left
+    # queued and no flush timer which could send the second one for us.
+    l1.rpc.dev_set_max_scids_encode_size(max=1600)
+    l1.daemon.wait_for_log('Set max_scids_encode_bytes to 1600')
+
+    # gossipwith's usual init without gossip_queries, so our seeker sends
+    # it nothing that would wake the replies, and no
+    # gossip_timestamp_filter after it.
+    features = 1 << 512
     featurebytes = features.to_bytes((features.bit_length() + 7) // 8, 'big')
     init = '00100000{:04x}{}'.format(len(featurebytes), featurebytes.hex())
     query = subprocess.run(['devtools/mkquery',
@@ -2501,16 +2513,41 @@ def test_gossip_throttle_no_unrequested_stream(node_factory, chainparams):
                                    '--no-init',
                                    '--hex',
                                    '--network={}'.format(TEST_NETWORK),
-                                   '--filter=256,257,258',
-                                   '--max-messages=1',
+                                   '--filter=256,257,258,264',
+                                   '--timeout-after=20',
                                    '{}@localhost:{}'.format(l1.info['id'], l1.port),
                                    init, query],
+                                  stdin=subprocess.DEVNULL,
                                   stdout=subprocess.PIPE)
 
+    # gossipwith exits once nothing arrives for 20 seconds: a stall ends the
+    # loop without the final reply, and any gossip streamed after the
+    # final reply fails the reply check.
+    replies = []
+    scids = 0
+    final = False
+    try:
+        for line in gossipwith.stdout:
+            msg = line.strip().decode()
+            assert msg.startswith('0108' + chainparams['chain_hash']), msg
+            assert not final, msg
+            replies.append(msg)
+            first = int(msg[68:76], 16)
+            num = int(msg[76:84], 16)
+            enclen = int(msg[86:90], 16)
+            # Uncompressed encoding: a 00 byte, then 8 bytes per scid.
+            assert msg[90:92] == '00'
+            scids += (enclen - 1) // 8
+            final = first + num == 4294967295
+    finally:
+        gossipwith.kill()
+        gossipwith.wait()
+
+    assert final
+    assert scids == num_chans
+    assert len(replies) == 2
     l1.daemon.wait_for_log(r'Throttling outgoing peer .*: too much traffic')
     l1.daemon.wait_for_log('Throttle over, not streaming: no gossip_timestamp_filter')
-    gossipwith.kill()
-    assert gossipwith.communicate()[0] == b''
 
 
 def test_gossip_cpu_throttle_only_queries(node_factory):
