@@ -150,7 +150,7 @@ common/test/run-splice_script:				\
 	wire/towire.o
 
 
-common/test/run-trace common/test/run-trace-parent:	\
+common/test/run-trace common/test/run-trace-parent common/test/run-trace-long-tag:	\
 	common/amount.o                                 \
 	common/memleak.o				\
 	common/pseudorand.o				\

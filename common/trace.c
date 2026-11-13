@@ -284,9 +284,13 @@ static void trace_emit(struct span *s)
 {
 	char span_id[hex_str_size(sizeof(s->id))];
 	char buffer[MAX_BUF_SIZE + 1];
-	size_t len;
+	char tail[sizeof("},\"traceId\":\"\"}]") + 32];
+	size_t len, limit;
 
 	snprintf(span_id, sizeof(span_id), "%016" PRIx64, s->id);
+	snprintf(tail, sizeof(tail), "},\"traceId\":\"%016" PRIx64 "%016" PRIx64 "\"}]",
+		 s->trace_id_hi, s->trace_id_lo);
+	limit = MAX_BUF_SIZE - strlen(tail);
 	len = snprintf(buffer, MAX_BUF_SIZE,
 		       "[{\"id\":\"%s\",\"name\":\"%s\","
 		       "\"timestamp\":%" PRIu64 ",\"duration\":%" PRIu64 ","
@@ -303,22 +307,37 @@ static void trace_emit(struct span *s)
 	}
 
 	len += snprintf(buffer + len, MAX_BUF_SIZE - len, "\"tags\":{");
-	if (len > MAX_BUF_SIZE)
-		len = MAX_BUF_SIZE;
+	if (len > limit)
+		len = limit;
+	/* A tag value too long for the line is cut short, so the line
+	 * stays valid JSON. */
 	for (size_t i = 0; i < SPAN_MAX_TAGS; i++) {
+		const char *sep = i == 0 ? "" : ", ";
+		size_t overhead, room;
+		int valuelen;
+
 		if (!s->tags[i].name)
 			continue;
-		len += snprintf(buffer + len, MAX_BUF_SIZE - len,
-				"%s\"%s\":\"%.*s\"", i == 0 ? "" : ", ",
-				s->tags[i].name, s->tags[i].valuelen,
+		/* sep"name":"value" */
+		overhead = strlen(sep) + strlen(s->tags[i].name) + 5;
+		if (len + overhead > limit)
+			break;
+		room = limit - len - overhead;
+		valuelen = s->tags[i].valuelen;
+		if ((size_t)valuelen > room) {
+			valuelen = room;
+			/* Don't leave a backslash escaping the closing quote. */
+			while (valuelen > 0
+			       && s->tags[i].valuestr[valuelen - 1] == '\\')
+				valuelen--;
+		}
+		len += snprintf(buffer + len, MAX_BUF_SIZE + 1 - len,
+				"%s\"%s\":\"%.*s\"", sep,
+				s->tags[i].name, valuelen,
 				s->tags[i].valuestr);
-		if (len > MAX_BUF_SIZE)
-			len = MAX_BUF_SIZE;
 	}
 
-	len += snprintf(buffer + len, MAX_BUF_SIZE - len,
-			"},\"traceId\":\"%016" PRIx64 "%016" PRIx64 "\"}]",
-			s->trace_id_hi, s->trace_id_lo);
+	len += snprintf(buffer + len, MAX_BUF_SIZE + 1 - len, "%s", tail);
 	if (len > MAX_BUF_SIZE)
 		len = MAX_BUF_SIZE;
 	buffer[len] = '\0';
