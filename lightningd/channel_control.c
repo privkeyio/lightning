@@ -1275,12 +1275,10 @@ static void handle_peer_splice_locked(struct channel *channel, const u8 *msg)
 	struct channel_inflight *inflight;
 	struct bitcoin_txid locked_txid;
 	u32 locked_blockheight;
-	bool at_reestablish;
 
 	if (!fromwire_channeld_got_splice_locked(msg, &funding_sats,
 						 &splice_amnt,
-						 &locked_txid,
-						 &at_reestablish)) {
+						 &locked_txid)) {
 		channel_internal_error(channel,
 				       "bad channel_got_funding_locked %s",
 				       tal_hex(channel, msg));
@@ -1302,8 +1300,6 @@ static void handle_peer_splice_locked(struct channel *channel, const u8 *msg)
 	prev_funding_out = channel->funding;
 
 	update_channel_from_inflight(channel->peer->ld, channel, inflight, true);
-	if (at_reestablish)
-		channel->pre_splice_reserves = tal_free(channel->pre_splice_reserves);
 
 	channel->our_msat.millisatoshis += splice_amnt * 1000; /* Raw: splicing */
 	channel->msat_to_us_min.millisatoshis += splice_amnt * 1000; /* Raw: splicing */

@@ -1294,7 +1294,7 @@ static struct amount_sat calculate_reserve(struct channel_config *their_config,
 					   struct amount_sat funding_total,
 					   enum side opener)
 {
-	struct amount_sat dust_limit;
+	struct amount_sat reserve, dust_limit;
 
 	/* BOLT #2:
 	 *
@@ -1303,11 +1303,15 @@ static struct amount_sat calculate_reserve(struct channel_config *their_config,
 	 * rounded down to the nearest whole satoshi or the `dust_limit_satoshis`,
 	 * whichever is greater.
 	 */
+	reserve = amount_sat_div(funding_total, 100);
 	dust_limit = opener == LOCAL ?
 		chainparams->dust_limit :
 		their_config->dust_limit;
 
-	return channel_reserve_for_capacity(funding_total, dust_limit);
+	if (amount_sat_greater(dust_limit, reserve))
+		return dust_limit;
+
+	return reserve;
 }
 
 void channel_update_reserve(struct channel *channel,

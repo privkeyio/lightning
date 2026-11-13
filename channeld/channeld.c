@@ -478,7 +478,7 @@ static void check_mutual_channel_ready(const struct peer *peer)
 /* Call this method when splice_locked status are changed. If both sides have
  * splice_locked'ed than this function consumes the `splice_locked_ready` values
  * and considers the channel funding to be switched to the splice tx. */
-static void check_mutual_splice_locked(struct peer *peer, bool at_reestablish)
+static void check_mutual_splice_locked(struct peer *peer)
 {
 	u8 *msg;
 	const char *error;
@@ -555,35 +555,12 @@ static void check_mutual_splice_locked(struct peer *peer, bool at_reestablish)
 	status_debug("mutual splice_locked, channel updated to: %s",
 		     fmt_channel(tmpctx, peer->channel));
 
-	/* BOLT-splice #2:
-	 *     - MUST use as each side's channel reserve 1% of the new channel
-	 *       capacity, rounded down, or the channel opener's
-	 *       `dust_limit_satoshis` if greater, from the first
-	 *       `channel_reestablish` exchange in which both nodes'
-	 *       `my_current_funding_locked` name this splice transaction, once it
-	 *       has received its peer's `channel_reestablish`.
-	 *     - Until then, MUST keep the channel reserves it used before the
-	 *       splice.
-	 */
-	if (at_reestablish) {
-		struct amount_sat reserve
-			= channel_reserve_for_capacity(peer->channel->funding_sats,
-						       peer->channel->opener == LOCAL
-						       ? chainparams->dust_limit
-						       : peer->channel->config[REMOTE].dust_limit);
-		peer->channel->config[LOCAL].channel_reserve = reserve;
-		peer->channel->config[REMOTE].channel_reserve = reserve;
-		status_debug("mutual splice_locked at reestablish, reserves now %s",
-			     fmt_amount_sat(tmpctx, reserve));
-	}
-
 	/* ensure the signer is locking at the same time */
 	lock_signer_outpoint(&inflight->outpoint);
 
 	msg = towire_channeld_got_splice_locked(NULL, inflight->amnt,
 						inflight->splice_amnt,
-						&inflight->outpoint.txid,
-						at_reestablish);
+						&inflight->outpoint.txid);
 	wire_sync_write(MASTER_FD, take(msg));
 
 	peer->splice_state->inflights = tal_free(peer->splice_state->inflights);
@@ -598,8 +575,7 @@ static void check_mutual_splice_locked(struct peer *peer, bool at_reestablish)
 }
 
 static void implied_peer_splice_locked(struct peer *peer,
-				       struct bitcoin_txid splice_txid,
-				       bool at_reestablish)
+				       struct bitcoin_txid splice_txid)
 {
 	/* If we've `mutual_splice_locked` but our peer hasn't, we can ignore
 	 * this message harmlessly */
@@ -621,7 +597,7 @@ static void implied_peer_splice_locked(struct peer *peer,
 	*peer->splice_state->remote_locked_txid = splice_txid;
 
 	peer->splice_state->locked_ready[REMOTE] = true;
-	check_mutual_splice_locked(peer, at_reestablish);
+	check_mutual_splice_locked(peer);
 }
 
 /* Our peer told us they saw our splice confirm on chain with `splice_locked`.
@@ -655,7 +631,7 @@ static void handle_peer_splice_locked(struct peer *peer, const u8 *msg)
 		return;
 	}
 
-	implied_peer_splice_locked(peer, splice_txid, false);
+	implied_peer_splice_locked(peer, splice_txid);
 }
 
 static void handle_peer_channel_ready(struct peer *peer, const u8 *msg)
@@ -6616,7 +6592,7 @@ static void peer_reconnect(struct peer *peer,
 			 *     - MUST process `my_current_funding_locked` as if it was receiving `splice_locked`
 			 *       for this `txid`.
 			 */
-			implied_peer_splice_locked(peer, itr->outpoint.txid, true);
+			implied_peer_splice_locked(peer, itr->outpoint.txid);
 			break;
 		}
 	}
@@ -6912,7 +6888,7 @@ static void handle_funding_depth(struct peer *peer, const u8 *msg)
 			peer_write(peer->pps, take(msg));
 
 			peer->splice_state->locked_ready[LOCAL] = true;
-			check_mutual_splice_locked(peer, false);
+			check_mutual_splice_locked(peer);
 		}
 
 		return;
