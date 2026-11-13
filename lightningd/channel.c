@@ -435,6 +435,8 @@ struct channel *new_unsaved_channel(struct peer *peer,
 	channel->stable_conn_timer = NULL;
 	channel->onchaind_replay_watches = NULL;
 	channel->pre_splice_reserves = NULL;
+	channel->earlier_reserves = NULL;
+	channel->earlier_reserves_floor = false;
 	/* Nothing happened yet */
 	memset(&channel->stats, 0, sizeof(channel->stats));
 	channel->state_changes = tal_arr(channel, struct channel_state_change *, 0);
@@ -736,6 +738,8 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 	channel->stable_conn_timer = NULL;
 	channel->onchaind_replay_watches = NULL;
 	channel->pre_splice_reserves = NULL;
+	channel->earlier_reserves = NULL;
+	channel->earlier_reserves_floor = false;
 	channel->num_onchain_spent_calls = 0;
 	channel->stats = *stats;
 	channel->state_changes = tal_steal(channel, state_changes);

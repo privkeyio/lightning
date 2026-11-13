@@ -1887,6 +1887,37 @@ static struct channel_state_change **wallet_state_change_get(const tal_t *ctx,
 	return res;
 }
 
+/* Both sides' reserves from these columns, or NULL. */
+static struct amount_sat *db_col_reserves(const tal_t *ctx,
+					  struct db_stmt *stmt,
+					  const char *local,
+					  const char *remote)
+{
+	struct amount_sat *reserves;
+
+	if (db_col_is_null(stmt, local) || db_col_is_null(stmt, remote)) {
+		db_col_ignore(stmt, local);
+		db_col_ignore(stmt, remote);
+		return NULL;
+	}
+	reserves = tal_arr(ctx, struct amount_sat, NUM_SIDES);
+	reserves[LOCAL] = db_col_amount_sat(stmt, local);
+	reserves[REMOTE] = db_col_amount_sat(stmt, remote);
+	return reserves;
+}
+
+static void db_bind_reserves(struct db_stmt *stmt,
+			     const struct amount_sat *reserves)
+{
+	if (reserves) {
+		db_bind_amount_sat(stmt, reserves[LOCAL]);
+		db_bind_amount_sat(stmt, reserves[REMOTE]);
+	} else {
+		db_bind_null(stmt);
+		db_bind_null(stmt);
+	}
+}
+
 /**
  * wallet_stmt2channel - Helper to populate a wallet_channel from a `db_stmt`
  */
@@ -2205,6 +2236,13 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 			   funding_psbt,
 			   db_col_int(stmt, "withheld"));
 
+	chan->pre_splice_reserves
+		= db_col_reserves(chan, stmt, "pre_splice_reserve_local",
+				  "pre_splice_reserve_remote");
+	chan->earlier_reserves
+		= db_col_reserves(chan, stmt, "earlier_reserve_local",
+				  "earlier_reserve_remote");
+
 	if (!wallet_channel_load_inflights(w, chan)) {
 		tal_free(chan);
 		return NULL;
@@ -2467,6 +2505,10 @@ static bool wallet_channels_load_active(struct wallet *w)
 					", close_attempt_height"
 					", funding_psbt"
 					", withheld"
+					", pre_splice_reserve_local"
+					", pre_splice_reserve_remote"
+					", earlier_reserve_local"
+					", earlier_reserve_remote"
 					" FROM channels"
                                         " WHERE state != ?;")); //? 0
 	db_bind_int(stmt, CLOSED);
@@ -2746,7 +2788,11 @@ void wallet_channel_save(struct wallet *w, struct channel *chan)
 					"  require_confirm_inputs_remote=?,"
 					"  close_attempt_height=?,"
 					"  funding_psbt=?,"
-					"  withheld=?"
+					"  withheld=?,"
+					"  pre_splice_reserve_local=?,"
+					"  pre_splice_reserve_remote=?,"
+					"  earlier_reserve_local=?,"
+					"  earlier_reserve_remote=?"
 					" WHERE id=?"));
 	db_bind_u64(stmt, chan->their_shachain.id);
 	if (chan->scid)
@@ -2849,6 +2895,8 @@ void wallet_channel_save(struct wallet *w, struct channel *chan)
 	else
 		db_bind_null(stmt);
 	db_bind_int(stmt, chan->withheld);
+	db_bind_reserves(stmt, chan->pre_splice_reserves);
+	db_bind_reserves(stmt, chan->earlier_reserves);
 	db_bind_u64(stmt, chan->dbid);
 	db_exec_prepared_v2(take(stmt));
 

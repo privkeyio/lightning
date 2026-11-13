@@ -1318,6 +1318,9 @@ static bool channelseq(struct channel *c1, struct channel *c2)
 	CHECK(c1->lease_chan_max_ppt == c2->lease_chan_max_ppt);
 	CHECK(c1->lease_expiry == c2->lease_expiry);
 
+	CHECK(tal_arr_eq(c1->pre_splice_reserves, c2->pre_splice_reserves));
+	CHECK(tal_arr_eq(c1->earlier_reserves, c2->earlier_reserves));
+
 	CHECK(height_states_valid(c1->blockheight_states, c1->opener));
 	CHECK(height_states_valid(c2->blockheight_states, c2->opener));
 	for (enum htlc_state i = 0; i < ARRAY_SIZE(c1->blockheight_states->height);
@@ -1489,8 +1492,15 @@ static bool test_channel_crud(struct lightningd *ld, const tal_t *ctx, bool bip8
 	CHECK(c1.peer->dbid == 1);
 	CHECK(c1.their_shachain.id == 1);
 
-	/* Variant 4: update and add shutdown_scriptpubkey[REMOTE] */
+	/* Variant 4: update and add shutdown_scriptpubkey[REMOTE] and
+	 * reserves from before a splice */
 	c1.shutdown_scriptpubkey[REMOTE] = scriptpubkey;
+	c1.pre_splice_reserves = tal_arr(w, struct amount_sat, NUM_SIDES);
+	c1.pre_splice_reserves[LOCAL] = AMOUNT_SAT(10000);
+	c1.pre_splice_reserves[REMOTE] = AMOUNT_SAT(11000);
+	c1.earlier_reserves = tal_arr(w, struct amount_sat, NUM_SIDES);
+	c1.earlier_reserves[LOCAL] = AMOUNT_SAT(12000);
+	c1.earlier_reserves[REMOTE] = AMOUNT_SAT(13000);
 	wallet_channel_save(w, &c1);
 	CHECK_MSG(!wallet_err, tal_fmt(w, "Insert into DB: %s", wallet_err));
 	CHECK_MSG(c2 = wallet_channel_load(w, c1.dbid), tal_fmt(w, "Load from DB"));

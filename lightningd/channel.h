@@ -355,10 +355,20 @@ struct channel {
 	/* Do we allow the peer to set any fee it wants? */
 	bool ignore_fee_limits;
 
-	/* If a splice locked since the last channel_reestablish, the
-	 * reserves channeld keeps until the next one: [LOCAL] is our
-	 * config's, [REMOTE] theirs. */
+	/* If a splice locked since channeld started for this connection,
+	 * the reserves channeld keeps until it starts for the next one:
+	 * [LOCAL] is our config's, [REMOTE] theirs. */
 	struct amount_sat *pre_splice_reserves;
+
+	/* Once those are replaced, the peer may retransmit updates they
+	 * allowed: channeld accepts the peer's updates either set allows
+	 * until it has the peer's first commitment_signed after the switch
+	 * connection, or a new splice.  Indexed like pre_splice_reserves. */
+	struct amount_sat *earlier_reserves;
+	/* On the switch connection, as the peer may switch one connection
+	 * later: our updates keep the earlier reserves too, and the leniency
+	 * does not end.  Memory only, as a restart reconnects. */
+	bool earlier_reserves_floor;
 
 	/* Last time we had a stable connection, if any (0 = none) */
 	u64 last_stable_connection;

@@ -51,6 +51,15 @@ def test_splice(node_factory, bitcoind):
     assert l1.db_query("SELECT count(*) as c FROM channeltxs;")[0]['c'] == 0
 
 
+def _rewind_migrations(node, count):
+    """Make node run its last count migrations again on its next start.
+    Those add the splice reserve columns, which cannot be added twice."""
+    for column in ('pre_splice_reserve_local', 'pre_splice_reserve_remote',
+                   'earlier_reserve_local', 'earlier_reserve_remote'):
+        node.db_manip(f"ALTER TABLE channels DROP COLUMN {column}")
+    node.db_manip(f"UPDATE version SET version = version - {count}")
+
+
 def _splice_to_inflight(l1, chan_id, amount=100000):
     """Drive a splice as far as an inflight in the db, and return its txid."""
     funds_result = l1.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
@@ -99,7 +108,7 @@ def test_splice_stored_feerate_repaired_on_upgrade(node_factory, bitcoind,
     # They are plain idempotent UPDATEs, so re-running them is safe.  The
     # count has to reach back past both of them, so it grows whenever a
     # migration is appended after them.
-    l1.db_manip("UPDATE version SET version = version - 4")
+    _rewind_migrations(l1, 8)
     l1.daemon.opts['database-upgrade'] = 'true'
     l1.start()
 
@@ -1675,7 +1684,7 @@ def test_splice_sent_sigs_marked_on_upgrade(node_factory, bitcoind, executor):
     row = only_one(l1.db_query("SELECT i_am_initiator, i_sent_sigs"
                                " FROM channel_funding_inflights;"))
     assert row['i_am_initiator'] == 1 and row['i_sent_sigs'] == 0
-    l1.db_manip("UPDATE version SET version = version - 1")
+    _rewind_migrations(l1, 5)
     l1.daemon.opts['database-upgrade'] = 'true'
 
     # l2 forgets the splice, so it answers l1's next_funding with tx_abort.
