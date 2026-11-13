@@ -501,8 +501,12 @@ static struct io_plan *preinit_hsm(struct io_conn *conn,
 	if (tlv->warn_on_overgrind)
 		dev_warn_on_overgrind = *tlv->warn_on_overgrind;
 
-	status_debug("preinit: dev_fail_preapprove = %u, dev_no_preapprove_check = %u, dev_warn_on_overgrind = %u",
-		     dev_fail_preapprove, dev_no_preapprove_check, dev_warn_on_overgrind);
+	if (tlv->independent_secrets_sender)
+		dev_independent_secrets_sender = *tlv->independent_secrets_sender;
+
+	status_debug("preinit: dev_fail_preapprove = %u, dev_no_preapprove_check = %u, dev_warn_on_overgrind = %u, dev_independent_secrets_sender = %u",
+		     dev_fail_preapprove, dev_no_preapprove_check, dev_warn_on_overgrind,
+		     dev_independent_secrets_sender);
 	/* We don't send a reply, just read next */
 	return client_read_next(conn, c);
 }

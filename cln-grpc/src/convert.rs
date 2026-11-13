@@ -1392,6 +1392,7 @@ impl From<responses::ListpeerchannelsChannels> for pb::ListpeerchannelsChannels 
             in_offered_msat: c.in_offered_msat.map(|f| f.into()), // Rule #2 for type msat?
             in_payments_fulfilled: c.in_payments_fulfilled, // Rule #2 for type u64?
             in_payments_offered: c.in_payments_offered, // Rule #2 for type u64?
+            independent_secrets_stored: c.independent_secrets_stored, // Rule #2 for type u64?
             // Field: ListPeerChannels.channels[].inflight[]
             inflight: c.inflight.map(|arr| arr.into_iter().map(|i| i.into()).collect()).unwrap_or(vec![]), // Rule #3
             initial_feerate: c.initial_feerate, // Rule #2 for type string?
@@ -3487,6 +3488,16 @@ impl From<responses::ListconfigsConfigsImportantplugin> for pb::ListconfigsConfi
 }
 
 #[allow(unused_variables)]
+impl From<responses::ListconfigsConfigsIndependentsecrets> for pb::ListconfigsConfigsIndependentsecrets {
+    fn from(c: responses::ListconfigsConfigsIndependentsecrets) -> Self {
+        Self {
+            set: c.set, // Rule #2 for type boolean
+            source: c.source, // Rule #2 for type string
+        }
+    }
+}
+
+#[allow(unused_variables)]
 impl From<responses::ListconfigsConfigsLargechannels> for pb::ListconfigsConfigsLargechannels {
     fn from(c: responses::ListconfigsConfigsLargechannels) -> Self {
         Self {
@@ -3574,6 +3585,16 @@ impl From<responses::ListconfigsConfigsMaxdusthtlcexposuremsat> for pb::Listconf
         Self {
             source: c.source, // Rule #2 for type string
             value_msat: Some(c.value_msat.into()), // Rule #2 for type msat
+        }
+    }
+}
+
+#[allow(unused_variables)]
+impl From<responses::ListconfigsConfigsMaxindependentsecrets> for pb::ListconfigsConfigsMaxindependentsecrets {
+    fn from(c: responses::ListconfigsConfigsMaxindependentsecrets) -> Self {
+        Self {
+            source: c.source, // Rule #2 for type string
+            value_int: c.value_int, // Rule #2 for type u64
         }
     }
 }
@@ -3820,6 +3841,7 @@ impl From<responses::ListconfigsConfigs> for pb::ListconfigsConfigs {
             htlc_minimum_msat: c.htlc_minimum_msat.map(|v| v.into()),
             ignore_fee_limits: c.ignore_fee_limits.map(|v| v.into()),
             important_plugin: c.important_plugin.map(|v| v.into()),
+            independent_secrets: c.independent_secrets.map(|v| v.into()),
             large_channels: c.large_channels.map(|v| v.into()),
             lightning_dir: c.lightning_dir.map(|v| v.into()),
             log_file: c.log_file.map(|v| v.into()),
@@ -3829,6 +3851,7 @@ impl From<responses::ListconfigsConfigs> for pb::ListconfigsConfigs {
             mainnet: c.mainnet.map(|v| v.into()),
             max_concurrent_htlcs: c.max_concurrent_htlcs.map(|v| v.into()),
             max_dust_htlc_exposure_msat: c.max_dust_htlc_exposure_msat.map(|v| v.into()),
+            max_independent_secrets: c.max_independent_secrets.map(|v| v.into()),
             min_capacity_sat: c.min_capacity_sat.map(|v| v.into()),
             network: c.network.map(|v| v.into()),
             offline: c.offline.map(|v| v.into()),

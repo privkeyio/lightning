@@ -29,4 +29,9 @@ void resolve_close_command(struct lightningd *ld, struct channel *channel,
 void peer_start_closingd(struct channel *channel,
 			 struct peer_fd *peer_fd);
 
+/* Start a mutual close of a channel run by channeld (normal, awaiting lock-in
+ * or awaiting a splice), as `close` would with no options (but without a
+ * command, so no unilateral timeout).  False if it can't start one. */
+bool channel_start_mutual_close(struct channel *channel, const char *why);
+
 #endif /* LIGHTNING_LIGHTNINGD_CLOSING_CONTROL_H */

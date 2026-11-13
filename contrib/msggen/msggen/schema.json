@@ -14267,6 +14267,7 @@
                     "anchors/even",
                     "scid_alias/even",
                     "unified_sigs/even",
+                    "independent_secrets/even",
                     "zeroconf/even"
                   ],
                   "description": [
@@ -14738,6 +14739,7 @@
                     "anchors/even",
                     "scid_alias/even",
                     "unified_sigs/even",
+                    "independent_secrets/even",
                     "zeroconf/even"
                   ],
                   "description": [
@@ -19469,6 +19471,7 @@
                           "anchors_zero_fee_htlc_tx/even",
                           "scid_alias/even",
                           "unified_sigs/even",
+                          "independent_secrets/even",
                           "zeroconf/even"
                         ],
                         "description": [
@@ -20216,6 +20219,29 @@
                   }
                 }
               },
+              "independent-secrets": {
+                "added": "v26.06.10-blake2b.2",
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "set",
+                  "source"
+                ],
+                "properties": {
+                  "set": {
+                    "type": "boolean",
+                    "description": [
+                      "`true` if set in config or cmdline."
+                    ]
+                  },
+                  "source": {
+                    "type": "string",
+                    "description": [
+                      "Source of configuration setting."
+                    ]
+                  }
+                }
+              },
               "experimental-dual-fund": {
                 "type": "object",
                 "additionalProperties": false,
@@ -20609,6 +20635,29 @@
                 "properties": {
                   "value_int": {
                     "type": "u32",
+                    "description": [
+                      "Field from config or cmdline, or default."
+                    ]
+                  },
+                  "source": {
+                    "type": "string",
+                    "description": [
+                      "Source of configuration setting."
+                    ]
+                  }
+                }
+              },
+              "max-independent-secrets": {
+                "added": "v26.06.10-blake2b.2",
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "value_int",
+                  "source"
+                ],
+                "properties": {
+                  "value_int": {
+                    "type": "u64",
                     "description": [
                       "Field from config or cmdline, or default."
                     ]
@@ -21636,6 +21685,10 @@
                 "set": true,
                 "source": "cmdline"
               },
+              "independent-secrets": {
+                "set": false,
+                "source": "default"
+              },
               "disable-mpp": {
                 "set": false,
                 "source": "default",
@@ -21804,6 +21857,10 @@
               },
               "mainnet": {
                 "set": false,
+                "source": "default"
+              },
+              "max-independent-secrets": {
+                "value_int": 1000000,
                 "source": "default"
               },
               "max-concurrent-htlcs": {
@@ -24995,6 +25052,7 @@
                           "anchors_zero_fee_htlc_tx/even",
                           "scid_alias/even",
                           "unified_sigs/even",
+                          "independent_secrets/even",
                           "zeroconf/even"
                         ],
                         "description": [
@@ -25003,6 +25061,13 @@
                       }
                     }
                   }
+                },
+                "independent_secrets_stored": {
+                  "type": "u64",
+                  "added": "v26.06.10-blake2b.2",
+                  "description": [
+                    "Only for a channel with *independent_secrets/even* in its channel_type: how many of the peer's per-commitment secrets we store one by one in the database, because they don't fit a shachain (0 while they all do)."
+                  ]
                 },
                 "updates": {
                   "type": "object",
@@ -25887,6 +25952,7 @@
                       "reestablished": {},
                       "scratch_txid": {},
                       "channel_type": {},
+                      "independent_secrets_stored": {},
                       "feerate": {},
                       "ignore_fee_limits": {},
                       "lost_state": {},
@@ -25987,6 +26053,7 @@
                       "alias": {},
                       "scratch_txid": {},
                       "channel_type": {},
+                      "independent_secrets_stored": {},
                       "feerate": {},
                       "ignore_fee_limits": {},
                       "lost_state": {},
@@ -26086,6 +26153,7 @@
                       "state": {},
                       "scratch_txid": {},
                       "channel_type": {},
+                      "independent_secrets_stored": {},
                       "feerate": {},
                       "ignore_fee_limits": {},
                       "lost_state": {},
@@ -26186,6 +26254,7 @@
                       "reestablished": {},
                       "scratch_txid": {},
                       "channel_type": {},
+                      "independent_secrets_stored": {},
                       "feerate": {},
                       "ignore_fee_limits": {},
                       "lost_state": {},
@@ -28378,6 +28447,7 @@
                           "anchors/even",
                           "scid_alias/even",
                           "unified_sigs/even",
+                          "independent_secrets/even",
                           "zeroconf/even"
                         ],
                         "description": [
@@ -29417,6 +29487,7 @@
                     "anchors/even",
                     "scid_alias/even",
                     "unified_sigs/even",
+                    "independent_secrets/even",
                     "zeroconf/even"
                   ],
                   "description": [
@@ -29727,6 +29798,7 @@
                     "anchors/even",
                     "scid_alias/even",
                     "unified_sigs/even",
+                    "independent_secrets/even",
                     "zeroconf/even"
                   ],
                   "description": [
@@ -30067,6 +30139,7 @@
                     "anchors/even",
                     "scid_alias/even",
                     "unified_sigs/even",
+                    "independent_secrets/even",
                     "zeroconf/even"
                   ],
                   "description": [

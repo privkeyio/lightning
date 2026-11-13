@@ -47,6 +47,12 @@ static const struct feature_style feature_styles[] = {
 	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT_AS_OPTIONAL,
 			  [NODE_ANNOUNCE_FEATURE] = FEATURE_REPRESENT_AS_OPTIONAL,
 			  [CHANNEL_TYPE_FEATURE] = FEATURE_REPRESENT } },
+	/* We store every per-commitment secret on channels which have it, so
+	 * a peer may generate them however it likes (e.g. k-of-n). */
+	{ OPT_INDEPENDENT_SECRETS,
+	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT,
+			  [NODE_ANNOUNCE_FEATURE] = FEATURE_REPRESENT,
+			  [CHANNEL_TYPE_FEATURE] = FEATURE_REPRESENT } },
 	{ OPT_DATA_LOSS_PROTECT,
 	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT,
 			  [NODE_ANNOUNCE_FEATURE] = FEATURE_REPRESENT } },
@@ -174,6 +180,8 @@ static const struct dependency feature_deps[] = {
 	{ OPT_BASIC_MPP, OPT_PAYMENT_SECRET },
 	/* The unified hash does not exist without the rules that define it. */
 	{ OPT_UNIFIED_SIGS, OPT_BLAKE2B },
+	/* Only ever agreed in channel_type. */
+	{ OPT_INDEPENDENT_SECRETS, OPT_CHANNEL_TYPE },
 };
 
 static void trim_features(u8 **features)
@@ -512,6 +520,9 @@ const char *feature_name(const tal_t *ctx, size_t f)
 		return tal_fmt(ctx, "option_blake2b/%s", (f & 1) ? "odd" : "even");
 	if (COMPULSORY_FEATURE(f) == OPT_UNIFIED_SIGS)
 		return tal_fmt(ctx, "option_unified_sigs/%s", (f & 1) ? "odd" : "even");
+	if (COMPULSORY_FEATURE(f) == OPT_INDEPENDENT_SECRETS)
+		return tal_fmt(ctx, "option_independent_secrets/%s",
+			       (f & 1) ? "odd" : "even");
 	if (f / 2 >= ARRAY_SIZE(fnames) || !fnames[f / 2])
 		return tal_fmt(ctx, "option_unknown_%zu/%s",
 			       COMPULSORY_FEATURE(f), (f & 1) ? "odd" : "even");
