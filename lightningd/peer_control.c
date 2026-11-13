@@ -2523,13 +2523,11 @@ void update_channel_from_inflight(struct lightningd *ld,
 
 	/* BOLT-splice #2:
 	 *     - MUST use as each side's channel reserve 1% of the new channel
-	 *       capacity, rounded down, or the channel opener's
-	 *       `dust_limit_satoshis` if greater, from the first
-	 *       `channel_reestablish` exchange in which both nodes'
-	 *       `my_current_funding_locked` name this splice transaction, once it
-	 *       has received its peer's `channel_reestablish`.
-	 *     - Until then, MUST keep the channel reserves it used before the
-	 *       splice.
+	 *       capacity, rounded down, or the channel opener's `dust_limit_satoshis`
+	 *       if greater, from the first `channel_reestablish` sent after both
+	 *       nodes have sent and received `splice_locked` (or the
+	 *       `my_current_funding_locked` that stands for it).
+	 *     - Until then, MUST keep the channel reserves it used before the splice.
 	 */
 	if (is_splice && !channel->pre_splice_reserves) {
 		channel->pre_splice_reserves
