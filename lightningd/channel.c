@@ -989,6 +989,15 @@ bool have_anchor_channel(struct lightningd *ld)
 	return false;
 }
 
+bool channel_end_reserve_leniency(struct channel *channel)
+{
+	if (!channel->earlier_reserves || channel->earlier_reserves_floor)
+		return false;
+
+	channel->earlier_reserves = tal_free(channel->earlier_reserves);
+	return true;
+}
+
 void channel_set_last_tx(struct channel *channel,
 			 struct bitcoin_tx *tx,
 			 const struct bitcoin_signature *sig)

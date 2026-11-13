@@ -1046,6 +1046,8 @@ static struct channel *handle_init(struct info *info, const u8 *init_msg)
 	struct amount_msat local_msat;
 	struct pubkey funding_pubkey[NUM_SIDES];
 	struct channel_config conf[NUM_SIDES];
+	struct amount_sat *earlier_reserves;
+	bool earlier_reserves_floor;
 	struct bitcoin_outpoint funding;
 	enum side opener;
 	struct existing_htlc **htlcs;
@@ -1106,6 +1108,8 @@ static struct channel *handle_init(struct info *info, const u8 *init_msg)
 				    &info->blockheight_states,
 				    &lease_expiry,
 				    &conf[LOCAL], &conf[REMOTE],
+				    &earlier_reserves,
+				    &earlier_reserves_floor,
 				    &info->fee_states,
 				    &feerate_splice,
 				    &feerate_min,

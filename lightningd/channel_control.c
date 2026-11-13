@@ -1034,6 +1034,10 @@ static void handle_add_inflight(struct lightningd *ld,
 
 	wallet_inflight_add(ld->wallet, inflight);
 
+	/* A new splice means the peer has nothing earlier to retransmit. */
+	if (channel_end_reserve_leniency(channel))
+		wallet_channel_save(ld->wallet, channel);
+
 	channel_watch_inflight_outs(ld, channel);
 
 	subd_send_msg(channel->owner, take(towire_channeld_got_inflight(NULL)));
@@ -2038,14 +2042,22 @@ bool peer_start_channeld(struct channel *channel,
 
 	feerate_splice = splice_feerate(ld->topology, ld);
 
-	/* A splice's reserves take effect at channel_reestablish, which
-	 * a restart after tx_abort does not send. */
+	/* A splice's reserves take effect when channeld starts for the next
+	 * connection, which a restart after tx_abort is not. */
 	our_config = channel->our_config;
 	their_config = channel->channel_info.their_config;
-	if (reconnected)
-		channel->pre_splice_reserves
-			= tal_free(channel->pre_splice_reserves);
-	else if (channel->pre_splice_reserves) {
+	if (reconnected) {
+		channel->earlier_reserves_floor = false;
+		/* Limit: a second splice locking on the switch connection keeps
+		 * one earlier set, so a peer two splices behind can be refused. */
+		if (channel->pre_splice_reserves) {
+			tal_free(channel->earlier_reserves);
+			channel->earlier_reserves = channel->pre_splice_reserves;
+			channel->pre_splice_reserves = NULL;
+			channel->earlier_reserves_floor = true;
+			wallet_channel_save(ld->wallet, channel);
+		}
+	} else if (channel->pre_splice_reserves) {
 		our_config.channel_reserve = channel->pre_splice_reserves[LOCAL];
 		their_config.channel_reserve = channel->pre_splice_reserves[REMOTE];
 	}
@@ -2064,6 +2076,8 @@ bool peer_start_channeld(struct channel *channel,
 				       channel->lease_expiry,
 				       &our_config,
 				       &their_config,
+				       channel->earlier_reserves,
+				       channel->earlier_reserves_floor,
 				       channel->fee_states,
 				       feerate_splice,
 				       min_feerate,

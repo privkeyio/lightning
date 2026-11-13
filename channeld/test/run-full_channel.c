@@ -727,6 +727,93 @@ int main(int argc, const char *argv[])
 		assert(amount_msat_eq(lchannel->view[LOCAL].owed[LOCAL], local_before));
 	}
 
+	/* After a splice changed the reserves, the peer's updates pass if the
+	 * earlier ones allow them, and ours must keep both under the floor. */
+	{
+		struct channel_config lconf = *local_config;
+		struct channel_config rconf = *remote_config;
+		u32 feerate = 15000;
+		u8 *routing = tal_arrz(tmpctx, u8,
+				       TOTAL_PACKET_SIZE(ROUTING_INFO_SIZE));
+		struct sha256 rhash;
+		struct channel *c;
+
+		memset(&rhash, 0, sizeof(rhash));
+		lconf.channel_reserve = AMOUNT_SAT(2000000);
+		rconf.channel_reserve = AMOUNT_SAT(1000000);
+		c = new_full_channel(tmpctx, &cid, &funding, 0,
+				     take(new_height_states(NULL, LOCAL,
+							    &blockheight)),
+				     0, funding_amount,
+				     AMOUNT_MSAT(7000000000),
+				     take(new_fee_states(NULL, LOCAL, &feerate)),
+				     &lconf, &rconf, &localbase, &remotebase,
+				     &local_funding_pubkey,
+				     &remote_funding_pubkey,
+				     take(channel_type_static_remotekey(NULL)),
+				     false, LOCAL);
+
+		/* The peer would keep 1,500,000 sat of its 3,000,000. */
+		assert(channel_add_htlc(c, REMOTE, 0, AMOUNT_MSAT(1500000000),
+					500, &rhash, routing, NULL, NULL, NULL,
+					NULL, true)
+		       == CHANNEL_ERR_CHANNEL_CAPACITY_EXCEEDED);
+		c->earlier_reserves = tal_arr(c, struct amount_sat, NUM_SIDES);
+		c->earlier_reserves[LOCAL] = AMOUNT_SAT(1000000);
+		c->earlier_reserves[REMOTE] = AMOUNT_SAT(6000000);
+		assert(channel_add_htlc(c, REMOTE, 0, AMOUNT_MSAT(1500000000),
+					500, &rhash, routing, NULL, NULL, NULL,
+					NULL, true)
+		       == CHANNEL_ERR_ADD_OK);
+
+		/* We would keep under 5,000,000 sat of our 7,000,000. */
+		assert(channel_add_htlc(c, LOCAL, 0, AMOUNT_MSAT(2000000000),
+					500, &rhash, routing, NULL, NULL, NULL,
+					NULL, true)
+		       == CHANNEL_ERR_ADD_OK);
+		c->earlier_reserves_floor = true;
+		assert(channel_add_htlc(c, LOCAL, 1, AMOUNT_MSAT(1000000),
+					500, &rhash, routing, NULL, NULL, NULL,
+					NULL, true)
+		       == CHANNEL_ERR_CHANNEL_CAPACITY_EXCEEDED);
+		assert(!can_opener_afford_feerate(c, feerate));
+
+		/* The floor never applies to the peer: it would keep
+		 * 1,300,000 sat. */
+		assert(channel_add_htlc(c, REMOTE, 1, AMOUNT_MSAT(200000000),
+					500, &rhash, routing, NULL, NULL, NULL,
+					NULL, true)
+		       == CHANNEL_ERR_ADD_OK);
+		c->earlier_reserves_floor = false;
+		assert(can_opener_afford_feerate(c, feerate));
+		assert(channel_add_htlc(c, LOCAL, 1, AMOUNT_MSAT(1000000),
+					500, &rhash, routing, NULL, NULL, NULL,
+					NULL, true)
+		       == CHANNEL_ERR_ADD_OK);
+
+		/* A remote opener with 3,000,000 sat cannot pay the fee above
+		 * a 2,999,000 sat reserve, but can above the earlier one. */
+		lconf.channel_reserve = AMOUNT_SAT(2999000);
+		c = new_full_channel(tmpctx, &cid, &funding, 0,
+				     take(new_height_states(NULL, REMOTE,
+							    &blockheight)),
+				     0, funding_amount,
+				     AMOUNT_MSAT(7000000000),
+				     take(new_fee_states(NULL, REMOTE, &feerate)),
+				     &lconf, &rconf, &localbase, &remotebase,
+				     &local_funding_pubkey,
+				     &remote_funding_pubkey,
+				     take(channel_type_static_remotekey(NULL)),
+				     false, REMOTE);
+		assert(!can_opener_afford_feerate(c, feerate));
+		c->earlier_reserves = tal_arr(c, struct amount_sat, NUM_SIDES);
+		c->earlier_reserves[LOCAL] = AMOUNT_SAT(1000000);
+		c->earlier_reserves[REMOTE] = AMOUNT_SAT(1000000);
+		assert(can_opener_afford_feerate(c, feerate));
+		c->earlier_reserves_floor = true;
+		assert(can_opener_afford_feerate(c, feerate));
+	}
+
 	common_shutdown();
 
 	/* FIXME: Do BOLT comparison! */

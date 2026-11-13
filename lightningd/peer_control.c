@@ -2521,14 +2521,10 @@ void update_channel_from_inflight(struct lightningd *ld,
 	if (inflight->funding->splice_remote_funding)
 		channel->channel_info.remote_fundingkey = *inflight->funding->splice_remote_funding;
 
-	/* BOLT-splice #2:
-	 *     - MUST use as each side's channel reserve 1% of the new channel
-	 *       capacity, rounded down, or the channel opener's `dust_limit_satoshis`
-	 *       if greater, from the first `channel_reestablish` sent after both
-	 *       nodes have sent and received `splice_locked` (or the
-	 *       `my_current_funding_locked` that stands for it).
-	 *     - Until then, MUST keep the channel reserves it used before the splice.
-	 */
+	/* channeld keeps the reserves it started with until it starts for
+	 * the next connection: then these become the earlier reserves, which
+	 * it still accepts from the peer for a while (see
+	 * peer_start_channeld). */
 	if (is_splice && !channel->pre_splice_reserves) {
 		channel->pre_splice_reserves
 			= tal_arr(channel, struct amount_sat, NUM_SIDES);

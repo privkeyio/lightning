@@ -1902,6 +1902,20 @@ static void send_revocation(struct peer *peer,
 	peer_write(peer->pps, take(msg));
 }
 
+/* Once the peer has nothing left from before a splice changed the reserves
+ * to retransmit, the earlier ones no longer apply to its updates.  But on
+ * the first connection after the change it may still be using them. */
+static void end_reserve_leniency(struct peer *peer)
+{
+	if (!peer->channel->earlier_reserves
+	    || peer->channel->earlier_reserves_floor)
+		return;
+
+	status_debug("Earlier reserves no longer apply");
+	peer->channel->earlier_reserves
+		= tal_free(peer->channel->earlier_reserves);
+}
+
 static struct inflight *last_inflight(const struct peer *peer)
 {
 	size_t count = tal_count(peer->splice_state->inflights);
@@ -2576,6 +2590,7 @@ static struct commitsig_info *handle_peer_commit_sig(struct peer *peer,
 
 	send_revocation(peer, &commit_sig, htlc_sigs, changed_htlcs, txs[0],
 			old_secret, &next_point, commitsigs);
+	end_reserve_leniency(peer);
 
 	tal_steal(tmpctx, result);
 	tal_free(commitsigs);
@@ -4864,6 +4879,7 @@ static void splice_accepter(struct peer *peer, const u8 *inmsg)
 
 	master_wait_sync_reply(tmpctx, peer, take(msg),
 			       WIRE_CHANNELD_GOT_INFLIGHT);
+	end_reserve_leniency(peer);
 
 	new_inflight = inflights_new(peer);
 	peer->splicing->added_inflight = true;
@@ -5179,6 +5195,7 @@ static void splice_initiator_user_finalized(struct peer *peer)
 
 	master_wait_sync_reply(tmpctx, peer, take(outmsg),
 			       WIRE_CHANNELD_GOT_INFLIGHT);
+	end_reserve_leniency(peer);
 
 	new_inflight = inflights_new(peer);
 	peer->splicing->added_inflight = true;
@@ -7410,6 +7427,8 @@ static void init_channel(struct peer *peer)
 	struct amount_msat local_msat;
 	struct pubkey funding_pubkey[NUM_SIDES];
 	struct channel_config conf[NUM_SIDES];
+	struct amount_sat *earlier_reserves;
+	bool earlier_reserves_floor;
 	struct bitcoin_outpoint funding;
 	enum side opener;
 	struct existing_htlc **htlcs;
@@ -7441,6 +7460,8 @@ static void init_channel(struct peer *peer)
 				    &blockheight_states,
 				    &lease_expiry,
 				    &conf[LOCAL], &conf[REMOTE],
+				    &earlier_reserves,
+				    &earlier_reserves_floor,
 				    &fee_states,
 				    &peer->feerate_splice,
 				    &peer->feerate_min,
@@ -7575,6 +7596,12 @@ static void init_channel(struct peer *peer)
 					 feature_offered(peer->their_features,
 							 OPT_LARGE_CHANNELS),
 					 opener);
+
+	if (earlier_reserves && tal_count(earlier_reserves) != NUM_SIDES)
+		master_badmsg(WIRE_CHANNELD_INIT, msg);
+	peer->channel->earlier_reserves = tal_steal(peer->channel,
+						    earlier_reserves);
+	peer->channel->earlier_reserves_floor = earlier_reserves_floor;
 
 	if (!channel_force_htlcs(peer->channel,
 			 cast_const2(const struct existing_htlc **, htlcs)))

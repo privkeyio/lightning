@@ -419,17 +419,39 @@ struct bitcoin_tx **channel_txs(const tal_t *ctx,
 	return txs;
 }
 
-/* If @side is faced with these HTLCs, how much will it have left
- * above reserve (eg. to pay fees).  Returns false if would be < 0. */
+/* The reserve @side must keep when checking an update from @sender.
+ * Reserve is set by the *other* side.  After a splice changed it, the
+ * peer's updates pass if the earlier reserve allows them, and ours must
+ * keep both while the peer may still hold us to the earlier one. */
+static struct amount_sat side_reserve(const struct channel *channel,
+				      enum side side, enum side sender)
+{
+	struct amount_sat reserve = channel->config[!side].channel_reserve;
+	struct amount_sat earlier;
+
+	if (!channel->earlier_reserves)
+		return reserve;
+
+	earlier = channel->earlier_reserves[!side];
+	if (sender == REMOTE)
+		return amount_sat_less(earlier, reserve) ? earlier : reserve;
+	if (channel->earlier_reserves_floor)
+		return amount_sat_greater(earlier, reserve) ? earlier : reserve;
+	return reserve;
+}
+
+/* If @side is faced with these HTLCs added by @sender, how much will it
+ * have left above reserve (eg. to pay fees).  Returns false if would
+ * be < 0. */
 static bool get_room_above_reserve(const struct channel *channel,
 				   const struct channel_view *view,
 				   const struct htlc **adding,
 				   const struct htlc **removing,
 				   enum side side,
+				   enum side sender,
 				   struct amount_msat *remainder)
 {
-	/* Reserve is set by the *other* side */
-	struct amount_sat reserve = channel->config[!side].channel_reserve;
+	struct amount_sat reserve = side_reserve(channel, side, sender);
 	struct balance balance;
 	struct amount_msat owed = view->owed[side];
 
@@ -806,7 +828,7 @@ static enum channel_add_err add_htlc(struct channel *channel,
 		 * here is that the remainder to the sender doesn't go below the
 		 * sender's reserve. */
 		if (!get_room_above_reserve(channel, view,
-					    adding, removing, sender,
+					    adding, removing, sender, sender,
 					    &remainder))
 			return CHANNEL_ERR_CHANNEL_CAPACITY_EXCEEDED;
 
@@ -844,7 +866,7 @@ static enum channel_add_err add_htlc(struct channel *channel,
 		if (sender == LOCAL) {
 			if (!get_room_above_reserve(channel, view,
 						    adding, removing,
-						    channel->opener,
+						    channel->opener, sender,
 						    &remainder))
 				return CHANNEL_ERR_CHANNEL_CAPACITY_EXCEEDED;
 
@@ -1307,7 +1329,9 @@ u32 approx_max_feerate(const struct channel *channel)
 	} else {
 		/* We should never go below reserve. */
 		if (!amount_msat_deduct_sat(&avail,
-					    channel->config[!channel->opener].channel_reserve))
+					    side_reserve(channel,
+							 channel->opener,
+							 channel->opener)))
 		avail = AMOUNT_MSAT(0);
 	}
 
@@ -1347,7 +1371,7 @@ bool htlc_dust_ok(const struct channel *channel,
 
 bool can_opener_afford_feerate(const struct channel *channel, u32 feerate_per_kw)
 {
-	struct amount_sat needed, fee;
+	struct amount_sat needed, fee, reserve;
 	struct amount_sat dust_limit = channel->config[!channel->opener].dust_limit;
 	size_t untrimmed;
 	const struct htlc **committed, **adding, **removing;
@@ -1401,13 +1425,12 @@ bool can_opener_afford_feerate(const struct channel *channel, u32 feerate_per_kw
 	/* Note: sender == opener */
 
 	/* How much does it think it has?  Must be >= reserve + fee */
-	if (!amount_sat_add(&needed, fee,
-			    channel->config[!channel->opener].channel_reserve))
+	reserve = side_reserve(channel, channel->opener, channel->opener);
+	if (!amount_sat_add(&needed, fee, reserve))
 		status_failed(STATUS_FAIL_INTERNAL_ERROR,
 			      "Cannot add fee %s and reserve %s",
 			      fmt_amount_sat(tmpctx, fee),
-			      fmt_amount_sat(tmpctx,
-					     channel->config[!channel->opener].channel_reserve));
+			      fmt_amount_sat(tmpctx, reserve));
 
 	/* The amount we have needs to take into account that we're
 	 * adding and removing htlcs */

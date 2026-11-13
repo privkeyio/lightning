@@ -977,6 +977,11 @@ void channel_set_last_tx(struct channel *channel,
 			 struct bitcoin_tx *tx,
 			 const struct bitcoin_signature *sig);
 
+/* The peer's commitment_signed or a new splice ends the leniency for the
+ * earlier reserves, as in channeld, unless the floor is on.  Returns true
+ * if it ended. */
+bool channel_end_reserve_leniency(struct channel *channel);
+
 static inline bool channel_has(const struct channel *channel, int f)
 {
 	return channel_type_has(channel->type, f);

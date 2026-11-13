@@ -1792,23 +1792,17 @@ def test_splice_reserve_changes_at_reestablish(node_factory, bitcoind):
         return l2.rpc.waitsendpay(inv['payment_hash'], timeout=TIMEOUT)
 
     l1.rpc.xpay(l2.rpc.invoice(30000000, 'push', 'push')['bolt11'])
-
-    # Splicing in 500,000 sat raises the reserves from 10,000 to 15,000 sat.
-    funds_result = l1.rpc.fundpsbt("511722sat", 0, 0, excess_as_change=True)
-    result = l1.rpc.splice_init(chan_id, 500000, funds_result['psbt'])
-    result = l1.rpc.splice_update(chan_id, result['psbt'])
-    result = l1.rpc.splice_update(chan_id, result['psbt'])
-    result = l1.rpc.signpsbt(result['psbt'])
-    l1.rpc.splice_signed(chan_id, result['signed_psbt'])
+    _splice_in_500k(l1, l2, bitcoind)
     bitcoind.generate_block(6, wait_for_mempool=1)
     l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
     l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
     scid = first_scid(l1, l2)
 
-    # Leave l2 with 13,000 sat: above the old reserve, below the new one.
+    # The splice locked on this connection, so the old reserves stay: leave
+    # l2 with 13,000 sat, above the old reserve and below the new one.
     l2_pays_l1(17000000)
 
-    # A tx_abort restarts channeld without a channel_reestablish.
+    # A tx_abort restarts channeld on the same connection.
     result = l1.rpc.splice_init(chan_id, 100000)
     with pytest.raises(RpcError):
         result = l1.rpc.splice_update(chan_id, result['psbt'])
@@ -1820,7 +1814,9 @@ def test_splice_reserve_changes_at_reestablish(node_factory, bitcoind):
     # Both nodes still use the old reserves.
     l2_pays_l1(1000000)
 
-    # The new reserves apply from the next channel_reestablish.
+    # The new reserves apply when channeld starts for the next connection.
+    # This checks l2 holds itself to them: l1 still accepts the old ones on
+    # this connection, in case l2 switches one connection later.
     l2.rpc.disconnect(l1.info['id'], force=True)
     l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
     l1.daemon.wait_for_log(r'peer_in WIRE_CHANNEL_REESTABLISH')
@@ -1828,7 +1824,7 @@ def test_splice_reserve_changes_at_reestablish(node_factory, bitcoind):
     with pytest.raises(RpcError, match=r'Capacity exceeded'):
         l2_pays_l1(1000000)
 
-    # And stay after a later tx_abort.
+    # And l2 keeps them after a later tx_abort.
     result = l1.rpc.splice_init(chan_id, 100000)
     with pytest.raises(RpcError):
         result = l1.rpc.splice_update(chan_id, result['psbt'])
@@ -1844,25 +1840,26 @@ def test_splice_reserve_changes_at_reestablish(node_factory, bitcoind):
 @pytest.mark.openchannel('v2')
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
 def test_splice_reserve_rises_above_opener_balance(node_factory, bitcoind):
+    hold_plugin = os.path.join(os.getcwd(), 'tests/plugins/htlc_accepted-hold.py')
     l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
                                      opts=[{'may_reconnect': True,
-                                            'plugin': os.path.join(os.getcwd(), 'tests/plugins/hold_htlcs.py'),
-                                            'hold-time': 120 if VALGRIND else 40},
-                                           {'may_reconnect': True}])
+                                            'dev-no-reconnect': None,
+                                            'plugin': hold_plugin},
+                                           {'may_reconnect': True,
+                                            'dev-no-reconnect': None}])
     chan_id = l1.get_channel_id(l2)
-    scid = first_scid(l1, l2)
 
     # l1 opened the channel and keeps 25,000 sat.
     l1.rpc.xpay(l2.rpc.invoice(975000000, 'push', 'push')['bolt11'])
+    l2.rpc.plugin_start(hold_plugin)
 
-    # l1 holds an HTLC from l2 across the splice.
-    inv = l1.dev_invoice(amount_msat=1000000, label='held', description='held',
-                         dev_routes=[])
-    route = [{'id': l1.info['id'], 'channel': scid, 'amount_msat': 1000000,
-              'delay': 18, 'style': 'tlv'}]
-    l2.rpc.sendpay(route, inv['payment_hash'],
-                   payment_secret=inv['payment_secret'], amount_msat=1000000)
-    l1.daemon.wait_for_log(r'Holding onto an incoming htlc')
+    # Each holds an HTLC from the other across the splice.
+    l1_preimage = '11' * 32
+    l1_hash = _sendpay_direct(l2, l1, 1000000, 'held', preimage=l1_preimage)
+    l1.daemon.wait_for_log(r'holding htlc')
+    l2_preimage = '22' * 32
+    l2_hash = _sendpay_direct(l1, l2, 1000000, 'held', preimage=l2_preimage)
+    l2.daemon.wait_for_log(r'holding htlc')
 
     # l2 splices in 2,000,000 sat: the reserve rises from 10,000 to 30,000
     # sat, above what l1 has.
@@ -1877,17 +1874,21 @@ def test_splice_reserve_rises_above_opener_balance(node_factory, bitcoind):
     l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
     l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
 
-    # The new reserve applies from the next channel_reestablish.
-    l2.rpc.disconnect(l1.info['id'], force=True)
-    l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
-    l1.daemon.wait_for_log(r'peer_in WIRE_CHANNEL_REESTABLISH')
-    l2.daemon.wait_for_log(r'peer_in WIRE_CHANNEL_REESTABLISH')
-    assert not l1.daemon.is_in_log(r'htlc_accepted hook called')
+    # The new reserve applies from the next connection, but l2 accepts the
+    # old one too until l1's first commitment_signed on the one after.
+    _reconnect(l1, l2)
+    _reconnect(l1, l2)
+    for n in (l1, l2):
+        n.daemon.logs_catchup()
     marks = {n: len(n.daemon.logs) for n in (l1, l2)}
+    l2.rpc.releasehtlc(l2_preimage)
+    l1.rpc.waitsendpay(l2_hash, timeout=TIMEOUT)
+    l2.daemon.wait_for_log(r'Earlier reserves no longer apply')
 
     # l1 is below the new reserve only because of l2's splice, so its
     # fulfill, which raises its balance, must still go through.
-    l2.rpc.waitsendpay(inv['payment_hash'], timeout=TIMEOUT)
+    l1.rpc.releasehtlc(l1_preimage)
+    l2.rpc.waitsendpay(l1_hash, timeout=TIMEOUT)
     l2.daemon.wait_for_log(r'Opener is below fee plus reserve')
 
     # l1 cannot afford a fee update either, so it keeps the current one.
@@ -1895,6 +1896,246 @@ def test_splice_reserve_rises_above_opener_balance(node_factory, bitcoind):
     l1.daemon.wait_for_log(r'Cannot afford feerate [0-9]+, keeping')
     for n in (l1, l2):
         assert not [l for l in n.daemon.logs[marks[n]:] if 'Owning subdaemon channeld died' in l]
+        assert only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'
+
+
+def _sendpay_direct(payer, payee, amount_msat, label, preimage=None):
+    """Pay payee over the channel between them, and return the hash."""
+    inv = payee.dev_invoice(amount_msat=amount_msat, label=label,
+                            description=label, preimage=preimage,
+                            dev_routes=[])
+    route = [{'id': payee.info['id'], 'channel': first_scid(payer, payee),
+              'amount_msat': amount_msat, 'delay': 18, 'style': 'tlv'}]
+    payer.rpc.sendpay(route, inv['payment_hash'],
+                      payment_secret=inv['payment_secret'],
+                      amount_msat=amount_msat)
+    return inv['payment_hash']
+
+
+def _splice_in_500k(l1, l2, bitcoind):
+    """Splice 500,000 sat in: the reserves rise from 10,000 to 15,000 sat."""
+    chan_id = l1.get_channel_id(l2)
+    funds_result = l1.rpc.fundpsbt("511722sat", 0, 0, excess_as_change=True)
+    result = l1.rpc.splice_init(chan_id, 500000, funds_result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    result = l1.rpc.signpsbt(result['psbt'])
+    l1.rpc.splice_signed(chan_id, result['signed_psbt'])
+    l1.daemon.wait_for_log(r'CHANNELD_NORMAL to CHANNELD_AWAITING_SPLICE')
+    l2.daemon.wait_for_log(r'CHANNELD_NORMAL to CHANNELD_AWAITING_SPLICE')
+    wait_for(lambda: len(bitcoind.rpc.getrawmempool()) == 1)
+
+
+def _reconnect(l1, l2):
+    if only_one(l2.rpc.listpeerchannels()['channels'])['peer_connected']:
+        l2.rpc.disconnect(l1.info['id'], force=True)
+    wait_for(lambda: not only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
+    l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
+    wait_for(lambda: only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
+    wait_for(lambda: only_one(l2.rpc.listpeerchannels()['channels'])['peer_connected'])
+
+
+def _earlier_reserves(node):
+    return only_one(node.db_query("SELECT pre_splice_reserve_local AS pl,"
+                                  " pre_splice_reserve_remote AS pr,"
+                                  " earlier_reserve_local AS el,"
+                                  " earlier_reserve_remote AS er"
+                                  " FROM channels;"))
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+@pytest.mark.parametrize("restart", [False, True])
+def test_splice_reserve_retransmit(node_factory, bitcoind, restart):
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
+                                     opts={'may_reconnect': True,
+                                           'dev-no-reconnect': None})
+    l1.rpc.xpay(l2.rpc.invoice(30000000, 'push', 'push')['bolt11'])
+    _splice_in_500k(l1, l2, bitcoind)
+
+    # l2 will lose the commitment_signed for its next payment (twice when
+    # l1 restarts, so l1 also restarts after taking the new reserves).
+    l2.stop()
+    l2.disconnect = ['-WIRE_COMMITMENT_SIGNED'] * (2 if restart else 1)
+    l2.daemon.opts['dev-disconnect'] = os.path.join(l2.daemon.lightning_dir,
+                                                    TEST_NETWORK, 'dev-disconnect')
+    l2.start()
+    _reconnect(l1, l2)
+
+    # The splice locks on this connection, so the old reserves stay.
+    bitcoind.generate_block(6, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    assert _earlier_reserves(l1) == {'pl': 10000, 'pr': 10000, 'el': None, 'er': None}
+
+    # Leave l2 with 13,000 sat: above the old reserve, below the new one.
+    payment_hash = _sendpay_direct(l2, l1, 17000000, 'gap')
+    l2.daemon.wait_for_log(r'dev_disconnect: -WIRE_COMMITMENT_SIGNED')
+    wait_for(lambda: not only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
+
+    if restart:
+        # The earlier reserves outlive a restart before the switch...
+        l1.restart()
+        _reconnect(l1, l2)
+        l2.daemon.wait_for_log(r'dev_disconnect: -WIRE_COMMITMENT_SIGNED')
+        wait_for(lambda: not only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
+        assert _earlier_reserves(l1) == {'pl': None, 'pr': None, 'el': 10000, 'er': 10000}
+        # ... and one after it.
+        l1.restart()
+
+    # The new reserves apply now, but l2 retransmits what it added before.
+    _reconnect(l1, l2)
+    l2.rpc.waitsendpay(payment_hash, timeout=TIMEOUT)
+    assert not l1.daemon.is_in_log(r'Bad peer_add_htlc')
+    assert only_one(l1.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'
+    if restart:
+        l1.daemon.wait_for_log(r'Earlier reserves no longer apply')
+        assert _earlier_reserves(l1) == {'pl': None, 'pr': None, 'el': None, 'er': None}
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+@unittest.skipIf(os.getenv('TEST_DB_PROVIDER', 'sqlite3') != 'sqlite3', "modifies database, which is assumed sqlite3")
+def test_splice_reserve_leniency_ends(node_factory, bitcoind):
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
+                                     opts={'may_reconnect': True,
+                                           'dev-no-reconnect': None,
+                                           'allow_warning': True})
+    l1.rpc.xpay(l2.rpc.invoice(30000000, 'push', 'push')['bolt11'])
+    _splice_in_500k(l1, l2, bitcoind)
+    bitcoind.generate_block(6, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+
+    # A commitment_signed from l2 on the connection that switches to the
+    # new reserves does not end the leniency, one on a later one does.
+    _reconnect(l1, l2)
+    l2.rpc.waitsendpay(_sendpay_direct(l2, l1, 1000000, 'first'), timeout=TIMEOUT)
+    assert _earlier_reserves(l1)['el'] == 10000
+    _reconnect(l1, l2)
+    l2.rpc.waitsendpay(_sendpay_direct(l2, l1, 1000000, 'second'), timeout=TIMEOUT)
+    l1.daemon.wait_for_log(r'Earlier reserves no longer apply')
+    assert _earlier_reserves(l1)['el'] is None
+
+    # Make l2 forget the new reserve, so it adds what only the old allows.
+    l2.stop()
+    l2.db_manip("UPDATE channel_configs SET channel_reserve_satoshis = 10000"
+                " WHERE id = (SELECT channel_config_remote FROM channels);")
+    l2.start()
+    _reconnect(l1, l2)
+    _sendpay_direct(l2, l1, 17000000, 'gap')
+    l1.daemon.wait_for_log(r'Bad peer_add_htlc: CHANNEL_ERR_CHANNEL_CAPACITY_EXCEEDED')
+    assert only_one(l1.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+@pytest.mark.parametrize("on_switch", [False, True])
+def test_splice_reserve_leniency_ends_at_splice(node_factory, bitcoind, on_switch):
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
+                                     opts={'may_reconnect': True,
+                                           'dev-no-reconnect': None})
+    chan_id = l1.get_channel_id(l2)
+    l1.rpc.xpay(l2.rpc.invoice(30000000, 'push', 'push')['bolt11'])
+    _splice_in_500k(l1, l2, bitcoind)
+    bitcoind.generate_block(6, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    _reconnect(l1, l2)
+    if not on_switch:
+        _reconnect(l1, l2)
+    for n in (l1, l2):
+        assert _earlier_reserves(n)['el'] == 10000
+
+    _splice_to_inflight(l1, chan_id)
+    if on_switch:
+        # The peer may still be using the earlier reserves on the
+        # connection that switched, so a new splice does not end that.
+        for n in (l1, l2):
+            wait_for(lambda: n.db_query("SELECT count(*) AS c FROM channel_funding_inflights;")[0]['c'] == 1)
+            assert _earlier_reserves(n)['el'] == 10000
+            assert not n.daemon.is_in_log(r'Earlier reserves no longer apply')
+
+        # The peer's commitment_signed on a later connection still does.
+        _reconnect(l1, l2)
+        l2.rpc.waitsendpay(_sendpay_direct(l2, l1, 1000000, 'later'), timeout=TIMEOUT)
+        l1.daemon.wait_for_log(r'Earlier reserves no longer apply')
+        assert _earlier_reserves(l1)['el'] is None
+        return
+
+    # A new splice leaves nothing earlier to retransmit.  channeld logs
+    # this after lightningd saved it, and l1's log search has already
+    # moved past it while _splice_to_inflight waited.
+    for n in (l1, l2):
+        wait_for(lambda: _earlier_reserves(n)['el'] is None)
+        wait_for(lambda: n.daemon.is_in_log(r'Earlier reserves no longer apply'))
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_reserve_floor(node_factory, bitcoind):
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
+                                     opts={'may_reconnect': True,
+                                           'dev-no-reconnect': None})
+    l1.rpc.xpay(l2.rpc.invoice(30000000, 'push', 'push')['bolt11'])
+
+    # Splicing out 500,000 sat lowers the reserves from 10,000 to under
+    # 5,000 sat.
+    l1.rpc.spliceout("*:?", "500000")
+    bitcoind.generate_block(6, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+
+    # On the first connection with the new reserves, l2 still keeps the
+    # old one, as l1 may not have switched yet.
+    _reconnect(l1, l2)
+    with pytest.raises(RpcError, match=r'Capacity exceeded'):
+        l2.rpc.waitsendpay(_sendpay_direct(l2, l1, 22000000, 'floor'), timeout=TIMEOUT)
+
+    _reconnect(l1, l2)
+    l2.rpc.waitsendpay(_sendpay_direct(l2, l1, 22000000, 'after'), timeout=TIMEOUT)
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_reserve_lost_splice_locked(node_factory, bitcoind):
+    # l2 never gets l1's splice_locked, so l1 records the lock first and
+    # l2 only during the next channel_reestablish: l2 switches to the new
+    # reserves one connection after l1.
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
+                                     opts=[{'may_reconnect': True,
+                                            'dev-no-reconnect': None,
+                                            'disconnect': ['$WIRE_SPLICE_LOCKED']},
+                                           {'may_reconnect': True,
+                                            'dev-no-reconnect': None}])
+    l1.rpc.xpay(l2.rpc.invoice(30000000, 'push', 'push')['bolt11'])
+    _splice_in_500k(l1, l2, bitcoind)
+    bitcoind.generate_block(6, wait_for_mempool=1)
+    l1.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_AWAITING_SPLICE'
+
+    # l2 still uses the old reserves on this connection, before and after
+    # its commitment_signed.
+    _reconnect(l1, l2)
+    l2.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    l2.rpc.waitsendpay(_sendpay_direct(l2, l1, 17000000, 'gap'), timeout=TIMEOUT)
+    l2.rpc.waitsendpay(_sendpay_direct(l2, l1, 2000000, 'gap2'), timeout=TIMEOUT)
+
+    # From the next one l2 keeps the new reserve.
+    _reconnect(l1, l2)
+    with pytest.raises(RpcError, match=r'Capacity exceeded'):
+        l2.rpc.waitsendpay(_sendpay_direct(l2, l1, 1000000, 'below'), timeout=TIMEOUT)
+    l1.rpc.waitsendpay(_sendpay_direct(l1, l2, 5000000, 'refill'), timeout=TIMEOUT)
+    l2.rpc.waitsendpay(_sendpay_direct(l2, l1, 500000, 'above'), timeout=TIMEOUT)
+
+    for n in (l1, l2):
+        assert not n.daemon.is_in_log(r'Bad peer_add_htlc')
+        assert not n.daemon.is_in_log(r'Peer permanent failure')
         assert only_one(n.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'
 
 
