@@ -30,7 +30,7 @@ static const char *emitted_line(const char *trace, const char *name)
 
 static void emit_with_tag(const char *name, const char *value)
 {
-	int key;
+	int key = 0;
 
 	trace_span_start_(name, &key);
 	trace_span_tag(&key, "query", value);
