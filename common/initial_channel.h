@@ -54,6 +54,12 @@ struct channel {
 	/* Limits and settings on this channel. */
 	struct channel_config config[NUM_SIDES];
 
+	/* If a splice changed the reserves, the earlier ones (indexed like
+	 * config) while the peer may still send updates they allow. */
+	struct amount_sat *earlier_reserves;
+	/* Whether the peer may also still hold our updates to them. */
+	bool earlier_reserves_floor;
+
 	/* Basepoints for deriving keys. */
 	struct basepoints basepoints[NUM_SIDES];
 

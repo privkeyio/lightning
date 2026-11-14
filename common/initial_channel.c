@@ -56,6 +56,8 @@ struct channel *new_initial_channel(const tal_t *ctx,
 	channel->opener = opener;
 	channel->config[LOCAL] = *local;
 	channel->config[REMOTE] = *remote;
+	channel->earlier_reserves = NULL;
+	channel->earlier_reserves_floor = false;
 	channel->funding_pubkey[LOCAL] = *local_funding_pubkey;
 	channel->funding_pubkey[REMOTE] = *remote_funding_pubkey;
 	channel->htlcs = NULL;

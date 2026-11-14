@@ -2609,6 +2609,7 @@ void peer_got_commitsig(struct channel *channel, const u8 *msg)
 	if (!peer_save_commitsig_received(channel, commitnum, tx, &commit_sig))
 		return;
 
+	channel_end_reserve_leniency(channel);
 	wallet_channel_save(ld->wallet, channel);
 
 	tal_free(channel->last_htlc_sigs);

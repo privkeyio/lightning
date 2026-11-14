@@ -1139,6 +1139,17 @@ static const struct db_migration dbmigrations[] = {
 	 "  WHERE state = 3 OR state = 13);"), NULL,
      /* Only sets a flag older releases also read, so no revert needed */
      NULL, NULL},
+    /* Reserves from before a splice changed them: pre_splice_reserve_*
+     * until channeld starts for the next connection, then
+     * earlier_reserve_* while the peer may still use them. */
+    {SQL("ALTER TABLE channels ADD pre_splice_reserve_local BIGINT DEFAULT NULL;"), NULL,
+     SQL("ALTER TABLE channels DROP COLUMN pre_splice_reserve_local"), NULL},
+    {SQL("ALTER TABLE channels ADD pre_splice_reserve_remote BIGINT DEFAULT NULL;"), NULL,
+     SQL("ALTER TABLE channels DROP COLUMN pre_splice_reserve_remote"), NULL},
+    {SQL("ALTER TABLE channels ADD earlier_reserve_local BIGINT DEFAULT NULL;"), NULL,
+     SQL("ALTER TABLE channels DROP COLUMN earlier_reserve_local"), NULL},
+    {SQL("ALTER TABLE channels ADD earlier_reserve_remote BIGINT DEFAULT NULL;"), NULL,
+     SQL("ALTER TABLE channels DROP COLUMN earlier_reserve_remote"), NULL},
 };
 
 const struct db_migration *get_db_migrations(size_t *num)
