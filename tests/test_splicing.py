@@ -1977,7 +1977,10 @@ def test_splice_reserve_retransmit(node_factory, bitcoind, restart):
     if restart:
         # The earlier reserves outlive a restart before the switch...
         l1.restart()
-        _reconnect(l1, l2)
+        # Not _reconnect: l2 drops this connection as soon as it sends
+        # its commitment_signed again, which can be before it reads as
+        # connected.
+        l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
         l2.daemon.wait_for_log(r'dev_disconnect: -WIRE_COMMITMENT_SIGNED')
         wait_for(lambda: not only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
         assert _earlier_reserves(l1) == {'pl': None, 'pr': None, 'el': 10000, 'er': 10000}
