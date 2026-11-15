@@ -7258,7 +7258,7 @@ static void db_col_credit_or_debit(struct db_stmt *stmt,
 	s64 amount = db_col_s64(stmt, colname);
 	if (amount < 0) {
 		*credit = AMOUNT_MSAT(0);
-		*debit = amount_msat(-amount);
+		*debit = amount_msat(-(u64)amount);
 	} else {
 		*credit = amount_msat(amount);
 		*debit = AMOUNT_MSAT(0);
