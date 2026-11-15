@@ -3065,6 +3065,26 @@ def test_splice_out_below_reserve(node_factory, bitcoind):
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_out_all_keeps_reserve(node_factory, bitcoind):
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True)
+    chan_id = l1.get_channel_id(l2)
+    l1.rpc.xpay(l2.rpc.invoice(500000000, 'push', 'push')['bolt11'])
+    wait_for(lambda: only_one(l2.rpc.listpeerchannels()['channels'])['to_us_msat'] == 500000000)
+
+    # All of l2's available funds leave it 5,050 sat, exactly the reserve
+    # for the 505,050 sat channel that leaves.
+    result = l2.rpc.splice(f"{chan_id} -> 100%")
+    bitcoind.generate_block(6, wait_for_mempool=result['txid'])
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    channel = only_one(l2.rpc.listpeerchannels()['channels'])
+    assert channel['to_us_msat'] == 5050000
+    assert channel['total_msat'] == 505050000
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
 def test_splice_in_with_change_below_reserve(node_factory, bitcoind):
     l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
                                      opts={'may_reconnect': True,
@@ -3096,3 +3116,21 @@ def test_splice_in_with_change_below_reserve(node_factory, bitcoind):
     for n in (l1, l2):
         n.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
     assert only_one(l2.rpc.listpeerchannels()['channels'])['to_us_msat'] == 20000000
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_out_all_opener_keeps_fee(node_factory, bitcoind):
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True)
+    chan_id = l1.get_channel_id(l2)
+    result = l1.rpc.splice(f"{chan_id} -> 100%")
+    bitcoind.generate_block(6, wait_for_mempool=result['txid'])
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    # As opener l1 keeps the 546 sat dust-limit reserve, plus the anchors'
+    # 660 sat and the 9,377 sat commitment fee with one more HTLC at the
+    # 7,236 perkw marginal feerate for 3,750, as channel_add_htlc asks.
+    channel = only_one(l1.rpc.listpeerchannels()['channels'])
+    assert channel['to_us_msat'] == 10583000
+    assert channel['total_msat'] == 10583000

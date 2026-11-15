@@ -24,6 +24,7 @@
 #include <channeld/watchtower.h>
 #include <common/billboard.h>
 #include <common/ecdh_hsmd.h>
+#include <common/initial_commit_tx.h>
 #include <common/interactivetx.h>
 #include <common/key_derive.h>
 #include <common/memleak.h>
@@ -5643,10 +5644,74 @@ static void handle_splice_init(struct peer *peer, const u8 *inmsg)
 	}
 }
 
+/* What we must keep above the reserve as opener: the commitment fee
+ * channel_add_htlc makes us able to pay (feerate rising, one more HTLC),
+ * plus the anchors.  Counting every HTLC as untrimmed only adds margin. */
+static struct amount_sat opener_fee_headroom(const struct peer *peer)
+{
+	const struct channel *channel = peer->channel;
+	bool anchors = channel_has(channel, OPT_ANCHOR_OUTPUTS_DEPRECATED);
+	bool zero_fee = channel_has(channel, OPT_ANCHORS_ZERO_FEE_HTLC_TX);
+	struct amount_sat fee;
+
+	fee = commit_tx_base_fee(marginal_feerate(channel_feerate(channel, LOCAL)),
+				 num_channel_htlcs(channel) + 1,
+				 anchors, zero_fee);
+	if ((anchors || zero_fee) && !amount_sat_add(&fee, fee, AMOUNT_SAT(660)))
+		status_failed(STATUS_FAIL_INTERNAL_ERROR,
+			      "Cannot add 660 sats to %s for anchor",
+			      fmt_amount_sat(tmpctx, fee));
+	return fee;
+}
+
+/* Whether we keep the reserve after splicing out `out`, the peer adding
+ * nothing, and as opener can still pay the commitment fee. */
+static bool keeps_reserve_after(const struct peer *peer, struct amount_sat out)
+{
+	struct amount_msat balance;
+	struct amount_sat capacity, keep;
+
+	if (!amount_msat_sub_sat(&balance, peer->channel->view->owed[LOCAL], out)
+	    || !amount_sat_sub(&capacity, peer->channel->funding_sats, out))
+		return false;
+	keep = reserve_for_capacity(peer, capacity);
+	if (peer->channel->opener == LOCAL
+	    && !amount_sat_add(&keep, keep, opener_fee_headroom(peer)))
+		return false;
+	return !amount_msat_less_sat(balance, keep);
+}
+
+/* The most we can splice out and still keep the reserve that
+ * check_splice_reserves applies, if the peer adds nothing.  If it adds
+ * funds, the reserve can rise and the splice is refused there. */
+static struct amount_msat splice_out_max(const struct peer *peer)
+{
+	struct amount_msat max;
+	u64 lo = 0, hi;
+
+	if (!keeps_reserve_after(peer, AMOUNT_SAT(0)))
+		return AMOUNT_MSAT(0);
+
+	/* Keeping the reserve only gets harder the more we take out. */
+	hi = amount_msat_to_sat_round_down(peer->channel->view->owed[LOCAL])
+		.satoshis; /* Raw: binary search */
+	while (lo < hi) {
+		u64 mid = lo + (hi - lo + 1) / 2;
+
+		if (keeps_reserve_after(peer, amount_sat(mid)))
+			lo = mid;
+		else
+			hi = mid - 1;
+	}
+	if (!amount_sat_to_msat(&max, amount_sat(lo)))
+		return AMOUNT_MSAT(0);
+	return max;
+}
+
 static void handle_stfu_req_success(struct peer *peer)
 {
-	struct amount_msat available_funds = peer->channel->view->owed[LOCAL];
-	/* DTODO: Subtract reserve requirment from available_funds? */
+	struct amount_msat available_funds = splice_out_max(peer);
+
 	if (peer->dev_delay_confirmed_stfu)
 		sleep(peer->dev_delay_confirmed_stfu);
 	wire_sync_write(MASTER_FD,
