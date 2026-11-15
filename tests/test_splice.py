@@ -454,8 +454,9 @@ def test_script_two_chan_splice_out(node_factory, bitcoind):
     chan_id2 = l2.get_channel_id(l3)
 
     # l2 will splice funds out of the channels with l1 and l3 at the same time
-    # By default extra funds get sent to wallet
-    result = l2.rpc.splice(f"{chan_id1} -> 100000; {chan_id2} -> 100000")
+    # By default extra funds get sent to wallet.  l2 keeps 10,000 sat with l1,
+    # above the 9,100 sat reserve for the 910,000 sat channel left.
+    result = l2.rpc.splice(f"{chan_id1} -> 90000; {chan_id2} -> 100000")
 
     l3.daemon.wait_for_log(r'CHANNELD_NORMAL to CHANNELD_AWAITING_SPLICE')
     l2.daemon.wait_for_log(r'CHANNELD_NORMAL to CHANNELD_AWAITING_SPLICE')

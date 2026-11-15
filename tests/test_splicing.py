@@ -3016,3 +3016,83 @@ def test_splice_ack_contribution_above_max_supply(node_factory, bitcoind, contri
     assert l1.db_query("SELECT count(*) as c FROM channel_funding_inflights;")[0]['c'] == 0
     wait_for(lambda: only_one(l1.rpc.listpeerchannels()['channels'])['peer_connected'])
     assert only_one(l1.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'
+
+
+def _splice_out_keeping(l2, chan_id, keep_sat):
+    """l2 splices its 500,000 sat out to its wallet, keeping keep_sat; the
+    5,801 sat fee comes out of the channel too."""
+    funds_result = l2.rpc.addpsbtoutput(500000 - keep_sat - 5801)
+    result = l2.rpc.splice_init(chan_id, -(500000 - keep_sat), funds_result['psbt'])
+    result = l2.rpc.splice_update(chan_id, result['psbt'])
+    result = l2.rpc.splice_update(chan_id, result['psbt'])
+    return l2.rpc.splice_signed(chan_id, result['psbt'])
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_out_below_reserve(node_factory, bitcoind):
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
+                                     opts={'may_reconnect': True,
+                                           'allow_warning': True})
+    chan_id = l1.get_channel_id(l2)
+    l1.rpc.xpay(l2.rpc.invoice(500000000, 'push', 'push')['bolt11'])
+    wait_for(lambda: only_one(l2.rpc.listpeerchannels()['channels'])['to_us_msat'] == 500000000)
+
+    # Keeping 5,049 sat of a 505,049 sat channel is one below its 5,050 sat
+    # reserve.  Each of l1 and l2 refuses it on its own check.
+    with pytest.raises(RpcError, match='below the reserve of 5050sat'):
+        _splice_out_keeping(l2, chan_id, 5049)
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'We are initiating tx_abort for reason: Initiator'
+                              r' would keep 5049000msat, below the reserve of'
+                              r' 5050sat for a channel of 505049sat')
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'Restarting channeld after tx_abort on CHANNELD_NORMAL channel')
+        assert n.db_query("SELECT count(*) as c FROM channel_funding_inflights;")[0]['c'] == 0
+    wait_for(lambda: only_one(l2.rpc.listpeerchannels()['channels'])['peer_connected'])
+
+    # Keeping exactly the reserve is enough.
+    result = _splice_out_keeping(l2, chan_id, 5050)
+    bitcoind.generate_block(6, wait_for_mempool=result['txid'])
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    channel = only_one(l2.rpc.listpeerchannels()['channels'])
+    assert channel['to_us_msat'] == 5050000
+    assert channel['total_msat'] == 505050000
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_in_with_change_below_reserve(node_factory, bitcoind):
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000, wait_for_announce=True,
+                                     opts={'may_reconnect': True,
+                                           'allow_warning': True})
+    chan_id = l1.get_channel_id(l2)
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['to_us_msat'] == 0
+    l2.fundwallet(100000)
+
+    def splice_in(amount, funds):
+        result = l2.rpc.splice_init(chan_id, amount, funds['psbt'])
+        result = l2.rpc.splice_update(chan_id, result['psbt'])
+        result = l2.rpc.splice_update(chan_id, result['psbt'])
+        result = l2.rpc.signpsbt(result['psbt'])
+        return l2.rpc.splice_signed(chan_id, result['signed_psbt'])
+
+    # l2 adds its change output, so it must keep the 10,050 sat reserve for
+    # the new 1,005,000 sat channel, and 5,000 sat does not.
+    funds = l2.rpc.fundpsbt("16722sat", 0, 0, excess_as_change=True)
+    with pytest.raises(RpcError, match='below the reserve of 10050sat'):
+        splice_in(5000, funds)
+    l2.rpc.unreserveinputs(funds['psbt'])
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'Restarting channeld after tx_abort on CHANNELD_NORMAL channel')
+    wait_for(lambda: only_one(l2.rpc.listpeerchannels()['channels'])['peer_connected'])
+
+    # 20,000 sat is above the 10,200 sat reserve for 1,020,000 sat.
+    result = splice_in(20000, l2.rpc.fundpsbt("31722sat", 0, 0, excess_as_change=True))
+    bitcoind.generate_block(6, wait_for_mempool=result['txid'])
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'CHANNELD_AWAITING_SPLICE to CHANNELD_NORMAL')
+    assert only_one(l2.rpc.listpeerchannels()['channels'])['to_us_msat'] == 20000000

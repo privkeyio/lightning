@@ -3669,6 +3669,80 @@ static struct amount_sat calc_balance(struct peer *peer)
 	return funding_amount_res;
 }
 
+/* The reserve lightningd sets once a splice to this capacity locks. */
+static struct amount_sat reserve_for_capacity(const struct peer *peer,
+					      struct amount_sat capacity)
+{
+	return channel_reserve_for_capacity(capacity,
+					    peer->channel->opener == LOCAL
+					    ? chainparams->dust_limit
+					    : peer->channel->config[REMOTE].dust_limit);
+}
+
+/* BOLT-191462825ae341f0a27098765c075f01ca9bc6c2 #2:
+ * The receiving node:
+ *   - MUST compute the channel balance for each side by adding their respective
+ *     `funding_contribution_satoshis` to their previous channel balance.
+ *   - MUST fail the negotiation by sending `tx_abort` if:
+ *...
+ *     - Either side has added an output other than the channel funding output
+ *       and the balance for that side is less than the channel reserve that
+ *       matches the new channel capacity.
+ */
+static void check_splice_reserves(struct peer *peer,
+				  bool we_initiated,
+				  const struct wally_psbt *psbt,
+				  int chan_output_index,
+				  struct amount_sat capacity)
+{
+	s64 relative[NUM_TX_ROLES];
+	bool binds[NUM_TX_ROLES];
+	struct amount_sat reserve;
+
+	relative[TX_INITIATOR] = peer->splicing->opener_relative;
+	relative[TX_ACCEPTER] = peer->splicing->accepter_relative;
+
+	/* Funds a side takes out of the channel by any route, fees
+	 * included, bind it as an added output does. */
+	for (enum tx_role r = 0; r < NUM_TX_ROLES; r++)
+		binds[r] = relative[r] < 0;
+	for (size_t i = 0; i < psbt->num_outputs; i++) {
+		if (i == chan_output_index)
+			continue;
+		if (is_initiators_serial(&psbt->outputs[i].unknowns))
+			binds[TX_INITIATOR] = true;
+		else
+			binds[TX_ACCEPTER] = true;
+	}
+
+	reserve = reserve_for_capacity(peer, capacity);
+
+	for (enum tx_role r = 0; r < NUM_TX_ROLES; r++) {
+		enum side side = (r == TX_INITIATOR) == we_initiated
+			? LOCAL : REMOTE;
+		struct amount_msat balance;
+
+		if (!binds[r])
+			continue;
+		if (!amount_msat_add_sat_s64(&balance,
+					     peer->channel->view->owed[side],
+					     relative[r]))
+			splice_abort(peer, NULL, "%s takes %"PRId64"sat out of"
+				     " a balance of %s",
+				     r == TX_INITIATOR ? "Initiator" : "Accepter",
+				     -relative[r],
+				     fmt_amount_msat(tmpctx,
+						     peer->channel->view->owed[side]));
+		if (amount_msat_less_sat(balance, reserve))
+			splice_abort(peer, NULL, "%s would keep %s, below the"
+				     " reserve of %s for a channel of %s",
+				     r == TX_INITIATOR ? "Initiator" : "Accepter",
+				     fmt_amount_msat(tmpctx, balance),
+				     fmt_amount_sat(tmpctx, reserve),
+				     fmt_amount_sat(tmpctx, capacity));
+	}
+}
+
 /* Returns the total channel funding output amount if all checks pass.
  * Otherwise, exits via peer_failed_warn.
  * Note: Should only be called before adding splice to inflights. */
@@ -3963,34 +4037,6 @@ static struct amount_sat check_balances(struct peer *peer,
 				 fmt_amount_sat(tmpctx, max_accepter_fee));
 	}
 
-	/* BOLT-??? #2:
-	 * - if either side has added an output other than the new channel
-	 *   funding output:
-  	 *   - MUST fail the negotiation if the balance for that side is less
-  	 *     than 1% of the total channel capacity. */
-	/* DTODO: Spec out reserve requirements for splices!! Lets gooo */
-	/* DTODO: If we were at or over the reserve at start of splice,
-	 * then we must ensure the reserve is preserved through splice.
-	 * It should only to 1% of the old balance
-	 * 1: The channel is growing
-	 *  --- your balnce was underneath reserve req
-	 *  Valid: YES
-	 * 2: The node's balance is shrinking
-	 *  --- and it shrinks below the reserve
-	 *  Valid: NO
-	 *
-	 * The reserve requirement should only matter if someone is withdrawing
-	 * from.
-	 *
-	 * Node A       Node B
-	 * 1000 sat <-> 1000 sat
-	 * reserve: 20sat
-	 *
-	 * Node B desires withdraw 990 sats
-	 * Can I?
-	 * New reserve req = 1010 * 0.01 = 10 (round down from 10.1)
-	 * */
-
 	if (!amount_msat_to_sat(&funding_amount_res, funding_amount)) {
 		status_failed(STATUS_FAIL_INTERNAL_ERROR,
 			      "splice error: msat of total funding %s should"
@@ -4002,6 +4048,9 @@ static struct amount_sat check_balances(struct peer *peer,
 			      fmt_amount_msat(tmpctx,
 					      peer->channel->view->owed[REMOTE]));
 	}
+
+	check_splice_reserves(peer, opener, psbt, chan_output_index,
+			      funding_amount_res);
 
 	return funding_amount_res;
 }
