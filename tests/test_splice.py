@@ -454,8 +454,9 @@ def test_script_two_chan_splice_out(node_factory, bitcoind):
     chan_id2 = l2.get_channel_id(l3)
 
     # l2 will splice funds out of the channels with l1 and l3 at the same time
-    # By default extra funds get sent to wallet
-    result = l2.rpc.splice(f"{chan_id1} -> 100000; {chan_id2} -> 100000")
+    # By default extra funds get sent to wallet.  l2 keeps 10,000 sat with l1,
+    # above the 9,100 sat reserve for the 910,000 sat channel left.
+    result = l2.rpc.splice(f"{chan_id1} -> 90000; {chan_id2} -> 100000")
 
     l3.daemon.wait_for_log(r'CHANNELD_NORMAL to CHANNELD_AWAITING_SPLICE')
     l2.daemon.wait_for_log(r'CHANNELD_NORMAL to CHANNELD_AWAITING_SPLICE')
@@ -618,6 +619,12 @@ def verify_chans(nodes, bitcoind, txid, chanids, fee, expected_balances=None, fe
 # * fee_multiplier is an array of ints. The coorisponding channel balance expectation is adjusted
 #   by the fee * fee_multiplier. For example [0, -1] reduces the second channels expected balance
 #   by the fee value
+# Splicing out everything leaves the opener the 5,152 sat reserve plus 10,049 sat
+# of fee headroom, which is 9,389 sat of commitment fee with another HTLC at the
+# 7,245 perkw marginal feerate and 660 sat for the anchors.
+OPENER_KEEPS = 15201
+
+
 def execute_script(node_factory, bitcoind, script, expected_balances=None, fee_multiplier=None):
     nodes, chanids = make_chans(node_factory, script.count("{}"))
     result = nodes[1].rpc.splice(script.format(*chanids), debug_log=True)
@@ -736,7 +743,7 @@ def test_script_two_chan_splice_m(node_factory, bitcoind):
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
 def test_script_two_chan_splice_n(node_factory, bitcoind):
     execute_script(node_factory, bitcoind, "wallet -> 100%+fee; {} -> 50%; 100000 -> {}",
-                   [500000 // 2, 500000 + 100000])
+                   [500000 - (500000 - OPENER_KEEPS) // 2, 500000 + 100000])
 
 
 @pytest.mark.openchannel('v1')
@@ -744,7 +751,7 @@ def test_script_two_chan_splice_n(node_factory, bitcoind):
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
 def test_script_two_chan_splice_oo(node_factory, bitcoind):
     execute_script(node_factory, bitcoind, "wallet -> *+fee; {} -> 50%; 100000 -> {}",
-                   [500000 // 2, 500000 + 100000])
+                   [500000 - (500000 - OPENER_KEEPS) // 2, 500000 + 100000])
 
 
 @pytest.mark.openchannel('v1')
@@ -752,7 +759,7 @@ def test_script_two_chan_splice_oo(node_factory, bitcoind):
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
 def test_script_two_chan_splice_p(node_factory, bitcoind):
     execute_script(node_factory, bitcoind, "wallet -> *; {} -> 50%+fee; 100000 -> {}",
-                   [500000 // 2, 500000 + 100000], [-1, 0])
+                   [500000 - (500000 - OPENER_KEEPS) // 2, 500000 + 100000], [-1, 0])
 
 
 @pytest.mark.openchannel('v1')
