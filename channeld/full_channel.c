@@ -456,14 +456,14 @@ static bool get_room_above_reserve(const struct channel *channel,
 	struct amount_msat owed = view->owed[side];
 
 	/* `lowest_splice_amnt` will always be negative or 0 */
-	if (amount_msat_less_eq_sat(owed, amount_sat(-view->lowest_splice_amnt[side]))) {
+	if (amount_msat_less_eq_sat(owed, amount_sat(-(u64)view->lowest_splice_amnt[side]))) {
 		status_debug("Relative splice balance invalid");
 		return false;
 	}
 
 	/* `lowest_splice_amnt` is a relative amount */
 	if (!amount_msat_sub_sat(&owed, owed,
-				 amount_sat(-view->lowest_splice_amnt[side]))) {
+				 amount_sat(-(u64)view->lowest_splice_amnt[side]))) {
 		status_debug("Owed amount should not wrap around from splice");
 		return false;
 	}

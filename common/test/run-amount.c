@@ -453,6 +453,17 @@ int main(int argc, char *argv[])
 		assert(sat.satoshis == i);
 	}
 
+	/* Negating INT64_MIN as a signed value overflows. */
+	sat.satoshis = UINT64_MAX;
+	assert(amount_sat_add_sat_s64(&sat, sat, INT64_MIN));
+	assert(sat.satoshis == UINT64_MAX - (1ULL << 63));
+	assert(!amount_sat_add_sat_s64(&sat, AMOUNT_SAT(5), INT64_MIN));
+	assert(amount_sat_add_sat_s64(&sat, AMOUNT_SAT(5), -5));
+	assert(amount_sat_is_zero(sat));
+	assert(!amount_msat_add_sat_s64(&msat, AMOUNT_MSAT(UINT64_MAX), INT64_MIN));
+	assert(amount_msat_add_sat_s64(&msat, AMOUNT_MSAT(5000), -5));
+	assert(amount_msat_is_zero(msat));
+
 	test_amount_with_fee();
 	test_amount_div();
 	common_shutdown();
