@@ -87,6 +87,7 @@
                 "anchors/even",
                 "scid_alias/even",
                 "unified_sigs/even",
+                "independent_secrets/even",
                 "zeroconf/even"
               ],
               "description": [

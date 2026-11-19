@@ -53,7 +53,11 @@ def test_splice(node_factory, bitcoind):
 
 def _rewind_migrations(node, count):
     """Make node run its last count migrations again on its next start.
-    Those add the splice reserve columns, which cannot be added twice."""
+    Those add the splice reserve columns, which cannot be added twice, and
+    option_independent_secrets' table and column, which cannot be created
+    twice either."""
+    node.db_manip("DROP TABLE channel_revocation_secrets")
+    node.db_manip("ALTER TABLE channels DROP COLUMN independent_secrets_close_at")
     for column in ('pre_splice_reserve_local', 'pre_splice_reserve_remote',
                    'earlier_reserve_local', 'earlier_reserve_remote'):
         node.db_manip(f"ALTER TABLE channels DROP COLUMN {column}")
@@ -108,7 +112,7 @@ def test_splice_stored_feerate_repaired_on_upgrade(node_factory, bitcoind,
     # They are plain idempotent UPDATEs, so re-running them is safe.  The
     # count has to reach back past both of them, so it grows whenever a
     # migration is appended after them.
-    _rewind_migrations(l1, 8)
+    _rewind_migrations(l1, 10)
     l1.daemon.opts['database-upgrade'] = 'true'
     l1.start()
 
@@ -1684,7 +1688,7 @@ def test_splice_sent_sigs_marked_on_upgrade(node_factory, bitcoind, executor):
     row = only_one(l1.db_query("SELECT i_am_initiator, i_sent_sigs"
                                " FROM channel_funding_inflights;"))
     assert row['i_am_initiator'] == 1 and row['i_sent_sigs'] == 0
-    _rewind_migrations(l1, 5)
+    _rewind_migrations(l1, 7)
     l1.daemon.opts['database-upgrade'] = 'true'
 
     # l2 forgets the splice, so it answers l1's next_funding with tx_abort.
