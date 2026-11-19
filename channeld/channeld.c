@@ -207,6 +207,9 @@ struct peer {
 	/* Never send splice tx_signatures first */
 	bool dev_splice_sign_second;
 
+	/* Always send splice tx_signatures first */
+	bool dev_splice_sign_first;
+
 	/* Information used for reestablishment. */
 	bool last_was_revoke;
 	struct changed_htlc *last_sent_commit;
@@ -3336,6 +3339,8 @@ static bool do_i_send_tx_sigs_first(struct peer *peer, struct wally_psbt *psbt,
 		return true;
 	if (peer->dev_splice_sign_second)
 		return false;
+	if (peer->dev_splice_sign_first)
+		return true;
 	return do_i_sign_first(peer, psbt, our_role, force_sign_first);
 }
 
@@ -4240,7 +4245,8 @@ static void resume_splice_negotiation(struct peer *peer,
 						      &their_commit->commit_signature,
 						      their_commit->htlc_signatures,
 						      inflight->locked_scid,
-						      inflight->i_sent_sigs);
+						      inflight->i_sent_sigs,
+						      false);
 		wire_sync_write(MASTER_FD, take(msg));
 	}
 
@@ -4335,7 +4341,8 @@ static void resume_splice_negotiation(struct peer *peer,
 		msg = towire_channeld_update_inflight(NULL, current_psbt,
 						      NULL, NULL, NULL,
 						      inflight->locked_scid,
-						      inflight->i_sent_sigs);
+						      inflight->i_sent_sigs,
+						      false);
 		wire_sync_write(MASTER_FD, take(msg));
 
 		/* Only send once lightningd has stored i_sent_sigs */
@@ -4542,7 +4549,8 @@ static void resume_splice_negotiation(struct peer *peer,
 		msg = towire_channeld_update_inflight(NULL, current_psbt, NULL,
 						      NULL, NULL,
 						      inflight->locked_scid,
-						      inflight->i_sent_sigs);
+						      inflight->i_sent_sigs,
+						      false);
 		wire_sync_write(MASTER_FD, take(msg));
 	}
 
@@ -5292,7 +5300,8 @@ static void splice_initiator_user_finalized(struct peer *peer)
 						 &their_commit->commit_signature,
 						 their_commit->htlc_signatures,
 						 new_inflight->locked_scid,
-						 new_inflight->i_sent_sigs);
+						 new_inflight->i_sent_sigs,
+						 false);
 	wire_sync_write(MASTER_FD, take(outmsg));
 
 	sign_first = do_i_send_tx_sigs_first(peer, new_inflight->psbt, our_role,
@@ -5487,11 +5496,13 @@ static void splice_initiator_user_signed(struct peer *peer, const u8 *inmsg)
 	inflight->psbt = clone_psbt(inflight, signed_psbt);
 
 	/* Save the user provided signatures to DB incase we have to
-	 * restart and reestablish later. */
+	 * restart and reestablish later.  saves_user_sigs tells lightningd
+	 * that a reconnect now resumes this splice. */
 	outmsg = towire_channeld_update_inflight(NULL, inflight->psbt,
 						 NULL, NULL, NULL,
 						 inflight->locked_scid,
-						 inflight->i_sent_sigs);
+						 inflight->i_sent_sigs,
+						 true);
 
 	wire_sync_write(MASTER_FD, take(outmsg));
 
@@ -6987,7 +6998,8 @@ static void handle_funding_depth(struct peer *peer, const u8 *msg)
 									      NULL,
 									      NULL,
 									      inflight->locked_scid,
-									      inflight->i_sent_sigs);
+									      inflight->i_sent_sigs,
+									      false);
 					wire_sync_write(MASTER_FD, take(msg));
 					inflight_match = inflight;
 				}
@@ -7621,6 +7633,7 @@ static void init_channel(struct peer *peer)
 				    &peer->dev_splice_corrupt_shared_sig,
 				    &peer->dev_splice_corrupt_input_witness,
 				    &peer->dev_splice_sign_second,
+				    &peer->dev_splice_sign_first,
 				    &pbases,
 				    &peer->splice_state->inflights,
 				    &peer->local_alias,

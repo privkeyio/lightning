@@ -8,6 +8,7 @@
 #include <common/json_command.h>
 #include <common/psbt_open.h>
 #include <common/shutdown_scriptpubkey.h>
+#include <common/timeout.h>
 #include <common/wire_error.h>
 #include <connectd/connectd_wiregen.h>
 #include <errno.h>
@@ -54,6 +55,12 @@ struct splice_command {
 	bool skip_stfu;
 	/* splice_signed: our broadcast of the splice answers it */
 	bool signing;
+	/* splice_signed: channeld has saved our signatures, so a reconnect
+	 * resumes the splice and our broadcast still answers it */
+	bool sigs_saved;
+	/* splice_signed with sigs_saved: since channeld went, the bound on
+	 * how long it waits for that */
+	struct oneshot *resume_timer;
 };
 
 static u32 default_feerate(struct lightningd *ld, const struct channel *channel,
@@ -436,11 +443,14 @@ static void handle_splice_confirmed_init(struct lightningd *ld,
 	}
 
 	if (psbt->version != cc->user_psbt_ver
-	     && !psbt_set_version(psbt, cc->user_psbt_ver))
+	     && !psbt_set_version(psbt, cc->user_psbt_ver)) {
 		channel_internal_error(channel, "Splice failed to convert from"
 				       " internal version "PRIu32" to user"
 				       " version "PRIu32, psbt->version,
 				       cc->user_psbt_ver);
+		/* That failed the command, and freed it */
+		return;
+	}
 
 	struct json_stream *response = json_stream_success(cc->cmd);
 	json_add_string(response, "psbt", fmt_wally_psbt(tmpctx, psbt));
@@ -477,11 +487,14 @@ static void handle_splice_confirmed_update(struct lightningd *ld,
 	}
 
 	if (psbt->version != cc->user_psbt_ver
-	     && !psbt_set_version(psbt, cc->user_psbt_ver))
+	     && !psbt_set_version(psbt, cc->user_psbt_ver)) {
 		channel_internal_error(channel, "Splice failed to convert from"
 				       " internal version "PRIu32" to user"
 				       " version "PRIu32, psbt->version,
 				       cc->user_psbt_ver);
+		/* That failed the command, and freed it */
+		return;
+	}
 
 	struct json_stream *response = json_stream_success(cc->cmd);
 	json_add_string(response, "psbt", fmt_wally_psbt(tmpctx, psbt));
@@ -1053,11 +1066,13 @@ static void handle_update_inflight(struct lightningd *ld,
 	struct bitcoin_tx *last_tx;
 	struct bitcoin_signature *last_sig, *htlc_sigs;
 	struct short_channel_id *locked_scid;
-	bool i_sent_sigs;
+	bool i_sent_sigs, saves_user_sigs;
+	struct splice_command *cc;
 
 	if (!fromwire_channeld_update_inflight(tmpctx, msg, &psbt, &last_tx,
 					       &last_sig, &htlc_sigs,
-					       &locked_scid, &i_sent_sigs)) {
+					       &locked_scid, &i_sent_sigs,
+					       &saves_user_sigs)) {
 		channel_internal_error(channel,
 				       "bad channel_add_inflight %s",
 				       tal_hex(channel, msg));
@@ -1116,6 +1131,13 @@ static void handle_update_inflight(struct lightningd *ld,
 
 	psbt_finalize(inflight->funding_psbt);
 	wallet_inflight_save(ld->wallet, inflight);
+
+	/* channeld says when this saves the signatures splice_signed gave it
+	 * (splice_initiator_user_signed()): a reconnect now resumes the
+	 * splice and sends them. */
+	cc = splice_command_for_chan(ld, channel);
+	if (cc && cc->signing && saves_user_sigs)
+		cc->sigs_saved = true;
 
 	channel_watch_inflight_outs(ld, channel);
 }
@@ -1518,6 +1540,9 @@ static void peer_start_closingd_after_shutdown(struct channel *channel,
 	}
 	peer_fd = new_peer_fd_arr(msg, fds);
 
+	/* No splice resumes once closingd has the channel. */
+	channel_fail_splice_command(channel, "Channel is closing", false);
+
 	/* This sets channel->owner, closes down channeld. */
 	peer_start_closingd(channel, peer_fd);
 
@@ -1842,8 +1867,11 @@ static unsigned channel_msg(struct subd *sd, const u8 *msg, const int *fds)
 }
 
 /* If we get a disconnecting warning or error during a splice command, let
- * the user know out of an abundance of politeness.
- * After, we forward the event onto the standard `channel_errmsg`. */
+ * the user know out of an abundance of politeness, unless channeld has
+ * saved splice_signed's signatures: a reconnect then resumes the splice,
+ * and our broadcast answers the command.  Any other case channeld exits
+ * in fails it in channel_err() or channel_fail_perm(), which `channel_errmsg`
+ * ends in.  After, we forward the event onto the standard `channel_errmsg`. */
 static void channel_control_errmsg(struct channel *channel,
 				   struct peer_fd *peer_fd,
 				   const char *desc,
@@ -1853,13 +1881,47 @@ static void channel_control_errmsg(struct channel *channel,
 {
 	struct lightningd *ld = channel->peer->ld;
 	struct splice_command *cc = splice_command_for_chan(ld, channel);
-	if (cc && disconnect) {
+	if (cc && disconnect && !cc->sigs_saved) {
 		was_pending(command_fail(cc->cmd, SPLICE_CHANNEL_ERROR,
 					 "Splice command failed:"
 					 " %s", desc));
 	}
 
 	channel_errmsg(channel, peer_fd, desc, err_for_them, disconnect, warning);
+}
+
+static void splice_resume_timeout(struct splice_command *cc)
+{
+	was_pending(command_fail(cc->cmd, SPLICE_CHANNEL_ERROR,
+				 "Splice command failed: the splice has not"
+				 " resumed in the %u seconds since the peer"
+				 " disconnected.  Our signatures are saved, so"
+				 " it resumes when the peer reconnects.",
+				 cc->channel->peer->ld->dev_splice_resume_wait));
+}
+
+void channel_fail_splice_command(struct channel *channel, const char *why,
+				 bool resumable)
+{
+	struct lightningd *ld = channel->peer->ld;
+	struct splice_command *cc;
+
+	cc = splice_command_for_chan(ld, channel);
+	if (!cc)
+		return;
+
+	if (!resumable || !cc->sigs_saved) {
+		was_pending(command_fail(cc->cmd, SPLICE_CHANNEL_ERROR,
+					 "Splice command failed: %s", why));
+		return;
+	}
+
+	/* A reconnect resumes the splice, and our broadcast answers the
+	 * command, but the peer may not come back: don't wait for ever. */
+	if (!cc->resume_timer)
+		cc->resume_timer = new_reltimer(ld->timers, cc,
+						time_from_sec(ld->dev_splice_resume_wait),
+						splice_resume_timeout, cc);
 }
 
 bool peer_start_channeld(struct channel *channel,
@@ -2127,6 +2189,7 @@ bool peer_start_channeld(struct channel *channel,
 				       ld->dev_splice_corrupt_shared_sig,
 				       ld->dev_splice_corrupt_input_witness,
 				       ld->dev_splice_sign_second,
+				       ld->dev_splice_sign_first,
 				       pbases,
 				       cast_const2(const struct inflight **,
 						   inflights),
@@ -2655,6 +2718,8 @@ static struct command_result *json_splice_init(struct command *cmd,
 	cc->stfu_req_info = NULL;
 	cc->skip_stfu = *skip_stfu;
 	cc->signing = false;
+	cc->sigs_saved = false;
+	cc->resume_timer = NULL;
 	cc->user_psbt_ver = initialpsbt->version;
 
 	if (initialpsbt->version != 2 && !psbt_set_version(initialpsbt, 2))
@@ -2712,6 +2777,8 @@ static struct command_result *json_splice_update(struct command *cmd,
 	cc->stfu_req_info = NULL;
 	cc->skip_stfu = false;
 	cc->signing = false;
+	cc->sigs_saved = false;
+	cc->resume_timer = NULL;
 	cc->user_psbt_ver = psbt->version;
 
 	if (psbt->version != 2 && !psbt_set_version(psbt, 2))
@@ -2754,6 +2821,8 @@ static struct command_result *single_splice_signed(struct command *cmd,
 	cc->stfu_req_info = NULL;
 	cc->skip_stfu = false;
 	cc->signing = true;
+	cc->sigs_saved = false;
+	cc->resume_timer = NULL;
 	cc->user_psbt_ver = psbt->version;
 
 	if (psbt->version != 2 && !psbt_set_version(psbt, 2))
@@ -2911,6 +2980,8 @@ static struct command_result *json_stfu_channels(struct command *cmd,
 		cc->stfu_req_info = req;
 		cc->skip_stfu = false;
 		cc->signing = false;
+		cc->sigs_saved = false;
+		cc->resume_timer = NULL;
 
 		subd_send_msg(channel->owner, take(towire_channeld_stfu(NULL)));
 	}
