@@ -194,6 +194,8 @@ struct peer {
 
 	/* Signing second, send a warning instead of tx_signatures */
 	bool dev_splice_warn_instead_of_sigs;
+	/* Signing first or second, a warning and then tx_abort instead */
+	bool dev_splice_abort_instead_of_sigs;
 
 	/* Seconds to wait before reporting a requested STFU */
 	u32 dev_delay_confirmed_stfu;
@@ -206,6 +208,9 @@ struct peer {
 
 	/* Never send splice tx_signatures first */
 	bool dev_splice_sign_second;
+
+	/* Always send splice tx_signatures first */
+	bool dev_splice_sign_first;
 
 	/* Information used for reestablishment. */
 	bool last_was_revoke;
@@ -702,6 +707,26 @@ static void handle_peer_announcement_signatures(struct peer *peer, const u8 *msg
 							      remote_scid,
 							      &remote_node_sig,
 							      &remote_bitcoin_sig)));
+}
+
+/* announcement_signatures can come at any time once the funding is deep
+ * enough (lightningd sends ours through connectd, whatever channeld is
+ * doing), and quiescence allows them.  During a splice, pass them on as
+ * peer_in() does, and read on. */
+static u8 *splice_peer_read(const tal_t *ctx, struct peer *peer)
+{
+	for (;;) {
+		u8 *msg = peer_read(ctx, peer->pps);
+		if (fromwire_peektype(msg) != WIRE_ANNOUNCEMENT_SIGNATURES)
+			return msg;
+		handle_peer_announcement_signatures(peer, msg);
+		tal_free(msg);
+	}
+}
+
+static void splice_announcement_sigs(void *peer, const u8 *msg)
+{
+	handle_peer_announcement_signatures(peer, msg);
 }
 
 static void handle_peer_add_htlc(struct peer *peer, const u8 *msg)
@@ -2068,8 +2093,37 @@ static bool missing_user_signatures(const struct peer *peer,
 	return false;
 }
 
+/* BOLT #2:
+ * A sending node:
+ *   - MUST NOT have already transmitted `tx_signatures`
+ */
+/* As initiator we sign the shared input when the inflight is created, before
+ * sending anything, so our signature alone does not mean we sent it. An
+ * accepter only signs as it sends tx_signatures. Once they have signed, the
+ * tx may be complete elsewhere (older builds could clear i_sent_sigs, and a
+ * multi-channel splice carries it to other peers), so that also counts as
+ * sent. */
+static bool may_have_sent_sigs(struct peer *peer, struct inflight *itr)
+{
+	return itr->i_sent_sigs
+		|| itr->remote_tx_sigs
+		|| have_they_signed_inflight(peer, itr)
+		|| shared_input_finalized(peer, itr)
+		|| (!itr->i_am_initiator && have_i_signed_inflight(peer, itr));
+}
+
+static NORETURN void refuse_tx_abort(struct peer *peer, const u8 *msg,
+			    const struct inflight *itr)
+{
+	peer_failed_err(peer->pps, &peer->channel_id, "tx_abort"
+			" is not allowed after I have sent my"
+			" signature. msg: %s txid: %s",
+			tal_hex(tmpctx, msg),
+			fmt_bitcoin_txid(tmpctx, &itr->outpoint.txid));
+}
+
 /* `txid` is which tx to abort (aka remove inflight). NULL means just restart
- * channeld and dont abort any specific inflight. */
+ * channeld, aborting at most an unsigned last inflight (below). */
 static void check_tx_abort(struct peer *peer, const u8 *msg, struct bitcoin_txid *txid)
 {
 	struct inflight *inflight;
@@ -2085,31 +2139,38 @@ static void check_tx_abort(struct peer *peer, const u8 *msg, struct bitcoin_txid
 		struct inflight *itr = peer->splice_state->inflights[i];
 		if (!bitcoin_txid_eq(&itr->outpoint.txid, txid))
 			continue;
-		/* BOLT #2:
-		 * A sending node:
-		 *   - MUST NOT have already transmitted `tx_signatures`
-		 */
-		/* As initiator we sign the shared input when the inflight is
-		 * created, before sending anything, so our signature alone
-		 * does not mean we sent it. An accepter only signs as it
-		 * sends tx_signatures. Once they have signed, the tx may be
-		 * complete elsewhere (older builds could clear i_sent_sigs,
-		 * and a multi-channel splice carries it to other peers), so
-		 * that also counts as sent. */
-		if (itr->i_sent_sigs
-		    || itr->remote_tx_sigs
-		    || have_they_signed_inflight(peer, itr)
-		    || shared_input_finalized(peer, itr)
-		    || (!itr->i_am_initiator
-			&& have_i_signed_inflight(peer, itr))) {
-			peer_failed_err(peer->pps, &peer->channel_id, "tx_abort"
-				        " is not allowed after I have sent my"
-				        " signature. msg: %s txid: %s",
-				        tal_hex(tmpctx, msg),
-				        fmt_bitcoin_txid(tmpctx,
-				        		 &itr->outpoint.txid));
-		}
+		if (may_have_sent_sigs(peer, itr))
+			refuse_tx_abort(peer, msg, itr);
 		inflight = itr;
+	}
+
+	/* With no txid (a tx_abort outside a negotiation, say after a warning
+	 * ended a wait for tx_signatures), look at the last inflight.  If we
+	 * sent our signatures and don't have theirs, refuse it as above:
+	 * lightningd would end a splice_signed waiting on it, which the peer
+	 * may still complete with ours.  Once we have both, an RBF attempt on
+	 * it may be aborted.  If neither side's went out, nothing can complete
+	 * it, so it goes with the abort, as it does for the peer: kept, our
+	 * next commitment_signed batch would not match theirs.
+	 *
+	 * None of that while a negotiation that hasn't added its own is
+	 * going, such as an RBF attempt: the abort ends only that one, and the
+	 * last is the one it sits on, which the peer keeps, so there's nothing
+	 * to refuse or drop. */
+	if (!txid
+	    && !(peer->splicing && peer->splicing->started
+		 && !peer->splicing->added_inflight)) {
+		struct inflight *last = last_inflight(peer);
+		if (last
+		    && !last->remote_tx_sigs
+		    && !have_they_signed_inflight(peer, last)
+		    && !shared_input_finalized(peer, last)) {
+			if (last->i_sent_sigs
+			    || (!last->i_am_initiator
+				&& have_i_signed_inflight(peer, last)))
+				refuse_tx_abort(peer, msg, last);
+			inflight = last;
+		}
 	}
 
 	if (!fromwire_tx_abort(tmpctx, msg, &channel_id, &data))
@@ -3336,6 +3397,8 @@ static bool do_i_send_tx_sigs_first(struct peer *peer, struct wally_psbt *psbt,
 		return true;
 	if (peer->dev_splice_sign_second)
 		return false;
+	if (peer->dev_splice_sign_first)
+		return true;
 	return do_i_sign_first(peer, psbt, our_role, force_sign_first);
 }
 
@@ -3360,7 +3423,7 @@ static const u8 *peer_expect_msg_four(const tal_t *ctx,
 	u8 *msg;
 	enum peer_wire type;
 
-	msg = peer_read(ctx, peer->pps);
+	msg = splice_peer_read(ctx, peer);
 	type = fromwire_peektype(msg);
 	if (type != expect_type
 	    && type != second_allowed_type
@@ -4195,6 +4258,7 @@ static void resume_splice_negotiation(struct peer *peer,
 	struct witness **inws;
 	struct bitcoin_signature *their_sig;
 	const char *err;
+	bool sign_first;
 
 	if (peer->splicing) {
 		inws = peer->splicing->inws;
@@ -4240,7 +4304,8 @@ static void resume_splice_negotiation(struct peer *peer,
 						      &their_commit->commit_signature,
 						      their_commit->htlc_signatures,
 						      inflight->locked_scid,
-						      inflight->i_sent_sigs);
+						      inflight->i_sent_sigs,
+						      false);
 		wire_sync_write(MASTER_FD, take(msg));
 	}
 
@@ -4277,8 +4342,13 @@ static void resume_splice_negotiation(struct peer *peer,
 			      "Reading sign_splice_tx reply: %s",
 			      tal_hex(tmpctx, msg));
 
-	/* Set the splice_sig on the splice funding tx psbt */
-	if (send_signature
+	sign_first = do_i_send_tx_sigs_first(peer, current_psbt, our_role,
+					     inflight->force_sign_first);
+
+	/* Set the splice_sig on the splice funding tx psbt.  Signing second,
+	 * that waits for their tx_signatures, when ours go out: until then,
+	 * nothing should take ours as sent (check_tx_abort()). */
+	if (send_signature && sign_first
 		&& !psbt_input_set_signature(current_psbt, splice_funding_index,
 					     &peer->channel->funding_pubkey[LOCAL],
 					     &splice_sig))
@@ -4326,24 +4396,36 @@ static void resume_splice_negotiation(struct peer *peer,
 
 	psbt_txid(tmpctx, current_psbt, &final_txid, NULL);
 
-	/* Never clear it: send_signature is false when we only receive theirs */
-	if (send_signature)
-		inflight->i_sent_sigs = true;
-	if (do_i_send_tx_sigs_first(peer, current_psbt, our_role,
-				    inflight->force_sign_first)
-		&& send_signature) {
-		msg = towire_channeld_update_inflight(NULL, current_psbt,
-						      NULL, NULL, NULL,
-						      inflight->locked_scid,
-						      inflight->i_sent_sigs);
-		wire_sync_write(MASTER_FD, take(msg));
+	/* Set only as ours go out, and never cleared: send_signature is false
+	 * when we only receive theirs */
+	if (sign_first && send_signature) {
+		if (peer->dev_splice_abort_instead_of_sigs && peer->splicing) {
+			/* None of ours go out: the warning ends their wait for
+			 * them, so the tx_abort reaches them outside the
+			 * negotiation.  Wait for their ack like any abort, so
+			 * we don't take it for a new tx_abort and ack it. */
+			peer_write(peer->pps,
+				   take(towire_warningfmt(NULL,
+							  &peer->channel_id,
+							  "dev-splice-warn-instead-of-sigs")));
+			splice_abort(peer, inflight,
+				     "dev-splice-abort-instead-of-sigs");
+		} else {
+			inflight->i_sent_sigs = true;
+			msg = towire_channeld_update_inflight(NULL, current_psbt,
+							      NULL, NULL, NULL,
+							      inflight->locked_scid,
+							      inflight->i_sent_sigs,
+							      false);
+			wire_sync_write(MASTER_FD, take(msg));
 
-		/* Only send once lightningd has stored i_sent_sigs */
-		msg = towire_channeld_splice_sending_sigs(NULL, &final_txid);
-		master_wait_sync_reply(tmpctx, peer, take(msg),
-				       WIRE_CHANNELD_SPLICE_SENDING_SIGS_REPLY);
+			/* Only send once lightningd has stored i_sent_sigs */
+			msg = towire_channeld_splice_sending_sigs(NULL, &final_txid);
+			master_wait_sync_reply(tmpctx, peer, take(msg),
+					       WIRE_CHANNELD_SPLICE_SENDING_SIGS_REPLY);
 
-		peer_write(peer->pps, sigmsg);
+			peer_write(peer->pps, sigmsg);
+		}
 	}
 
 	their_pubkey = &peer->channel->funding_pubkey[REMOTE];
@@ -4365,7 +4447,7 @@ static void resume_splice_negotiation(struct peer *peer,
 		}
 		else {
 			status_debug("Splice: Awaiting signature message");
-			msg = peer_read(tmpctx, peer->pps);
+			msg = splice_peer_read(tmpctx, peer);
 			status_debug("Splice: Got peer message! (is signature?)");
 		}
 
@@ -4449,6 +4531,19 @@ static void resume_splice_negotiation(struct peer *peer,
 				      fmt_bitcoin_signature(tmpctx, their_sig),
 				      fmt_wally_psbt(tmpctx, current_psbt));
 		}
+	}
+
+	/* Signing second, ours go out now that we have theirs */
+	if (send_signature && !sign_first) {
+		if (!psbt_input_set_signature(current_psbt, splice_funding_index,
+					      &peer->channel->funding_pubkey[LOCAL],
+					      &splice_sig))
+			status_failed(STATUS_FAIL_INTERNAL_ERROR,
+				      "Unable to set signature internally "
+				      "funding_index: %d psbt: %s",
+				      splice_funding_index,
+				      fmt_wally_psbt(tmpctx, current_psbt));
+		inflight->i_sent_sigs = true;
 	}
 
 	if (have_i_signed_inflight(peer, inflight)
@@ -4542,25 +4637,33 @@ static void resume_splice_negotiation(struct peer *peer,
 		msg = towire_channeld_update_inflight(NULL, current_psbt, NULL,
 						      NULL, NULL,
 						      inflight->locked_scid,
-						      inflight->i_sent_sigs);
+						      inflight->i_sent_sigs,
+						      false);
 		wire_sync_write(MASTER_FD, take(msg));
 	}
 
-	if (!do_i_send_tx_sigs_first(peer, current_psbt, our_role,
-				     inflight->force_sign_first)
-		&& send_signature) {
+	if (!sign_first && send_signature) {
 		/* Only send once lightningd has stored i_sent_sigs */
 		msg = towire_channeld_splice_sending_sigs(NULL, &final_txid);
 		master_wait_sync_reply(tmpctx, peer, take(msg),
 				       WIRE_CHANNELD_SPLICE_SENDING_SIGS_REPLY);
 
 		/* Only within a negotiation: a reestablish resends them */
-		if (peer->dev_splice_warn_instead_of_sigs && peer->splicing)
+		if ((peer->dev_splice_warn_instead_of_sigs
+		     || peer->dev_splice_abort_instead_of_sigs)
+		    && peer->splicing) {
 			peer_write(peer->pps,
 				   take(towire_warningfmt(NULL,
 							  &peer->channel_id,
 							  "dev-splice-warn-instead-of-sigs")));
-		else
+			/* The warning ends their wait for our tx_signatures,
+			 * so this one reaches them outside the negotiation */
+			if (peer->dev_splice_abort_instead_of_sigs)
+				peer_write(peer->pps,
+					   take(towire_abortfmt(NULL,
+								&peer->channel_id,
+								"dev-splice-abort-instead-of-sigs")));
+		} else
 			peer_write(peer->pps, sigmsg);
 		status_debug("Splice: we signed second");
 	}
@@ -4722,9 +4825,12 @@ static void splice_accepter(struct peer *peer, const u8 *inmsg)
 				 "Can't splice while shutting down");
 
 	peer->splicing = splicing_new(peer);
+	peer->splicing->started = true;
 
 	ictx = new_interactivetx_context(tmpctx, our_role,
 					 peer->pps, peer->channel_id);
+	ictx->announcement_sigs_fn = splice_announcement_sigs;
+	ictx->announcement_sigs_arg = peer;
 
 	type = fromwire_peektype(inmsg);
 
@@ -5140,6 +5246,8 @@ static void splice_initiator_user_finalized(struct peer *peer)
 
 	ictx = new_interactivetx_context(tmpctx, our_role,
 					 peer->pps, peer->channel_id);
+	ictx->announcement_sigs_fn = splice_announcement_sigs;
+	ictx->announcement_sigs_arg = peer;
 
 	ictx->next_update_fn = next_splice_step;
 	ictx->pause_when_complete = false;
@@ -5292,7 +5400,8 @@ static void splice_initiator_user_finalized(struct peer *peer)
 						 &their_commit->commit_signature,
 						 their_commit->htlc_signatures,
 						 new_inflight->locked_scid,
-						 new_inflight->i_sent_sigs);
+						 new_inflight->i_sent_sigs,
+						 false);
 	wire_sync_write(MASTER_FD, take(outmsg));
 
 	sign_first = do_i_send_tx_sigs_first(peer, new_inflight->psbt, our_role,
@@ -5331,6 +5440,8 @@ static void splice_initiator_user_update(struct peer *peer, const u8 *inmsg)
 
 	ictx = new_interactivetx_context(tmpctx, TX_INITIATOR,
 					 peer->pps, peer->channel_id);
+	ictx->announcement_sigs_fn = splice_announcement_sigs;
+	ictx->announcement_sigs_arg = peer;
 
 	if (!fromwire_channeld_splice_update(ictx, inmsg, &ictx->desired_psbt))
 		master_badmsg(WIRE_CHANNELD_SPLICE_UPDATE, inmsg);
@@ -5487,11 +5598,13 @@ static void splice_initiator_user_signed(struct peer *peer, const u8 *inmsg)
 	inflight->psbt = clone_psbt(inflight, signed_psbt);
 
 	/* Save the user provided signatures to DB incase we have to
-	 * restart and reestablish later. */
+	 * restart and reestablish later.  saves_user_sigs tells lightningd
+	 * that a reconnect now resumes this splice. */
 	outmsg = towire_channeld_update_inflight(NULL, inflight->psbt,
 						 NULL, NULL, NULL,
 						 inflight->locked_scid,
-						 inflight->i_sent_sigs);
+						 inflight->i_sent_sigs,
+						 true);
 
 	wire_sync_write(MASTER_FD, take(outmsg));
 
@@ -5533,6 +5646,7 @@ static void handle_splice_stfu_success(struct peer *peer)
 					 init_rbf_tlvs);
 	}
 
+	peer->splicing->started = true;
 	peer_write(peer->pps, take(msg));
 }
 
@@ -6987,7 +7101,8 @@ static void handle_funding_depth(struct peer *peer, const u8 *msg)
 									      NULL,
 									      NULL,
 									      inflight->locked_scid,
-									      inflight->i_sent_sigs);
+									      inflight->i_sent_sigs,
+									      false);
 					wire_sync_write(MASTER_FD, take(msg));
 					inflight_match = inflight;
 				}
@@ -7621,11 +7736,13 @@ static void init_channel(struct peer *peer)
 				    &peer->dev_splice_corrupt_shared_sig,
 				    &peer->dev_splice_corrupt_input_witness,
 				    &peer->dev_splice_sign_second,
+				    &peer->dev_splice_sign_first,
 				    &pbases,
 				    &peer->splice_state->inflights,
 				    &peer->local_alias,
 				    &peer->dev_splice_abort_at_tx_complete,
 				    &peer->dev_splice_warn_instead_of_sigs,
+				    &peer->dev_splice_abort_instead_of_sigs,
 				    &peer->dev_delay_confirmed_stfu,
 				    &peer->dev_shutdown_during_splice,
 				    &peer->dev_splice_ack_contribution)) {

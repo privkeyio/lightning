@@ -11303,6 +11303,12 @@ pub mod responses {
 	}
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct ListconfigsConfigsSplicesigswait {
+	    pub source: String,
+	    pub value_int: u32,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
 	pub struct ListconfigsConfigsTorservicepassword {
 	    pub source: String,
 	    pub value_str: String,
@@ -11599,6 +11605,9 @@ pub mod responses {
 	    #[serde(rename = "rpc-file-mode")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub rpc_file_mode: Option<ListconfigsConfigsRpcfilemode>,
+	    #[serde(rename = "splice-sigs-wait")]
+	    #[serde(skip_serializing_if = "Option::is_none")]
+	    pub splice_sigs_wait: Option<ListconfigsConfigsSplicesigswait>,
 	    #[serde(rename = "tor-service-password")]
 	    #[serde(skip_serializing_if = "Option::is_none")]
 	    pub tor_service_password: Option<ListconfigsConfigsTorservicepassword>,

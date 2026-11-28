@@ -69,6 +69,12 @@ struct interactivetx_context {
 	 * with `tx_abort`: process_interactivetx_updates returns, and the
 	 * caller sends it. */
 	char *our_abort_reason;
+
+	/* If set, `announcement_signatures` that come during the negotiation
+	 * go here, and it goes on: during a splice they can come at any
+	 * time.  Otherwise they fail it. */
+	void (*announcement_sigs_fn)(void *arg, const u8 *msg);
+	void *announcement_sigs_arg;
 };
 
 /* Sanity checks on the transaction outputs amount and the new value to be added

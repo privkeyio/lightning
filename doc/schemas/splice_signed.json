@@ -71,6 +71,21 @@
       }
     }
   },
+  "errors": [
+    "The following error codes may occur:",
+    "",
+    "- 350: Broadcasting the splice failed.",
+    "- 351: The channel is disconnected, or channeld isn't running for it yet.",
+    "- 352: No channel with *channel_id*.",
+    "- 353: The channel isn't in a state to splice.",
+    "- 354: The peer doesn't support splicing.",
+    "- 355: Another splice command is still running on the channel.",
+    "- 356: The PSBT is invalid.",
+    "- 358: channeld can't sign the splice now, or the PSBT is missing a signature.",
+    "- 362: The peer aborted the splice before our signatures were saved, so this splice can't confirm. After an RBF, an earlier version that the peer holds our signatures for still can.",
+    "- 363: The splice failed before our signatures were saved, so this splice can't confirm. After an RBF, an earlier version that the peer holds our signatures for still can.",
+    "- 364: The splice failed after our signatures were saved: the peer may hold them, so the splice may still confirm. The error's *data* has its *txid*."
+  ],
   "usage": [
     "In this example we funded the psbt from our lightning node, so we can use the lightning node to sign for its funds.",
     "",

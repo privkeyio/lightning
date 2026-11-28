@@ -51,6 +51,9 @@ struct splicing {
 	bool force_sign_first;
 	/* After `splice` and `splice_ack` occur, we are in splice mode */
 	bool mode;
+	/* `splice` or `tx_init_rbf` has gone out or come in: a tx_abort now
+	 * ends this negotiation */
+	bool started;
 	/* This negotiation has added its candidate to the inflights */
 	bool added_inflight;
 	/* Track how many of each tx collab msg we receive */

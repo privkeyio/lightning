@@ -38,6 +38,7 @@ struct splicing *splicing_new(const tal_t *ctx)
 	splicing->force_feerate = false;
 	splicing->force_sign_first = false;
 	splicing->mode = false;
+	splicing->started = false;
 	splicing->added_inflight = false;
 	splicing->tx_add_input_count = 0;
 	splicing->tx_add_output_count = 0;
