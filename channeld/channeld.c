@@ -709,6 +709,26 @@ static void handle_peer_announcement_signatures(struct peer *peer, const u8 *msg
 							      &remote_bitcoin_sig)));
 }
 
+/* announcement_signatures can come at any time once the funding is deep
+ * enough (lightningd sends ours through connectd, whatever channeld is
+ * doing), and quiescence allows them.  During a splice, pass them on as
+ * peer_in() does, and read on. */
+static u8 *splice_peer_read(const tal_t *ctx, struct peer *peer)
+{
+	for (;;) {
+		u8 *msg = peer_read(ctx, peer->pps);
+		if (fromwire_peektype(msg) != WIRE_ANNOUNCEMENT_SIGNATURES)
+			return msg;
+		handle_peer_announcement_signatures(peer, msg);
+		tal_free(msg);
+	}
+}
+
+static void splice_announcement_sigs(void *peer, const u8 *msg)
+{
+	handle_peer_announcement_signatures(peer, msg);
+}
+
 static void handle_peer_add_htlc(struct peer *peer, const u8 *msg)
 {
 	struct channel_id channel_id;
@@ -3403,7 +3423,7 @@ static const u8 *peer_expect_msg_four(const tal_t *ctx,
 	u8 *msg;
 	enum peer_wire type;
 
-	msg = peer_read(ctx, peer->pps);
+	msg = splice_peer_read(ctx, peer);
 	type = fromwire_peektype(msg);
 	if (type != expect_type
 	    && type != second_allowed_type
@@ -4427,7 +4447,7 @@ static void resume_splice_negotiation(struct peer *peer,
 		}
 		else {
 			status_debug("Splice: Awaiting signature message");
-			msg = peer_read(tmpctx, peer->pps);
+			msg = splice_peer_read(tmpctx, peer);
 			status_debug("Splice: Got peer message! (is signature?)");
 		}
 
@@ -4809,6 +4829,8 @@ static void splice_accepter(struct peer *peer, const u8 *inmsg)
 
 	ictx = new_interactivetx_context(tmpctx, our_role,
 					 peer->pps, peer->channel_id);
+	ictx->announcement_sigs_fn = splice_announcement_sigs;
+	ictx->announcement_sigs_arg = peer;
 
 	type = fromwire_peektype(inmsg);
 
@@ -5224,6 +5246,8 @@ static void splice_initiator_user_finalized(struct peer *peer)
 
 	ictx = new_interactivetx_context(tmpctx, our_role,
 					 peer->pps, peer->channel_id);
+	ictx->announcement_sigs_fn = splice_announcement_sigs;
+	ictx->announcement_sigs_arg = peer;
 
 	ictx->next_update_fn = next_splice_step;
 	ictx->pause_when_complete = false;
@@ -5416,6 +5440,8 @@ static void splice_initiator_user_update(struct peer *peer, const u8 *inmsg)
 
 	ictx = new_interactivetx_context(tmpctx, TX_INITIATOR,
 					 peer->pps, peer->channel_id);
+	ictx->announcement_sigs_fn = splice_announcement_sigs;
+	ictx->announcement_sigs_arg = peer;
 
 	if (!fromwire_channeld_splice_update(ictx, inmsg, &ictx->desired_psbt))
 		master_badmsg(WIRE_CHANNELD_SPLICE_UPDATE, inmsg);

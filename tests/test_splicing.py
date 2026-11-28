@@ -2079,6 +2079,84 @@ def test_splice_reserve_leniency_ends_at_splice(node_factory, bitcoind, on_switc
         wait_for(lambda: n.daemon.is_in_log(r'Earlier reserves no longer apply'))
 
 
+def _announcement_sigs_nodes(node_factory):
+    """A channel waiting for announcement depth, just reconnected: on a new
+    connection, lightningd sends announcement_signatures again at the next
+    chance it gets, whatever channeld is doing, and the peer answers."""
+    l1, l2 = node_factory.line_graph(2, fundamount=1000000,
+                                     opts={'may_reconnect': True,
+                                           'dev-no-reconnect': None})
+    for n in (l1, l2):
+        n.daemon.wait_for_log(r'gossip state: .*->CGOSSIP_WAITING_FOR_ANNOUNCE_DEPTH')
+    # A feerate change after the reconnect would have them sent then, with
+    # its commitment: a payment carries any now.
+    l1.rpc.xpay(l2.rpc.invoice(10000, 'settle', 'settle')['bolt11'])
+    for n in (l1, l2):
+        wait_for(lambda: only_one(n.rpc.listpeerchannels()['channels'])['htlcs'] == [])
+    _reconnect(l1, l2)
+    l2.daemon.logs_catchup()
+    return l1, l2, l1.get_channel_id(l2), len(l2.daemon.logs)
+
+
+def _read_in_order(node, start, *regexes):
+    node.daemon.logs_catchup()
+    lines = iter(node.daemon.logs[start:])
+    for regex in regexes:
+        assert any(re.search(regex, line) for line in lines), regex
+
+
+def _finish_splice(l1, l2, chan_id, result, bitcoind):
+    result = l1.rpc.splice_update(chan_id, result['psbt'])
+    if not result['commitments_secured']:
+        result = l1.rpc.splice_update(chan_id, result['psbt'])
+    assert result['commitments_secured'] is True
+    result = l1.rpc.signpsbt(result['psbt'])
+    result = l1.rpc.splice_signed(chan_id, result['signed_psbt'])
+    l2.daemon.wait_for_log(r'channeld-chan#[0-9]*: peer_in WIRE_TX_SIGNATURES')
+    for n in (l1, l2):
+        assert not n.daemon.is_in_log(r'Splicing got incorrect message'
+                                      r'|Got incorrect message from peer'
+                                      r'|Received invalid message from peer')
+    wait_for(lambda: result['txid'] in bitcoind.rpc.getrawmempool())
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_announcement_sigs_during_tx_signatures(node_factory, bitcoind):
+    """Here the chance is l2's channel going to CHANNELD_AWAITING_SPLICE.
+    l1's answer reaches l2 while it waits for l1's tx_signatures, having
+    sent its own: l2 passes them on and keeps waiting."""
+    l1, l2, chan_id, l2_log_start = _announcement_sigs_nodes(node_factory)
+
+    funds_result = l1.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
+    result = l1.rpc.splice_init(chan_id, 100000, funds_result['psbt'])
+    _finish_splice(l1, l2, chan_id, result, bitcoind)
+    _read_in_order(l2, l2_log_start,
+                   r'Splice: Awaiting signature message',
+                   r'channeld-chan#[0-9]*: peer_in WIRE_ANNOUNCEMENT_SIGNATURES',
+                   r'channeld-chan#[0-9]*: peer_in WIRE_TX_SIGNATURES')
+
+
+@pytest.mark.openchannel('v1')
+@pytest.mark.openchannel('v2')
+@unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+def test_splice_announcement_sigs_during_construction(node_factory, bitcoind):
+    """Here the chance is a block, while l2 waits for l1's first
+    interactive-tx message: l2 passes l1's on and keeps building."""
+    l1, l2, chan_id, l2_log_start = _announcement_sigs_nodes(node_factory)
+
+    funds_result = l1.rpc.fundpsbt("111722sat", 0, 0, excess_as_change=True)
+    result = l1.rpc.splice_init(chan_id, 100000, funds_result['psbt'])
+    bitcoind.generate_block(1)
+    l2.daemon.wait_for_log(r'channeld-chan#[0-9]*: peer_in WIRE_ANNOUNCEMENT_SIGNATURES')
+    _finish_splice(l1, l2, chan_id, result, bitcoind)
+    _read_in_order(l2, l2_log_start,
+                   r'channeld-chan#[0-9]*: peer_out WIRE_SPLICE_ACK',
+                   r'channeld-chan#[0-9]*: peer_in WIRE_ANNOUNCEMENT_SIGNATURES',
+                   r'channeld-chan#[0-9]*: peer_in WIRE_TX_ADD_INPUT')
+
+
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')

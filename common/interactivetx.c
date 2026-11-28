@@ -67,6 +67,8 @@ struct interactivetx_context *new_interactivetx_context(const tal_t *ctx,
 	ictx->desired_psbt = NULL;
 	ictx->pause_when_complete = false;
 	ictx->change_set = NULL;
+	ictx->announcement_sigs_fn = NULL;
+	ictx->announcement_sigs_arg = NULL;
 
 	return ictx;
 }
@@ -132,6 +134,12 @@ static u8 *read_next_msg(const tal_t *ctx,
 		 * it's possible we can get some different messages in
 		 * the meantime! */
 		t = fromwire_peektype(msg);
+		if (t == WIRE_ANNOUNCEMENT_SIGNATURES
+		    && state->announcement_sigs_fn) {
+			state->announcement_sigs_fn(state->announcement_sigs_arg,
+						    msg);
+			continue;
+		}
 		switch (t) {
 		case WIRE_TX_ADD_INPUT:
 		case WIRE_TX_REMOVE_INPUT:
